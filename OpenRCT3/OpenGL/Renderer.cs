@@ -20,6 +20,7 @@ using Silk.NET.OpenGL;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Numerics;
 using GUI = OpenCobra.GDK.GUI;
 using Materials = OpenCobra.GDK.Materials;
 
@@ -107,44 +108,7 @@ public class Renderer : ThreadAffine, IRenderer {
     gl.Viewport(0, 0, FramebufferSize.Width, FramebufferSize.Height);
     gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
-    foreach (var item in BuildDisplayList(scene)) {
-      gl.UseProgram(item.ShaderHandle);
-      gl.BindVertexArray(item.Vao);
-      gl.CheckError(string.Format("Binding {0} vertex array object", item.Name));
-      gl.BindBuffer(BufferTargetARB.ArrayBuffer, item.Vbo);
-      gl.CheckError(string.Format("Binding {0} vertex buffer", item.Name));
-
-      if (item.TextureHandle != null) {
-        gl.ActiveTexture(TextureUnit.Texture0);
-        gl.BindTexture(TextureTarget.Texture2D, item.TextureHandle.Value);
-        var loc = gl.GetUniformLocation(item.ShaderHandle, Materials.Texture.UniformName);
-        if (loc != -1) gl.Uniform1(loc, 0);
-        gl.CheckError(string.Format("Binding {0} textures", item.Name));
-      }
-
-      // Set model and camera uniforms
-      gl.UniformMatrix4(
-        location: gl.GetUniformLocation(item.ShaderHandle, Transform.UniformName),
-        count: 1,
-        transpose: false,
-        value: item.ModelTransform.ToGl().AsSpan()
-      );
-      gl.CheckError(string.Format("Set {0} model transformation uniform", item.Name));
-      gl.UniformMatrix4(
-        location: gl.GetUniformLocation(item.ShaderHandle, Camera.UniformName),
-        count: 1,
-        transpose: false,
-        value: viewProj.Value.ToGl().AsSpan()
-      );
-      gl.CheckError(string.Format("Binding {0} camera uniform", item.Name));
-
-      // Draw the model
-      gl.DrawElements<uint>(PrimitiveType.Triangles, item.IndexCount, DrawElementsType.UnsignedInt, indices: null);
-      gl.CheckError(string.Format("Draw {0}", item.Name));
-    }
-
-    gl.BindVertexArray(0);
-    gl.UseProgram(0);
+    RenderDisplayList(BuildDisplayList(scene), viewProj.Value, scene.Camera.Eye);
 
     RenderGui(scene.Windows);
 
@@ -155,6 +119,116 @@ public class Renderer : ThreadAffine, IRenderer {
     }
     context.SwapBuffers();
   });
+
+  internal static DrawNode[] OrderDisplayList(IEnumerable<DrawNode> displayList) {
+    var nodes = displayList.ToArray();
+    return [
+      .. nodes.Where(node => !node.RenderState.IsTransparent),
+      .. nodes
+        .Where(node => node.RenderState.IsTransparent)
+        .OrderByDescending(node => node.CameraDistanceSquared),
+    ];
+  }
+
+  private void RenderDisplayList(
+    IReadOnlyList<DrawNode> displayList,
+    Matrix4x4 viewProj,
+    Vector3 cameraPosition
+  ) {
+    var depthWriteEnabled = gl.GetInteger(GLEnum.DepthWritemask) != 0;
+    using var _ = GLState.Push();
+    try {
+      foreach (var item in displayList) {
+        ApplyRenderState(item.RenderState);
+        gl.UseProgram(item.ShaderHandle);
+        gl.BindVertexArray(item.Vao);
+        gl.CheckError(string.Format("Binding {0} vertex array object", item.Name));
+        gl.BindBuffer(BufferTargetARB.ArrayBuffer, item.Vbo);
+        gl.CheckError(string.Format("Binding {0} vertex buffer", item.Name));
+
+        if (item.TextureHandle != null) {
+          gl.ActiveTexture(TextureUnit.Texture0);
+          gl.BindTexture(TextureTarget.Texture2D, item.TextureHandle.Value);
+          var loc = gl.GetUniformLocation(
+            item.ShaderHandle,
+            Materials.Texture.UniformName);
+          if (loc != -1) gl.Uniform1(loc, 0);
+          gl.CheckError(string.Format("Binding {0} textures", item.Name));
+        }
+
+        // Set model and camera uniforms
+        gl.UniformMatrix4(
+          location: gl.GetUniformLocation(item.ShaderHandle, Transform.UniformName),
+          count: 1,
+          transpose: false,
+          value: item.ModelTransform.ToGl().AsSpan()
+        );
+        gl.CheckError(string.Format(
+          "Set {0} model transformation uniform",
+          item.Name));
+        gl.UniformMatrix4(
+          location: gl.GetUniformLocation(item.ShaderHandle, Camera.UniformName),
+          count: 1,
+          transpose: false,
+          value: viewProj.ToGl().AsSpan()
+        );
+        gl.CheckError(string.Format("Binding {0} camera uniform", item.Name));
+
+        var cameraPositionLocation = gl.GetUniformLocation(
+          item.ShaderHandle,
+          Water.CameraPositionUniformName);
+        if (cameraPositionLocation != -1)
+          gl.Uniform3(
+            cameraPositionLocation,
+            cameraPosition.X,
+            cameraPosition.Y,
+            cameraPosition.Z);
+        gl.CheckError(string.Format(
+          "Binding {0} camera position uniform",
+          item.Name));
+
+        // Draw the model
+        gl.DrawElements<uint>(
+          PrimitiveType.Triangles,
+          item.IndexCount,
+          DrawElementsType.UnsignedInt,
+          indices: null);
+        gl.CheckError(string.Format("Draw {0}", item.Name));
+      }
+    } finally {
+      gl.DepthMask(depthWriteEnabled);
+      gl.CheckError("Restore scene depth write state");
+    }
+
+    gl.BindVertexArray(0);
+    gl.UseProgram(0);
+  }
+
+  private void ApplyRenderState(MaterialRenderState renderState) {
+    gl.DepthMask(renderState.DepthWrite);
+    switch (renderState.BlendMode) {
+      case MaterialBlendMode.Opaque:
+        gl.Disable(EnableCap.Blend);
+        break;
+      case MaterialBlendMode.Alpha:
+        gl.Enable(EnableCap.Blend);
+        gl.BlendEquationSeparate(
+          BlendEquationModeEXT.FuncAdd,
+          BlendEquationModeEXT.FuncAdd);
+        gl.BlendFuncSeparate(
+          BlendingFactor.SrcAlpha,
+          BlendingFactor.OneMinusSrcAlpha,
+          BlendingFactor.One,
+          BlendingFactor.OneMinusSrcAlpha);
+        break;
+      default:
+        throw new ArgumentOutOfRangeException(
+          nameof(renderState),
+          renderState.BlendMode,
+          "Unsupported material blend mode.");
+    }
+    gl.CheckError("Apply material render state");
+  }
 
   internal static bool CanRender(State state) => state == State.Ready;
 
@@ -170,7 +244,8 @@ public class Renderer : ThreadAffine, IRenderer {
     gl.CheckError("Rendered ImGui");
   }
 
-  private IEnumerable<DrawNode> BuildDisplayList(Scene scene) {
+  private IReadOnlyList<DrawNode> BuildDisplayList(Scene scene) {
+    var displayList = new List<DrawNode>();
     foreach (var model in scene.Models) {
       var mesh = model.Mesh;
       if (mesh.State != State.Ready) continue;
@@ -178,17 +253,22 @@ public class Renderer : ThreadAffine, IRenderer {
 
       var material = model.Material;
       Debug.Assert(material != null);
+      var modelTransform = model.Transform.Matrix;
+      var worldCenter = Vector3.Transform(mesh.BoundingBox.Center, modelTransform);
 
-      yield return new DrawNode(
+      displayList.Add(new DrawNode(
         Name: mesh.Name ?? "Mesh",
         Vao: mesh.Vao,
         Vbo: mesh.Vbo,
         TextureHandle: material.AlbedoTexture?.Handle ?? null,
         ShaderHandle: shaders[material.CacheKey].Shader.Handle,
         IndexCount: Convert.ToUInt32(mesh.Indices.Count),
-        ModelTransform: model.Transform.Matrix
-      );
+        ModelTransform: modelTransform,
+        RenderState: material.RenderState,
+        CameraDistanceSquared: Vector3.DistanceSquared(scene.Camera.Eye, worldCenter)
+      ));
     }
+    return OrderDisplayList(displayList);
   }
 
   private void UploadChanges(Camera camera, IEnumerable<Model> models) {

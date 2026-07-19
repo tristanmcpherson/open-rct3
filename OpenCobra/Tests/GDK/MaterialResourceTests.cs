@@ -32,6 +32,37 @@ public class MaterialResourceTests {
   }
 
   [Test]
+  public void BuiltInMaterials_DeclareTheirRenderState() {
+    using var flat = new Flat();
+    using var textured = new Textured();
+    using var water = new Water();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(flat.RenderState, Is.EqualTo(MaterialRenderState.Opaque));
+      Assert.That(textured.RenderState, Is.EqualTo(MaterialRenderState.Opaque));
+      Assert.That(water.RenderState, Is.EqualTo(MaterialRenderState.AlphaBlend));
+      Assert.That(water.RenderState.IsTransparent, Is.True);
+      Assert.That(water.RenderState.DepthWrite, Is.False);
+    }
+  }
+
+  [Test]
+  public void WaterMaterial_UsesViewDependentRestrainedLighting() {
+    using var water = new Water();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(water.Shaders.Vertex, Does.Contain("in vec3 a_Normal;"));
+      Assert.That(water.Shaders.Vertex, Does.Contain("v_WorldPosition"));
+      Assert.That(water.Shaders.Fragment,
+        Does.Contain($"uniform vec3 {Water.CameraPositionUniformName};"));
+      Assert.That(water.Shaders.Fragment, Does.Contain("float specular"));
+      Assert.That(water.Shaders.Fragment, Does.Contain("float fresnel"));
+      Assert.That(water.Shaders.Fragment,
+        Does.Contain("0.0, 0.60"));
+    }
+  }
+
+  [Test]
   public void EquivalentTextureDefinitions_HaveEqualCacheKeys() {
     using var first = CreateTexture("shared", new Rgba32(10, 20, 30, 255));
     using var second = CreateTexture("shared", new Rgba32(10, 20, 30, 255));

@@ -163,7 +163,7 @@ public class Game : IGame {
         World.Terrain,
         pool,
         new Vector4(0.12f, 0.42f, 0.72f, 1f))) {
-        Material = new Flat()
+        Material = new Water()
       };
       Scene.Models.Add(waterModel);
     }

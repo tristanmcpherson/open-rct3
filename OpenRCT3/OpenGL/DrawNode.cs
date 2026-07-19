@@ -5,6 +5,7 @@
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 using System.Numerics;
+using OpenCobra.GDK.Materials;
 
 namespace OpenRCT3.OpenGL;
 
@@ -18,4 +19,6 @@ internal record struct DrawNode(
   uint? TextureHandle,
   uint ShaderHandle,
   uint IndexCount,
-  Matrix4x4 ModelTransform);
+  Matrix4x4 ModelTransform,
+  MaterialRenderState RenderState,
+  float CameraDistanceSquared);

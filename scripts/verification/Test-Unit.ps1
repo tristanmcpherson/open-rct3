@@ -9,6 +9,8 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $solutionFilter = Join-Path $repo 'OpenRCT3.tests.slnf'
 $settings = Join-Path $PSScriptRoot 'verification.runsettings'
+$dumperSettings = Join-Path $PSScriptRoot 'verification.dumper.runsettings'
+$dumperProject = 'Dumper\Dumper.Tests\Dumper.Tests.csproj'
 $results = Join-Path $repo 'TestResults\unit'
 $solutionDirectory = $repo.Replace('\', '/') + '/'
 
@@ -29,8 +31,22 @@ foreach ($project in $filter.solution.projects) {
 }
 if ($testProjects.Count -eq 0) { throw 'The unit solution filter contains no test projects.' }
 
+$dumperProjectPath = Join-Path $repo $dumperProject
+$dumperIsTestProject = (& dotnet msbuild $dumperProjectPath -nologo -getProperty:IsTestProject | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) {
+  throw "MSBuild could not inspect IsTestProject for $dumperProject."
+}
+if ($dumperIsTestProject -ne 'true') {
+  throw "$dumperProject is a required unit project, but MSBuild does not mark it as a test project."
+}
+if ($filter.solution.projects -notcontains $dumperProject) {
+  $testProjects += $dumperProject
+}
+
 Push-Location $repo
 try {
+  & (Join-Path $PSScriptRoot 'Test-Harness.ps1')
+
   & deno check clients/desktop/main.ts
   if ($LASTEXITCODE -ne 0) { throw "Deno check failed with exit code $LASTEXITCODE." }
 
@@ -55,6 +71,31 @@ try {
 
   & dotnet @testArgs
   if ($LASTEXITCODE -ne 0) { throw "Unit tests failed with exit code $LASTEXITCODE." }
+
+  if ($filter.solution.projects -notcontains $dumperProject) {
+    $dumperArgs = @(
+      'test',
+      $dumperProjectPath,
+      '--no-build',
+      '--no-restore',
+      '--settings',
+      $dumperSettings,
+      '--logger',
+      'trx;LogFilePrefix=unit-dumper',
+      '--results-directory',
+      $results,
+      '--verbosity',
+      'normal',
+      '-p:TestingPlatformDotnetTestSupport=false',
+      "-p:SolutionDir=$solutionDirectory"
+    )
+    if ($env:COLLECT_COVERAGE -eq '1') {
+      $dumperArgs += '--collect:XPlat Code Coverage'
+    }
+
+    & dotnet @dumperArgs
+    if ($LASTEXITCODE -ne 0) { throw "Dumper unit tests failed with exit code $LASTEXITCODE." }
+  }
 } finally {
   Pop-Location
 }

@@ -40,7 +40,9 @@ jobs:
         if: runner.os == 'macOS'
         run: dotnet workload restore
       - name: Restore Dependencies
-        run: dotnet restore OpenRCT3.tests.slnf -p:SolutionDir="${{ github.workspace }}/"
+        run: |
+          dotnet restore OpenRCT3.tests.slnf -p:SolutionDir="${{ github.workspace }}/"
+          dotnet restore Dumper/Dumper.Tests/Dumper.Tests.csproj -p:SolutionDir="${{ github.workspace }}/"
       - name: Setup GNU Make
         run: choco install make --version=4.4.1 --no-progress --yes
       - name: Unit Gate

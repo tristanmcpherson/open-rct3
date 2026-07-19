@@ -99,6 +99,7 @@ TEST_BENCH_PROJ := OpenCobra/Tests/TestRunner/OvlTestBench.csproj
 .PHONY: test-build
 test-build:
 	dotnet build OpenRCT3.tests.slnf -p:SolutionDir="$(CURDIR)/"
+	dotnet build Dumper/Dumper.Tests/Dumper.Tests.csproj -p:SolutionDir="$(CURDIR)/"
 
 .PHONY: test
 test: test-build

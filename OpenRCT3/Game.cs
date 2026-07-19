@@ -136,7 +136,7 @@ public class Game : IGame {
     // Load the game world
     // TODO: Show a progress bar while loading
     World.Load();
-    logger.Trace("Game world loaded");
+    logger.Debug("Game world loaded");
 
     // Build a mesh from the loaded terrain's corner-height grid. Surface painting isn't wired up
     // yet, so every tile uses the decoded Terrain_00 grass texture.
@@ -147,7 +147,7 @@ public class Game : IGame {
       Material = new Textured { AlbedoTexture = World.Terrain.GrassTexture }
     };
     Scene.Models.Add(ground);
-    logger.Trace("Added terrain mesh");
+    logger.Debug("Added terrain mesh");
 
     // Frame the camera on the loaded park's buildable area. Camera's default framing (a small fixed
     // offset from the origin) only suits a toy scene — it doesn't scale to the actual, much larger,

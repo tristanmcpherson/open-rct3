@@ -4,7 +4,8 @@
   so interaction goes through Win32 (SendInput, CopyFromScreen, WM_CLOSE) instead.
 
   Run each action as its own invocation (PowerShell tool state does not persist between
-  calls) - the target window is re-resolved every time via a PID file + title search.
+  calls) - the target window is re-resolved every time via PID metadata + title search. Use
+  -StrictPid for verification so a missing or stale PID identity can never fall back by title.
 
   Examples:
     powershell -File AppDriver.ps1 -Action Build
@@ -31,6 +32,10 @@ param(
   [string]$Text,
   [int]$TimeoutSec = 30,
   [switch]$Force,
+  [switch]$StrictPid,
+  [switch]$Json,
+  [string]$ExecutablePath,
+  [switch]$TestFailAfterSpawn,
   [int]$Lines = 60
 )
 
@@ -86,6 +91,7 @@ namespace Native {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT point);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
@@ -146,15 +152,58 @@ namespace Native {
 # manifest doesn't declare DPI awareness, so mismatches only bite if Windows is scaling).
 [Native.Win32]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
 
+function Write-TrackedProcessMetadata([System.Diagnostics.Process]$proc, [string]$path) {
+  [PSCustomObject]@{
+    ProcessId = $proc.Id
+    ExecutablePath = [System.IO.Path]::GetFullPath($path)
+    StartTimeUtc = $proc.StartTime.ToUniversalTime().ToString('o')
+  } | ConvertTo-Json -Compress | Set-Content -LiteralPath $PidFile -Encoding UTF8
+}
+
+function Get-TrackedProcess {
+  if (-not (Test-Path -LiteralPath $PidFile -PathType Leaf)) {
+    if ($StrictPid) { throw "Strict PID mode requires process metadata at $PidFile." }
+    return $null
+  }
+
+  $content = (Get-Content -Raw -LiteralPath $PidFile).Trim()
+  $metadata = $null
+  try {
+    $metadata = $content | ConvertFrom-Json
+    $procId = [int]$metadata.ProcessId
+  } catch {
+    if ($StrictPid) { throw 'Strict PID mode requires JSON process metadata, not a legacy PID.' }
+    $procId = [int]$content
+  }
+
+  $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+  if ($null -eq $proc) {
+    if ($StrictPid) { throw "Strict PID target process $procId is no longer running." }
+    return $null
+  }
+  if ($null -eq $metadata) { return $proc }
+
+  $actualPath = [System.IO.Path]::GetFullPath($proc.Path)
+  $expectedPath = [System.IO.Path]::GetFullPath([string]$metadata.ExecutablePath)
+  if (-not $actualPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Tracked PID $procId executable mismatch: expected '$expectedPath', got '$actualPath'."
+  }
+  $actualStartTime = $proc.StartTime.ToUniversalTime().ToString('o')
+  if ($actualStartTime -ne [string]$metadata.StartTimeUtc) {
+    throw "Tracked PID $procId start-time mismatch. The PID may have been reused."
+  }
+  return $proc
+}
+
 function Get-TargetWindow {
   $hWnd = [IntPtr]::Zero
-  if (Test-Path $PidFile) {
-    $procId = Get-Content $PidFile -ErrorAction SilentlyContinue
-    $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
-    if ($proc) {
-      $proc.Refresh()
-      if ($proc.MainWindowHandle -ne [IntPtr]::Zero) { $hWnd = $proc.MainWindowHandle }
-    }
+  $proc = Get-TrackedProcess
+  if ($null -ne $proc) {
+    $proc.Refresh()
+    if ($proc.MainWindowHandle -ne [IntPtr]::Zero) { $hWnd = $proc.MainWindowHandle }
+  }
+  if ($StrictPid -and $hWnd -eq [IntPtr]::Zero) {
+    throw "Strict PID target process $($proc.Id) has no visible main window."
   }
   if ($hWnd -eq [IntPtr]::Zero) {
     $matches = [Native.Win32]::FindWindowsByTitle($WindowTitle)
@@ -240,33 +289,63 @@ switch ($Action) {
   }
 
   'Launch' {
-    $repo = Find-RepoRoot
-    $binRoot = Join-Path $repo "OpenRCT3\bin\$Configuration"
-    $exe = Get-ChildItem -Path $binRoot -Filter 'OpenRCT3.exe' -Recurse -ErrorAction SilentlyContinue |
-      Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $exe) { throw "OpenRCT3.exe not found under $binRoot - run Action Build first." }
-
-    # Must run with CWD = the exe's own folder: Program.windows.cs loads "nlog.config" via a
-    # path relative to the working directory, not the assembly location.
-    $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
-    Set-Content -Path $PidFile -Value $proc.Id
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    do {
-      Start-Sleep -Milliseconds 250
-      $proc.Refresh()
-    } while ($proc.MainWindowHandle -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
-
-    if ($proc.MainWindowHandle -eq [IntPtr]::Zero) {
-      throw "Window did not appear within $TimeoutSec s (process id $($proc.Id) still running: $(-not $proc.HasExited))"
+    if ((-not [string]::IsNullOrWhiteSpace($ExecutablePath) -or $TestFailAfterSpawn) -and
+        $env:OPENRCT3_DRIVER_SELF_TEST -ne '1') {
+      throw 'ExecutablePath and TestFailAfterSpawn are available only to the isolated driver self-test.'
     }
-    $rect = Get-WindowRect $proc.MainWindowHandle
-    [PSCustomObject]@{
-      ProcessId = $proc.Id
-      WindowHandle = $proc.MainWindowHandle
-      Title = $proc.MainWindowTitle
-      ScreenRect = "$($rect.Left),$($rect.Top) - $($rect.Right),$($rect.Bottom)"
-    } | Format-List
+
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
+      $repo = Find-RepoRoot
+      $binRoot = Join-Path $repo "OpenRCT3\bin\$Configuration"
+      $exe = Get-ChildItem -Path $binRoot -Filter 'OpenRCT3.exe' -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+      if (-not $exe) { throw "OpenRCT3.exe not found under $binRoot - run Action Build first." }
+    } else {
+      $exe = Get-Item -LiteralPath $ExecutablePath
+    }
+
+    $proc = $null
+    try {
+      # Must run with CWD = the exe's own folder: Program.windows.cs loads "nlog.config" via a
+      # path relative to the working directory, not the assembly location.
+      $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
+      Write-TrackedProcessMetadata $proc $exe.FullName
+      if ($TestFailAfterSpawn) { throw 'Synthetic post-spawn launch failure.' }
+
+      $deadline = (Get-Date).AddSeconds($TimeoutSec)
+      do {
+        Start-Sleep -Milliseconds 250
+        $proc.Refresh()
+        if ($proc.HasExited) {
+          throw "Process $($proc.Id) exited before a window appeared."
+        }
+      } while ($proc.MainWindowHandle -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
+
+      if ($proc.MainWindowHandle -eq [IntPtr]::Zero) {
+        throw "Window did not appear within $TimeoutSec s (process id $($proc.Id) still running: $(-not $proc.HasExited))"
+      }
+      $rect = Get-WindowRect $proc.MainWindowHandle
+      $launchInfo = [PSCustomObject]@{
+        ProcessId = $proc.Id
+        ExecutablePath = [System.IO.Path]::GetFullPath($exe.FullName)
+        StartTimeUtc = $proc.StartTime.ToUniversalTime().ToString('o')
+        WindowHandle = [long]$proc.MainWindowHandle
+        Title = $proc.MainWindowTitle
+        ScreenRect = "$($rect.Left),$($rect.Top) - $($rect.Right),$($rect.Bottom)"
+      }
+      if ($Json) { $launchInfo | ConvertTo-Json -Compress } else { $launchInfo | Format-List }
+    } catch {
+      $launchError = $_
+      if ($null -ne $proc -and -not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        $proc.WaitForExit(5000) | Out-Null
+      }
+      Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
+      if ($null -ne $proc -and -not $proc.HasExited) {
+        throw "Launch failed and candidate process $($proc.Id) could not be terminated. Original failure: $($launchError.Exception.Message)"
+      }
+      throw $launchError
+    }
   }
 
   'Info' {
@@ -276,14 +355,20 @@ switch ($Action) {
     $rect = Get-WindowRect $hWnd
     $client = New-Object Native.Win32+RECT
     [Native.Win32]::GetClientRect($hWnd, [ref]$client) | Out-Null
-    [PSCustomObject]@{
-      WindowHandle = $hWnd
+    $proc = Get-Process -Id $procId
+    $info = [PSCustomObject]@{
+      WindowHandle = [long]$hWnd
       ProcessId = $procId
+      ExecutablePath = [System.IO.Path]::GetFullPath($proc.Path)
+      StartTimeUtc = $proc.StartTime.ToUniversalTime().ToString('o')
       IsMinimized = [Native.Win32]::IsIconic($hWnd)
       IsForeground = ([Native.Win32]::GetForegroundWindow() -eq $hWnd)
+      Dpi = [Native.Win32]::GetDpiForWindow($hWnd)
       ScreenRect = "$($rect.Left),$($rect.Top) - $($rect.Right),$($rect.Bottom)"
-      ClientSize = "$($client.Right - $client.Left) x $($client.Bottom - $client.Top)"
-    } | Format-List
+      ClientWidth = $client.Right - $client.Left
+      ClientHeight = $client.Bottom - $client.Top
+    }
+    if ($Json) { $info | ConvertTo-Json -Compress } else { $info | Format-List }
   }
 
   'Screenshot' {
@@ -347,9 +432,22 @@ switch ($Action) {
   }
 
   'Close' {
+    $trackedProcess = Get-TrackedProcess
+    if ($StrictPid -and $Force) {
+      Stop-Process -Id $trackedProcess.Id -Force
+      $trackedProcess.WaitForExit(5000) | Out-Null
+      if (-not $trackedProcess.HasExited) {
+        throw "Strict PID process $($trackedProcess.Id) is still running after forced Close."
+      }
+      Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
+      return
+    }
     $hWnd = Get-TargetWindow
     [uint32]$procId = 0
     [Native.Win32]::GetWindowThreadProcessId($hWnd, [ref]$procId) | Out-Null
+    if ($StrictPid -and $trackedProcess.Id -ne $procId) {
+      throw "Strict PID window belongs to process $procId, not tracked process $($trackedProcess.Id)."
+    }
     if ($Force) {
       Stop-Process -Id $procId -Force
     } else {
@@ -362,10 +460,14 @@ switch ($Action) {
         $proc.Refresh()
       }
       if ($proc -and -not $proc.HasExited) {
-        Write-Warning "Process $procId did not exit within $TimeoutSec s after WM_CLOSE; re-run with -Force to kill it."
+        throw "Process $procId did not exit within $TimeoutSec s after WM_CLOSE; re-run with -Force to kill it."
       }
     }
-    Remove-Item $PidFile -ErrorAction SilentlyContinue
+    $remainingProcess = Get-Process -Id $procId -ErrorAction SilentlyContinue
+    if ($null -ne $remainingProcess) {
+      throw "Process $procId is still running after Close."
+    }
+    Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
   }
 
   'Logs' {

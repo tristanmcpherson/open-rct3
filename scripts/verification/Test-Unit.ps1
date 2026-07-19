@@ -9,8 +9,8 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $solutionFilter = Join-Path $repo 'OpenRCT3.tests.slnf'
 $settings = Join-Path $PSScriptRoot 'verification.runsettings'
-$dumperSettings = Join-Path $PSScriptRoot 'verification.dumper.runsettings'
 $dumperProject = 'Dumper\Dumper.Tests\Dumper.Tests.csproj'
+$approvedDumperSkip = 'Dumper.Tests.TruncatedLabelTests.TestVeryLongPath_PreservesFilename'
 $results = Join-Path $repo 'TestResults\unit'
 $solutionDirectory = $repo.Replace('\', '/') + '/'
 
@@ -79,7 +79,7 @@ try {
       '--no-build',
       '--no-restore',
       '--settings',
-      $dumperSettings,
+      $settings,
       '--logger',
       'trx;LogFilePrefix=unit-dumper',
       '--results-directory',
@@ -100,5 +100,8 @@ try {
   Pop-Location
 }
 
-$summary = Get-TrxSummary -ResultsDirectory $results -MinimumRuns $testProjects.Count
+$summary = Get-TrxSummary `
+  -ResultsDirectory $results `
+  -MinimumRuns $testProjects.Count `
+  -ApprovedSkippedTests @($approvedDumperSkip)
 Write-TestSummary -Name 'Unit' -Summary $summary

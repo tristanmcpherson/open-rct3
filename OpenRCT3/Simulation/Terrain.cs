@@ -6,6 +6,9 @@
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 using System.Collections.Generic;
 using System.Numerics;
+using System.Security.Cryptography;
+using System.Text.Json;
+using NLog;
 using OpenCobra.GDK.Assets;
 using OpenCobra.GDK.Materials;
 using OpenRCT3.Platforms;
@@ -39,6 +42,8 @@ namespace OpenRCT3.Simulation;
 /// </remarks>
 public class Terrain {
   private const string MapPathEnvironmentVariable = "OPENRCT3_MAP_PATH";
+  private const string SmokeRunIdEnvironmentVariable = "OPENRCT3_SMOKE_RUN_ID";
+  private readonly static Logger logger = LogManager.GetCurrentClassLogger();
   private static readonly string DefaultMapPath = Path.Combine(
     "Campaigns",
     "Base",
@@ -143,6 +148,16 @@ public class Terrain {
       : Path.Combine(installPath, selectedMapPath);
 
     var data = DatTerrainReader.Read(resolvedMapPath);
+    if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(SmokeRunIdEnvironmentVariable))) {
+      var loadedMapPath = Path.GetFullPath(resolvedMapPath);
+      using var loadedMap = File.OpenRead(loadedMapPath);
+      var loadedMapSha256 = Convert.ToHexString(SHA256.HashData(loadedMap));
+      var loadedMapIdentity = JsonSerializer.Serialize(new {
+        path = loadedMapPath,
+        sha256 = loadedMapSha256
+      });
+      logger.Info($"Native smoke loaded map {loadedMapIdentity}");
+    }
     var terrain = FromData(data);
 
     // Load textures from terrain/RCT3/Terrain_RCT3.common.ovl

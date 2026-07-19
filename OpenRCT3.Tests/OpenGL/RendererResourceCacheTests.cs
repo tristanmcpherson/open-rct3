@@ -8,6 +8,14 @@ namespace OpenRCT3.Tests.OpenGL;
 
 [TestFixture]
 public class RendererResourceCacheTests {
+  [TestCase(State.Uninitialized, false)]
+  [TestCase(State.Ready, true)]
+  [TestCase(State.Disposed, false)]
+  public void CanRender_DependsOnRendererReadinessNotGameLoopState(
+    State state,
+    bool expected
+  ) => Assert.That(Renderer.CanRender(state), Is.EqualTo(expected));
+
   [Test]
   public void GetOrAdd_CreatesEquivalentResourceOnce() {
     using var cache = new ResourceCache<string, uint>(_ => { });

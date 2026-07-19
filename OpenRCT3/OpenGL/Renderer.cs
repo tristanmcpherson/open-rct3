@@ -47,11 +47,16 @@ public class Renderer : ThreadAffine, IRenderer {
   public int MsaaSamples { get; } = 0;
 
   public void Initialize() => Invoke(() => {
+    context.MakeCurrent();
+    Debug.Assert(context.IsCurrent);
     gl.HookupDebugCallback();
 
     var clearColor = ClearColor.ToGl();
     gl.ClearColor(clearColor.X, clearColor.Y, clearColor.Z, clearColor.W);
     gl.Enable(EnableCap.DepthTest);
+    gl.Viewport(0, 0, FramebufferSize.Width, FramebufferSize.Height);
+    gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+    context.SwapBuffers();
 
     State = State.Ready;
   });
@@ -86,7 +91,7 @@ public class Renderer : ThreadAffine, IRenderer {
   });
 
   public void Render(Scene scene) => Invoke(() => {
-    if (State != State.Ready || !Game.IsRunning) return;
+    if (!CanRender(State)) return;
     context.MakeCurrent();
     Debug.Assert(context.IsCurrent);
 
@@ -143,13 +148,15 @@ public class Renderer : ThreadAffine, IRenderer {
 
     RenderGui(scene.Windows);
 
-    var vsync = Game.Instance!.VSync;
+    var vsync = Game.Instance?.VSync ?? false;
     if (appliedVSync != vsync) {
       context.SwapInterval(vsync ? 1 : 0);
       appliedVSync = vsync;
     }
     context.SwapBuffers();
   });
+
+  internal static bool CanRender(State state) => state == State.Ready;
 
   private void RenderGui(List<GUI.IWindow> windows) {
     using var _ = GLState.Push();

@@ -38,20 +38,22 @@ public static class Textures {
     var bitmapTableData = textureFiles.Where(fileData => fileData.File.Type == FileType.BitmapTable);
     var otherTextureData = textureFiles.Where(fileData => fileData.File.Type != FileType.BitmapTable);
 
-    // Read bitmap tables in parallel
-    var bitmapTables = new Dictionary<string, Texture[]>();
-    Parallel.ForEach(bitmapTableData, fileData => {
+    // Read bitmap tables first
+    // Association state is order-sensitive, so tables are decoded before the parallel texture pass.
+    var bitmapTables = new Dictionary<string, Texture[]>(StringComparer.OrdinalIgnoreCase);
+    var rawBitmapTables = new List<Texture[]>();
+    foreach (var fileData in bitmapTableData) {
       try {
         var name = fileData.File.ToString();
 
         var table = TextureDecoding.ReadBitmapTable(name, ovl, fileData.File, fileData.Data);
-        bitmapTables[fileData.OvlName] = table;
-        foreach (var texture in table) bag.Add(texture);
+        bitmapTables[fileData.File.Path] = table;
+        rawBitmapTables.Add(table);
       } catch (Exception ex) {
         logger.Error(ex, "Failed to decode {FileName}", fileData.File.ToString());
         failures.Add(fileData.File);
       }
-    });
+    }
 
     // Walk every loader instance in on-disk order (Part 6 Finding 4): "btbl"/"flic" are
     // loader-category tags, not classified symbols (Finding 5), so they're invisible to ovl.Keys -
@@ -59,46 +61,65 @@ public static class Textures {
     // the next one; each "flic" loader's single extra-data chunk is a 4-byte index into whichever
     // table was current when it was encountered.
     Texture[]? currentTable = null;
+    string? currentSourcePath = null;
     var bitmapTablesByFlicAddress = new Dictionary<uint, Texture[]>();
-    foreach (var (tag, dataAddress) in ovl.LoaderEntriesInOrder) {
-      switch (tag) {
+    foreach (var entry in ovl.LoaderEntriesInOrder) {
+      if (!string.Equals(currentSourcePath, entry.SourcePath, StringComparison.OrdinalIgnoreCase)) {
+        currentSourcePath = entry.SourcePath;
+        currentTable = null;
+      }
+
+      switch (entry.Tag) {
         case "btbl":
           try {
-            currentTable = TextureDecoding.ReadBitmapTableAt($"{ovl.Name}:btbl@{dataAddress:X}", ovl, dataAddress);
-            foreach (var texture in currentTable) bag.Add(texture);
+            currentTable = TextureDecoding.ReadBitmapTableAt(
+              $"{ovl.Name}:btbl@{entry.DataAddress:X}", ovl, entry.DataAddress);
+            rawBitmapTables.Add(currentTable);
           } catch (Exception ex) {
-            logger.Error(ex, "Failed to decode bitmap table at {Address:X} in {OvlName}", dataAddress, ovl.Name);
+            logger.Error(
+              ex, "Failed to decode bitmap table at {Address:X} in {OvlName}",
+              entry.DataAddress, ovl.Name);
             currentTable = null;
           }
           break;
         case "flic" when currentTable != null:
-          bitmapTablesByFlicAddress[dataAddress] = currentTable;
+          bitmapTablesByFlicAddress[entry.DataAddress] = currentTable;
           break;
       }
     }
 
     // Read other textures in parallel
-    Parallel.ForEach(otherTextureData, fileData => {
-      try {
-        var name = fileData.File.ToString();
+    try {
+      Parallel.ForEach(otherTextureData, fileData => {
+        try {
+          var name = fileData.File.ToString();
 
-        // ReSharper disable once ConvertIfStatementToSwitchStatement
-        if (fileData.File.Type == FileType.Texture) {
-          if (!ovl.TryGetDataPointer(fileData.File, out var texAddress))
-            throw new InvalidOperationException($"Failed to resolve data pointer for {name}");
-          var texture = TextureDecoding.ReadTexture(name, ovl, texAddress, fileData.Data, bitmapTablesByFlicAddress);
-          if (texture != null) bag.Add(texture);
-        } else if (fileData.File.Type == FileType.Flic) {
-          var bitmapTable = bitmapTables.GetValueOrDefault(fileData.OvlName);
-          if (!ovl.TryReadExtraData(fileData.File, out var chunks) || chunks.Count == 0)
-            throw new InvalidOperationException($"Failed to resolve flic data for {name}");
-          bag.Add(TextureDecoding.ReadFlic(name, chunks[0], bitmapTable));
+          // ReSharper disable once ConvertIfStatementToSwitchStatement
+          if (fileData.File.Type == FileType.Texture) {
+            if (!ovl.TryGetDataPointer(fileData.File, out var texAddress))
+              throw new InvalidOperationException($"Failed to resolve data pointer for {name}");
+            var texture = TextureDecoding.ReadTexture(
+              name, ovl, texAddress, fileData.Data, bitmapTablesByFlicAddress);
+            if (texture != null) bag.Add(texture);
+          } else if (fileData.File.Type == FileType.Flic) {
+            if (!ovl.TryGetDataPointer(fileData.File, out var flicAddress))
+              throw new InvalidOperationException($"Failed to resolve data pointer for {name}");
+            var bitmapTable = bitmapTablesByFlicAddress.GetValueOrDefault(flicAddress)
+                              ?? bitmapTables.GetValueOrDefault(fileData.File.Path);
+            if (!ovl.TryReadExtraData(fileData.File, out var chunks) || chunks.Count == 0)
+              throw new InvalidOperationException($"Failed to resolve flic data for {name}");
+            bag.Add(TextureDecoding.ReadFlic(name, chunks[0], bitmapTable));
+          }
+        } catch (Exception ex) {
+          logger.Error(ex, "Failed to decode {FileName}", fileData.File.ToString());
+          failures.Add(fileData.File);
         }
-      } catch (Exception ex) {
-        logger.Error(ex, "Failed to decode {FileName}", fileData.File.ToString());
-        failures.Add(fileData.File);
-      }
-    });
+      });
+    } finally {
+      foreach (var table in rawBitmapTables)
+      foreach (var texture in table)
+        texture.Dispose();
+    }
 
     if (!failures.IsEmpty)
       logger.Error(
@@ -108,6 +129,6 @@ public static class Textures {
         textureFiles.Length != 1 ? "s" : string.Empty
       );
 
-    return [.. bag];
+    return new TextureCollection().AddRange(bag);
   }
 }

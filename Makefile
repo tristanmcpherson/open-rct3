@@ -117,15 +117,19 @@ else
   $(info Using '$(TEST_BENCH_TFM)' to compile $(TEST_BENCH_PROJ))
 endif
 
+.PHONY: test-build
+test-build:
+	dotnet build OpenRCT3.tests.slnf -p:SolutionDir="$(CURDIR)/"
+
 .PHONY: test
-test: $(TESTS_DLL)
+test: test-build
 	deno check clients/desktop/main.ts
-	dotnet test OpenRCT3.tests.slnf --no-build /p:SolutionDir=$(CURDIR)
+	dotnet test OpenRCT3.tests.slnf --no-build --no-restore -p:SolutionDir="$(CURDIR)/"
 
 .PHONY: cover
-cover: $(TESTS_DLL)
+cover: test-build
 	dotnet test $(TESTS_PROJ) --no-build \
-	  /p:SolutionDir=$(CURDIR) \
+	  -p:SolutionDir="$(CURDIR)/" \
 	  --collect:"XPlat Code Coverage;Format=lcov" \
 	  --results-directory "$(CURDIR)/coverage"
 

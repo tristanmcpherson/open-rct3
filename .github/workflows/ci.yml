@@ -41,6 +41,8 @@ jobs:
         run: dotnet workload restore
       - name: Restore Dependencies
         run: dotnet restore
+      - name: Check Desktop Client
+        run: deno check clients/desktop/main.ts
       - name: Test
         run: dotnet test --no-restore --verbosity normal --collect:"XPlat Code Coverage"
       - name: Merge Coverage Reports

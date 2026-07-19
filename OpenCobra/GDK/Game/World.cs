@@ -58,8 +58,10 @@ public abstract class World : IWorld {
       case NotifyCollectionChangedAction.Remove:
       case NotifyCollectionChangedAction.Replace:
       case NotifyCollectionChangedAction.Reset:
-        foreach (var system in e.NewItems!.Cast<ISystem>()) system.Attach(WeakReference);
-        foreach (var system in e.OldItems!.Cast<ISystem>()) system.Stop();
+        if (e.NewItems != null)
+          foreach (var system in e.NewItems.Cast<ISystem>()) system.Attach(WeakReference);
+        if (e.OldItems != null)
+          foreach (var system in e.OldItems.Cast<ISystem>()) system.Stop();
         break;
       default: return;
     }

@@ -24,6 +24,11 @@ public record AppConfig {
   /// </summary>
   public string? InstallPath { get; set; }
   /// <summary>
+  /// Optional absolute park path, or a path relative to <see cref="InstallPath"/>. When unset,
+  /// OpenRCT3 loads the shipped blank landscape.
+  /// </summary>
+  public string? MapPath { get; set; }
+  /// <summary>
   /// Extra paths from which to search for an installation of RCT3.
   /// </summary>
   public string[]? ExtraPaths { get; init; }

@@ -15,12 +15,12 @@ namespace OpenRCT3.Simulation;
 /// Builds a renderable <see cref="Mesh"/> from a <see cref="Terrain"/>'s corner-height grid.
 /// </summary>
 /// <remarks>
-/// A solid-colored prototype: each tile emits a top face (two triangles) from its four corners, plus
+/// Each tile emits a top face (two triangles) from its four corners, plus
 /// a vertical cliff face on its South/West edges when <see cref="Terrain.IsEdgeDetached"/> reports a
 /// detached edge. Checking only South/West per tile (rather than all four) emits each interior edge's
 /// cliff face exactly once, since a tile's South edge is the same world edge as its southern
 /// neighbor's North edge. Surface painting (<see cref="TerrainCorner.SurfaceIndex"/>) isn't wired up
-/// yet — every vertex gets the same flat <paramref name="color"/>.
+/// yet — every vertex uses the Terrain_00 material and the same <paramref name="color"/> tint.
 /// </remarks>
 public static class TerrainMeshBuilder {
   public static Mesh Build(Terrain terrain, Vector4 color, string? name = "Terrain") {
@@ -50,8 +50,8 @@ public static class TerrainMeshBuilder {
       _ => throw new ArgumentOutOfRangeException(nameof(slot), slot, null),
     };
 
-    var worldX = (tileX + dx - (terrain.Width / 2f)) * Park.TileSize;
-    var worldY = (tileY + dy) * Park.TileSize;
+    var worldX = terrain.Origin.X + ((tileX + dx) * terrain.TileSize.X);
+    var worldY = terrain.Origin.Y + ((tileY + dy) * terrain.TileSize.Y);
     var worldZ = Terrain.CornerHeightToWorldZ(terrain.GetCorner(tileX, tileY, slot).Height);
     return new Vector3(worldX, worldY, worldZ);
   }
@@ -71,10 +71,10 @@ public static class TerrainMeshBuilder {
     // Two triangles, CCW when viewed from +Z: (SW, SE, NE) and (SW, NE, NW).
     var normal = Vector3.Normalize(Vector3.Cross(se - sw, ne - sw));
     var baseIndex = (uint)vertices.Count;
-    vertices.Add(new Vertex { Position = sw, Normal = normal, Color = color });
-    vertices.Add(new Vertex { Position = se, Normal = normal, Color = color });
-    vertices.Add(new Vertex { Position = ne, Normal = normal, Color = color });
-    vertices.Add(new Vertex { Position = nw, Normal = normal, Color = color });
+    vertices.Add(new Vertex { Position = sw, Normal = normal, TexCoord = new Vector2(0, 0), Color = color });
+    vertices.Add(new Vertex { Position = se, Normal = normal, TexCoord = new Vector2(1, 0), Color = color });
+    vertices.Add(new Vertex { Position = ne, Normal = normal, TexCoord = new Vector2(1, 1), Color = color });
+    vertices.Add(new Vertex { Position = nw, Normal = normal, TexCoord = new Vector2(0, 1), Color = color });
     indices.AddRange([baseIndex, baseIndex + 1, baseIndex + 2, baseIndex, baseIndex + 2, baseIndex + 3]);
   }
 
@@ -104,11 +104,22 @@ public static class TerrainMeshBuilder {
 
     // Wind so the face's outward normal points away from this tile, into the neighbor.
     var normal = Vector3.Normalize(Vector3.Cross(farTop - nearTop, nearBottom - nearTop));
+    var edgeLength = edge == Edge.South ? terrain.TileSize.X : terrain.TileSize.Y;
+    var nearHeight = Math.Abs(nearTop.Z - nearBottom.Z) / edgeLength;
+    var farHeight = Math.Abs(farTop.Z - farBottom.Z) / edgeLength;
     var baseIndex = (uint)vertices.Count;
-    vertices.Add(new Vertex { Position = nearTop, Normal = normal, Color = color });
-    vertices.Add(new Vertex { Position = farTop, Normal = normal, Color = color });
-    vertices.Add(new Vertex { Position = farBottom, Normal = normal, Color = color });
-    vertices.Add(new Vertex { Position = nearBottom, Normal = normal, Color = color });
+    vertices.Add(new Vertex {
+      Position = nearTop, Normal = normal, TexCoord = new Vector2(0, nearHeight), Color = color
+    });
+    vertices.Add(new Vertex {
+      Position = farTop, Normal = normal, TexCoord = new Vector2(1, farHeight), Color = color
+    });
+    vertices.Add(new Vertex {
+      Position = farBottom, Normal = normal, TexCoord = new Vector2(1, 0), Color = color
+    });
+    vertices.Add(new Vertex {
+      Position = nearBottom, Normal = normal, TexCoord = new Vector2(0, 0), Color = color
+    });
     indices.AddRange([baseIndex, baseIndex + 1, baseIndex + 2, baseIndex, baseIndex + 2, baseIndex + 3]);
   }
 }

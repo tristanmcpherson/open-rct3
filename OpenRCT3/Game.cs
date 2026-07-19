@@ -16,7 +16,6 @@ using OpenRCT3.OpenGL;
 using OpenRCT3.Platforms;
 using OpenRCT3.Scenario;
 using OpenRCT3.Simulation;
-using System.Drawing;
 using System.Numerics;
 using System.Threading;
 
@@ -116,13 +115,13 @@ public class Game : IGame {
     World.Load();
     logger.Trace("Game world loaded");
 
-    // Build a mesh from the loaded terrain's corner-height grid (solid-colored prototype;
-    // surface painting isn't wired up yet)
-    var grass = Color.FromArgb(79, 129, 14).ToGl();
+    // Build a mesh from the loaded terrain's corner-height grid. Surface painting isn't wired up
+    // yet, so every tile uses the decoded Terrain_00 grass texture.
     Debug.Assert(World.Terrain != null);
-    var terrainMesh = TerrainMeshBuilder.Build(World.Terrain, grass);
+    Debug.Assert(World.Terrain.GrassTexture != null);
+    var terrainMesh = TerrainMeshBuilder.Build(World.Terrain, Vector4.One);
     var ground = new Model(terrainMesh) {
-      Material = new Flat()
+      Material = new Textured { AlbedoTexture = World.Terrain.GrassTexture }
     };
     Scene.Models.Add(ground);
     logger.Trace("Added terrain mesh");
@@ -249,7 +248,10 @@ public class Game : IGame {
   }
 
   public void Dispose() {
-    // TODO: World.Dispose();
+    // Dispose GPU-backed scene resources while the graphics context is still alive, then release
+    // the world-owned texture reference and simulation systems.
+    Scene.Dispose();
+    World.Dispose();
     GC.SuppressFinalize(this);
     Instance = null;
   }

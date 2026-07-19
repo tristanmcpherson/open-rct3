@@ -7,6 +7,7 @@
 using NUnit.Framework;
 using OpenCobra.GDK.Assets;
 using OpenCobra.OVL;
+using OpenCobra.OVL.Files;
 using OVL.Tests;
 using System;
 using System.IO;
@@ -25,8 +26,27 @@ public class IngestionTests {
     if (!File.Exists(terrainOvl))
       Assert.Fail("Terrain OVL not found at: " + terrainOvl);
 
-    // FIXME: This is a placeholder for actual texture names in the terrain OVL
-    // Once we identify the texture names, we can verify they load correctly
-    Assert.Pass("Terrain OVL exists. Ingestion logic to be verified once texture names are identified.");
+    // This now verifies the actual texture names identified in the terrain OVL instead of only
+    // proving the archive exists.
+    using var ovl = Ovl.Load(terrainOvl);
+    var entries = ovl.Keys.Where(entry => entry.Type == FileType.Texture).ToList();
+    using var textures = Textures.Extract(ovl);
+
+    TestContext.Out.WriteLine(
+      $"Terrain_RCT3: {entries.Count} Texture entries, {textures.Count} decoded: " +
+      string.Join(", ", textures.Names));
+    Assert.That(entries, Has.Count.EqualTo(32));
+    Assert.That(textures.Names, Does.Contain("Terrain_00.tex"));
+    var decodedGrass = textures["Terrain_00.tex"];
+    Assert.That(decodedGrass.MipLevels[0], Is.Not.Null);
+    TestContext.Out.WriteLine(
+      $"Terrain_00: {decodedGrass.Format} {decodedGrass.Width}x{decodedGrass.Height}, " +
+      $"sample={decodedGrass.MipLevels[0][0, 0]}");
+
+    using var grass = TextureLoader.LoadTexture(terrainOvl, "Terrain_00");
+    Assert.That(grass.Name, Is.EqualTo("Terrain_00"));
+    Assert.That(grass.Width, Is.GreaterThan(0));
+    Assert.That(grass.Height, Is.GreaterThan(0));
+    Assert.That(grass.Pixels, Is.Not.Null);
   }
 }

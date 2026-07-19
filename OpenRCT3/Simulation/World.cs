@@ -24,14 +24,17 @@ public class World : GDK.Game.World {
   // asynchronously (see the TODO in Game.cs) instead of blocking here.
   public override void Load() {
     var measurement = Progress.MeasureTasks([
-      new(() => Park = new Park(), "Loading park"),
-      new(() => Terrain = Terrain.Load(), "Loading terrain"),
+      new(() => {
+        var terrain = Terrain.Load();
+        Terrain = terrain;
+        Park = new Park(terrain);
+      }, "Loading park terrain"),
     ]);
     Progress = measurement.Progress;
     measurement.Task.Wait();
   }
 
-  protected virtual void Dispose(bool disposing) {
+  protected override void Dispose(bool disposing) {
     if (disposing) {
       Terrain?.GrassTexture?.Dispose();
     }

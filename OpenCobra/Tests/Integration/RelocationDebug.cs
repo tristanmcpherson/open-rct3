@@ -63,8 +63,8 @@ public class RelocationDebug {
         var flicAddresses = new List<uint>();
         foreach (var entry in loaderEntries) {
           var entryType = entry.GetType();
-          var tag = (string)entryType.GetField("Item1")!.GetValue(entry)!;
-          var addr = (uint)entryType.GetField("Item2")!.GetValue(entry)!;
+          var tag = (string)entryType.GetProperty("Tag")!.GetValue(entry)!;
+          var addr = (uint)entryType.GetProperty("DataAddress")!.GetValue(entry)!;
           if (tag == "btbl") btblCount++;
           if (tag == "flic") { flicCount++; flicAddresses.Add(addr); }
         }
@@ -75,11 +75,17 @@ public class RelocationDebug {
         var textureDecodingType = ovl.GetType().Assembly.GetType("OpenCobra.OVL.Files.TextureDecoding")!;
         var readBitmapTableAtMethod = textureDecodingType.GetMethod("ReadBitmapTableAt", BindingFlags.NonPublic | BindingFlags.Static)!;
         object? currentTable = null;
+        string? currentSourcePath = null;
         var bitmapTablesByFlicAddress = new Dictionary<uint, object>();
         foreach (var entry in loaderEntries) {
           var entryType = entry.GetType();
-          var tag = (string)entryType.GetField("Item1")!.GetValue(entry)!;
-          var addr = (uint)entryType.GetField("Item2")!.GetValue(entry)!;
+          var tag = (string)entryType.GetProperty("Tag")!.GetValue(entry)!;
+          var addr = (uint)entryType.GetProperty("DataAddress")!.GetValue(entry)!;
+          var sourcePath = (string)entryType.GetProperty("SourcePath")!.GetValue(entry)!;
+          if (!string.Equals(currentSourcePath, sourcePath, StringComparison.OrdinalIgnoreCase)) {
+            currentSourcePath = sourcePath;
+            currentTable = null;
+          }
           if (tag == "btbl") {
             try {
               currentTable = readBitmapTableAtMethod.Invoke(null, [$"btbl@{addr:X}", ovl, addr]);

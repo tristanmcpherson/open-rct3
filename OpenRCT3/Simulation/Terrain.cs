@@ -5,9 +5,11 @@
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 using System.Collections.Generic;
+using System.Numerics;
+using OpenCobra.GDK.Assets;
 using OpenCobra.GDK.Materials;
-using OpenCobra.OVL;
 using OpenRCT3.Platforms;
+using OpenRCT3.Serialization;
 
 namespace OpenRCT3.Simulation;
 
@@ -24,7 +26,8 @@ namespace OpenRCT3.Simulation;
 /// </list>
 /// </para>
 /// <para>
-/// The world origin (0, 0, 0) is located at the middle of the South edge of the park.
+/// Synthetic terrain places the world origin at the middle of its South edge. Loaded terrain keeps
+/// the XY origin stored in the RCT3 map.
 /// </para>
 /// <para>
 /// Each tile owns four <see cref="TerrainCorner"/> records (one per corner) stored in a flat array
@@ -35,6 +38,13 @@ namespace OpenRCT3.Simulation;
 /// </para>
 /// </remarks>
 public class Terrain {
+  private const string MapPathEnvironmentVariable = "OPENRCT3_MAP_PATH";
+  private static readonly string DefaultMapPath = Path.Combine(
+    "Campaigns",
+    "Base",
+    "BlankLandscape.dat"
+  );
+
   /// <summary>
   /// The height of one corner step, in meters. One corner-height unit = 1 cm; the freeform sculpting
   /// tools in <c>.agents/plans/features/terrain/tools.md</c> are continuous drag-based, so the
@@ -53,6 +63,18 @@ public class Terrain {
   /// <summary>The height of the terrain grid in tiles, including the OOB border.</summary>
   public int Height { get; }
 
+  /// <summary>The world-space XY position of the terrain grid's south-west corner.</summary>
+  public Vector2 Origin { get; }
+
+  /// <summary>The world-space XY size of one terrain tile.</summary>
+  public Vector2 TileSize { get; }
+
+  /// <summary>The world-space XY bounds of the full OOB-inclusive terrain grid.</summary>
+  public (Vector2 Min, Vector2 Max) Bounds => (
+    Origin,
+    Origin + new Vector2(Width * TileSize.X, Height * TileSize.Y)
+  );
+
   public Texture? GrassTexture { get; private set; }
 
   private readonly TerrainCorner[] _corners;
@@ -66,10 +88,31 @@ public class Terrain {
   /// <param name="initialHeight">
   /// The starting corner height in <see cref="HeightStep"/> units applied to every corner.
   /// </param>
-  public Terrain(int width = Park.DefaultMapSize, int height = Park.DefaultMapSize, ushort initialHeight = 0) {
-    Width = width + (Park.OutOfBoundsBorder * 2);
-    Height = height + (Park.OutOfBoundsBorder * 2);
-    _corners = new TerrainCorner[Width * Height * CornersPerTile];
+  public Terrain(int width = Park.DefaultMapSize, int height = Park.DefaultMapSize, int initialHeight = 0)
+    : this(width, height, initialHeight, dimensionsIncludeBorder: false) { }
+
+  private Terrain(
+    int width,
+    int height,
+    int initialHeight,
+    bool dimensionsIncludeBorder,
+    Vector2? origin = null,
+    Vector2? tileSize = null) {
+    if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
+    if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
+
+    Width = dimensionsIncludeBorder ? width : checked(width + (Park.OutOfBoundsBorder * 2));
+    Height = dimensionsIncludeBorder ? height : checked(height + (Park.OutOfBoundsBorder * 2));
+    TileSize = tileSize ?? new Vector2(Park.TileSize, Park.TileSize);
+    Origin = origin ?? new Vector2(-(Width / 2f) * TileSize.X, 0f);
+    if (!float.IsFinite(TileSize.X) || TileSize.X <= 0f)
+      throw new ArgumentOutOfRangeException(nameof(tileSize));
+    if (!float.IsFinite(TileSize.Y) || TileSize.Y <= 0f)
+      throw new ArgumentOutOfRangeException(nameof(tileSize));
+    if (!float.IsFinite(Origin.X) || !float.IsFinite(Origin.Y))
+      throw new ArgumentOutOfRangeException(nameof(origin));
+    var cornerCount = checked(Width * Height * CornersPerTile);
+    _corners = new TerrainCorner[cornerCount];
     for (var i = 0; i < _corners.Length; i++)
       _corners[i] = new TerrainCorner { Height = initialHeight };
   }
@@ -77,15 +120,81 @@ public class Terrain {
   /// <summary>
   /// Loads the terrain data and textures.
   /// </summary>
+  /// <param name="mapPath">
+  /// Optional absolute path, or path relative to the configured RCT3 installation. The
+  /// <c>OPENRCT3_MAP_PATH</c> environment variable, app config, and blank landscape are used in that
+  /// order when this is omitted.
+  /// </param>
   /// <returns>A loaded <see cref="Terrain"/> instance.</returns>
-  public static Terrain Load() {
+  public static Terrain Load(string? mapPath = null) {
     var config = AppConfig.Instance;
     Debug.Assert(config.InstallPath != null);
+    var installPath = config.InstallPath
+      ?? throw new InvalidOperationException("RCT3 installation path is not configured.");
 
-    var terrain = new Terrain();
+    var configuredMapPath = mapPath;
+    if (string.IsNullOrWhiteSpace(configuredMapPath))
+      configuredMapPath = Environment.GetEnvironmentVariable(MapPathEnvironmentVariable);
+    if (string.IsNullOrWhiteSpace(configuredMapPath)) configuredMapPath = config.MapPath;
+    if (string.IsNullOrWhiteSpace(configuredMapPath)) configuredMapPath = DefaultMapPath;
+    var selectedMapPath = configuredMapPath ?? DefaultMapPath;
+    var resolvedMapPath = Path.IsPathRooted(selectedMapPath)
+      ? selectedMapPath
+      : Path.Combine(installPath, selectedMapPath);
+
+    var data = DatTerrainReader.Read(resolvedMapPath);
+    var terrain = FromData(data);
+
     // Load textures from terrain/RCT3/Terrain_RCT3.common.ovl
-    var terrainOvl = Path.Combine(config.InstallPath, "terrain", "RCT3", "Terrain_RCT3.common.ovl");
-    var ovl = Ovl.Load(terrainOvl);
+    var terrainOvl = Path.Combine(installPath, "terrain", "RCT3", "Terrain_RCT3.common.ovl");
+    terrain.GrassTexture = TextureLoader.LoadTexture(terrainOvl, "Terrain_00");
+
+    return terrain;
+  }
+
+  /// <summary>Builds editable simulation terrain from decoded RCT3 terrain data.</summary>
+  internal static Terrain FromData(DatTerrainData data) {
+    var expectedCellCount = checked(data.Width * data.Height);
+    if (data.Cells.Count != expectedCellCount)
+      throw new InvalidDataException("Decoded terrain cell count does not match its dimensions.");
+
+    var terrain = new Terrain(
+      data.Width,
+      data.Height,
+      0,
+      dimensionsIncludeBorder: true,
+      origin: new Vector2(data.OriginX, data.OriginY),
+      tileSize: new Vector2(data.TileSizeX, data.TileSizeY)
+    );
+    for (var cellIndex = 0; cellIndex < data.Cells.Count; cellIndex++) {
+      var tileX = cellIndex % data.Width;
+      var tileY = cellIndex / data.Width;
+      var cell = data.Cells[cellIndex];
+      terrain.SetCorner(
+        tileX,
+        tileY,
+        TerrainCornerSlot.SouthWest,
+        new TerrainCorner(DecodeCornerHeight(cell.SouthWestHeight), cell.SurfaceIndex, cell.CliffIndex)
+      );
+      terrain.SetCorner(
+        tileX,
+        tileY,
+        TerrainCornerSlot.SouthEast,
+        new TerrainCorner(DecodeCornerHeight(cell.SouthEastHeight), cell.SurfaceIndex, cell.CliffIndex)
+      );
+      terrain.SetCorner(
+        tileX,
+        tileY,
+        TerrainCornerSlot.NorthWest,
+        new TerrainCorner(DecodeCornerHeight(cell.NorthWestHeight), cell.SurfaceIndex, cell.CliffIndex)
+      );
+      terrain.SetCorner(
+        tileX,
+        tileY,
+        TerrainCornerSlot.NorthEast,
+        new TerrainCorner(DecodeCornerHeight(cell.NorthEastHeight), cell.SurfaceIndex, cell.CliffIndex)
+      );
+    }
 
     return terrain;
   }
@@ -175,23 +284,23 @@ public class Terrain {
   /// <param name="maxHeightQuery">
   /// Optional per-corner ceiling. Receives the (tileX, tileY, slot) for each shared-corner copy and
   /// returns the maximum allowed height; if the cap is below the requested raise, the raise is
-  /// clamped. <c>null</c> (default) means unconstrained (<see cref="ushort.MaxValue"/>).
+  /// clamped. <c>null</c> (default) means unconstrained (<see cref="int.MaxValue"/>).
   /// </param>
   public void RaiseCorner(
     int tileX,
     int tileY,
     TerrainCornerSlot slot,
     int delta,
-    Func<int, int, TerrainCornerSlot, ushort>? maxHeightQuery = null) {
+    Func<int, int, TerrainCornerSlot, int>? maxHeightQuery = null) {
     if (delta == 0) return;
     if (!HasTile(tileX, tileY)) return;
 
     var current = GetCorner(tileX, tileY, slot);
-    var ceiling = maxHeightQuery?.Invoke(tileX, tileY, slot) ?? ushort.MaxValue;
-    var newHeight = ClampHeight((int)current.Height + delta, upper: ceiling);
+    var ceiling = maxHeightQuery?.Invoke(tileX, tileY, slot) ?? int.MaxValue;
+    var newHeight = ClampHeight(Convert.ToInt64(current.Height) + delta, upper: ceiling);
 
     foreach (var (nx, ny, neighborSlot) in EnumerateSharedCorners(tileX, tileY, slot)) {
-      var neighborCeiling = maxHeightQuery?.Invoke(nx, ny, neighborSlot) ?? ushort.MaxValue;
+      var neighborCeiling = maxHeightQuery?.Invoke(nx, ny, neighborSlot) ?? int.MaxValue;
       var clamped = ClampHeight(newHeight, upper: neighborCeiling);
       var neighborCorner = GetCorner(nx, ny, neighborSlot);
       neighborCorner.Height = clamped;
@@ -208,16 +317,16 @@ public class Terrain {
     int tileY,
     TerrainCornerSlot slot,
     int delta,
-    Func<int, int, TerrainCornerSlot, ushort>? minHeightQuery = null) {
+    Func<int, int, TerrainCornerSlot, int>? minHeightQuery = null) {
     if (delta == 0) return;
     if (!HasTile(tileX, tileY)) return;
 
     var current = GetCorner(tileX, tileY, slot);
-    var floor = minHeightQuery?.Invoke(tileX, tileY, slot) ?? ushort.MinValue;
-    var newHeight = ClampHeight((int)current.Height - delta, lower: floor);
+    var floor = minHeightQuery?.Invoke(tileX, tileY, slot) ?? int.MinValue;
+    var newHeight = ClampHeight(Convert.ToInt64(current.Height) - delta, lower: floor);
 
     foreach (var (nx, ny, neighborSlot) in EnumerateSharedCorners(tileX, tileY, slot)) {
-      var neighborFloor = minHeightQuery?.Invoke(nx, ny, neighborSlot) ?? ushort.MinValue;
+      var neighborFloor = minHeightQuery?.Invoke(nx, ny, neighborSlot) ?? int.MinValue;
       var clamped = ClampHeight(newHeight, lower: neighborFloor);
       var neighborCorner = GetCorner(nx, ny, neighborSlot);
       neighborCorner.Height = clamped;
@@ -233,7 +342,7 @@ public class Terrain {
   /// detaches every shared edge at that corner. The edge re-joins automatically if a later
   /// raise/lower brings the matching neighbor corner back to the same height.
   /// </summary>
-  public void SetCornerHeight(int tileX, int tileY, TerrainCornerSlot slot, ushort height) {
+  public void SetCornerHeight(int tileX, int tileY, TerrainCornerSlot slot, int height) {
     if (!HasTile(tileX, tileY)) return;
     var corner = GetCorner(tileX, tileY, slot);
     corner.Height = height;
@@ -270,16 +379,34 @@ public class Terrain {
   /// North-edge pair is (NorthWest, NorthEast), and SouthWest/NorthWest share a world position, as do
   /// SouthEast/NorthEast).
   /// </remarks>
-  public (ushort c1, ushort c2) GetEdgeCornerHeights(int tileX, int tileY, Edge edge) {
+  public (int c1, int c2) GetEdgeCornerHeights(int tileX, int tileY, Edge edge) {
     var (c1, c2, _, _) = GetEdgeCornerPair(edge);
     return (GetCorner(tileX, tileY, c1).Height, GetCorner(tileX, tileY, c2).Height);
   }
 
   /// <summary>Converts a corner-height count to world-space Z, in meters.</summary>
-  public static float CornerHeightToWorldZ(ushort cornerHeight) => cornerHeight * HeightStep;
+  public static float CornerHeightToWorldZ(int cornerHeight) => cornerHeight * HeightStep;
 
-  private static ushort ClampHeight(int value, int lower = ushort.MinValue, int upper = ushort.MaxValue)
-    => (ushort)Math.Max(lower, Math.Min(upper, value));
+  /// <summary>Converts a world-space Z value in meters to signed corner-height units.</summary>
+  public static int WorldZToCornerHeight(float worldZ) {
+    if (!float.IsFinite(worldZ)) throw new ArgumentOutOfRangeException(nameof(worldZ));
+    var scaled = Convert.ToDouble(worldZ) / HeightStep;
+    if (scaled < int.MinValue || scaled > int.MaxValue)
+      throw new ArgumentOutOfRangeException(nameof(worldZ));
+    return Convert.ToInt32(Math.Round(scaled, MidpointRounding.AwayFromZero));
+  }
+
+  private static int DecodeCornerHeight(float worldZ) {
+    try {
+      return WorldZToCornerHeight(worldZ);
+    }
+    catch (ArgumentOutOfRangeException exception) {
+      throw new InvalidDataException("Decoded terrain height exceeds the simulation range.", exception);
+    }
+  }
+
+  private static int ClampHeight(long value, int lower = int.MinValue, int upper = int.MaxValue)
+    => Convert.ToInt32(Math.Max(lower, Math.Min(upper, value)));
 
   private static (TerrainCornerSlot c1, TerrainCornerSlot c2, int dx, int dy) GetEdgeCornerPair(Edge edge) => edge switch {
     Edge.South => (TerrainCornerSlot.SouthWest, TerrainCornerSlot.SouthEast, 0, -1),

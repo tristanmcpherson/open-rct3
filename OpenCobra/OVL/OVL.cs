@@ -23,6 +23,7 @@ public record OvlFile(string Name, FileType Type, string Path) {
 public record OvlEntry(uint Offset, uint Size);
 
 internal record LoaderHeader(string Loader, string Name, uint Type, string Tag, uint SymbolCount);
+internal record OvlLoaderEntry(string Tag, uint DataAddress, string SourcePath);
 
 internal class FileBlock {
   /// <summary>
@@ -73,11 +74,11 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   // there are only trustworthy as a real pointer if the address is listed here - unlisted locations
   // are unpatched placeholder bytes (e.g. Tex fields for textureless entries like render targets).
   private readonly Dictionary<uint, uint> relocations = [];
-  // Ordered (per file, in on-disk LoaderStruct order) (Tag, DataAddress) pairs - see Part 6
+  // Ordered (per file, in on-disk LoaderStruct order) loader entries - see Part 6
   // Finding 4: "btbl"/"flic" are loader-category tags only, never discoverable as classified
   // symbols, so callers that need every loader instance (not just symbol-backed resources) must
-  // walk this instead of ovl.Keys.
-  private readonly List<(string Tag, uint DataAddress)> loaderEntriesInOrder = [];
+  // walk this instead of ovl.Keys. SourcePath keeps common and unique table state independent.
+  private readonly List<OvlLoaderEntry> loaderEntriesInOrder = [];
   private uint relocationOffset;
   private bool disposed = false;
 
@@ -87,7 +88,7 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   /// <see cref="Keys"/>, this includes loader categories (like "btbl"/"flic") that are never
   /// classified as their own symbol - see Part 6 Finding 4 of the texture-decoding bug doc.
   /// </summary>
-  internal IReadOnlyList<(string Tag, uint DataAddress)> LoaderEntriesInOrder => loaderEntriesInOrder;
+  internal IReadOnlyList<OvlLoaderEntry> LoaderEntriesInOrder => loaderEntriesInOrder;
 
   /// <summary>Reads <paramref name="length"/> raw bytes at a relocation-resolved data address.</summary>
   public bool TryReadBytes(uint address, int length, [MaybeNullWhen(false)] out byte[] data) {
@@ -203,8 +204,7 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   /// <returns>True if any extra data chunks were found for this loader.</returns>
   public bool TryReadExtraData(uint dataPtr, [MaybeNullWhen(false)] out IReadOnlyList<byte[]> chunks) {
     foreach (var extraData in allExtraData.Where(extraData => extraData.ContainsKey(dataPtr))) {
-      extraData.TryGetValue(dataPtr, out var found);
-      chunks = found;
+      chunks = extraData[dataPtr];
       return true;
     }
 
@@ -361,7 +361,8 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
 
       // LoaderType is a direct, on-disk-position index into loaderHeaders (Part 6 Finding 1).
       if (loaderType < loaderHeaders.Count)
-        loaderEntriesInOrder.Add((loaderHeaders[Convert.ToInt32(loaderType)].Tag, dataPtr));
+        loaderEntriesInOrder.Add(new OvlLoaderEntry(
+          loaderHeaders[Convert.ToInt32(loaderType)].Tag, dataPtr, loaderBlock.Path));
 
       for (var c = 0; c < hasExtraData; c++) {
         if (reader.BaseStream.Position + 4 > reader.BaseStream.Length) break;

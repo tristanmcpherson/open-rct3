@@ -96,6 +96,31 @@ public class Park {
   }
 
   /// <summary>
+  /// Initializes park bounds from a loaded terrain grid, excluding its out-of-bounds border.
+  /// </summary>
+  public Park(Terrain terrain) {
+    if (terrain.Width <= OutOfBoundsBorder * 2 || terrain.Height <= OutOfBoundsBorder * 2)
+      throw new ArgumentException("Terrain is too small to contain the park border.", nameof(terrain));
+
+    var border = new Vector2(
+      OutOfBoundsBorder * terrain.TileSize.X,
+      OutOfBoundsBorder * terrain.TileSize.Y
+    );
+    BuildableBounds = (
+      terrain.Origin + border,
+      terrain.Origin + new Vector2(
+        (terrain.Width - OutOfBoundsBorder) * terrain.TileSize.X,
+        (terrain.Height - OutOfBoundsBorder) * terrain.TileSize.Y
+      )
+    );
+    EntrancePosition = new Vector3(
+      (BuildableBounds.Min.X + BuildableBounds.Max.X) / 2f,
+      BuildableBounds.Min.Y,
+      0f
+    );
+  }
+
+  /// <summary>
   /// Attempts to place <paramref name="tile"/> at <c>(tileX, tileY)</c>.
   /// </summary>
   /// <remarks>
@@ -119,13 +144,13 @@ public class Park {
     if (!terrain.HasTile(tileX, tileY)) return false;
 
     var corners = terrain.GetCorners(tileX, tileY);
-    var min = ushort.MaxValue;
-    var max = ushort.MinValue;
+    var min = int.MaxValue;
+    var max = int.MinValue;
     foreach (var corner in corners) {
       if (corner.Height < min) min = corner.Height;
       if (corner.Height > max) max = corner.Height;
     }
-    return max - min < AtGradePathMaxRise;
+    return Convert.ToInt64(max) - min < AtGradePathMaxRise;
   }
 
   /// <summary>
@@ -159,7 +184,10 @@ public class Park {
 
     var (thisC1, thisC2) = terrain.GetEdgeCornerHeights(tileX, tileY, edge);
     var (thatC1, thatC2) = terrain.GetEdgeCornerHeights(neighborX, neighborY, edge.Opposite());
-    var diff = Math.Max(Math.Abs(thisC1 - thatC1), Math.Abs(thisC2 - thatC2));
+    var diff = Math.Max(
+      Math.Abs(Convert.ToInt64(thisC1) - thatC1),
+      Math.Abs(Convert.ToInt64(thisC2) - thatC2)
+    );
     return diff <= AtGradePathMaxRise / 2;
   }
 
@@ -223,7 +251,7 @@ public class Park {
     int tileY,
     TerrainCornerSlot slot,
     int delta,
-    Func<int, int, TerrainCornerSlot, ushort>? maxHeightQuery = null) {
+    Func<int, int, TerrainCornerSlot, int>? maxHeightQuery = null) {
     terrain.RaiseCorner(tileX, tileY, slot, delta, maxHeightQuery);
     InvalidateWaterPoolsSharingCorner(terrain, tileX, tileY, slot);
   }
@@ -239,7 +267,7 @@ public class Park {
     int tileY,
     TerrainCornerSlot slot,
     int delta,
-    Func<int, int, TerrainCornerSlot, ushort>? minHeightQuery = null) {
+    Func<int, int, TerrainCornerSlot, int>? minHeightQuery = null) {
     terrain.LowerCorner(tileX, tileY, slot, delta, minHeightQuery);
     InvalidateWaterPoolsSharingCorner(terrain, tileX, tileY, slot);
   }
@@ -253,7 +281,7 @@ public class Park {
   /// Only the edited tile's own pool is invalidated: unlike raise/lower, this doesn't propagate to
   /// neighboring tiles, so no other tile's height actually changed.
   /// </remarks>
-  public void SetTerrainCornerHeight(Terrain terrain, int tileX, int tileY, TerrainCornerSlot slot, ushort height) {
+  public void SetTerrainCornerHeight(Terrain terrain, int tileX, int tileY, TerrainCornerSlot slot, int height) {
     terrain.SetCornerHeight(tileX, tileY, slot, height);
     InvalidateWaterPoolAt(tileX, tileY);
   }
@@ -310,7 +338,7 @@ public class Park {
   /// object's mesh can follow the terrain's slope along that edge instead of sitting at one flat
   /// height.
   /// </remarks>
-  public static (ushort Near, ushort Far) GetSceneryHeight(SceneryPlacement placement, SceneryDefinition definition, Terrain terrain) {
+  public static (int Near, int Far) GetSceneryHeight(SceneryPlacement placement, SceneryDefinition definition, Terrain terrain) {
     switch (definition.Placement) {
       case Placement.PathEdgeInner:
       case Placement.PathEdgeOuter:
@@ -320,9 +348,9 @@ public class Park {
         return (c1, c2);
       }
       default: {
-        var sum = 0;
+        var sum = 0L;
         foreach (var corner in terrain.GetCorners(placement.TileX, placement.TileY)) sum += corner.Height;
-        var average = (ushort)(sum / Terrain.CornersPerTile);
+        var average = Convert.ToInt32(sum / Terrain.CornersPerTile);
         return (average, average);
       }
     }
@@ -344,7 +372,7 @@ public class Park {
   /// height.
   /// </summary>
   private static bool IsFootprintLevel(int tileX, int tileY, int width, int height, Terrain terrain) {
-    ushort? reference = null;
+    int? reference = null;
     for (var dy = 0; dy < height; dy++) {
       for (var dx = 0; dx < width; dx++) {
         var x = tileX + dx;

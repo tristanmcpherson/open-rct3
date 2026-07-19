@@ -33,14 +33,16 @@ public class TextureDecodeVerification {
     Assert.That(File.Exists(mainPath), Is.True, $"Main.common.ovl not found at: {mainPath}");
 
     using var ovl = Ovl.Load(mainPath);
-    var texEntryCount = ovl.Keys.Count(key => key.Type == FileType.Texture);
-    var textures = Textures.Extract(ovl);
+    var texEntries = ovl.Keys.Where(key => key.Type == FileType.Texture).ToList();
+    using var textures = Textures.Extract(ovl);
+    var decodedTexNames = texEntries.Select(entry => entry.ToString()).Intersect(textures.Names).ToList();
 
-    TestContext.Out.WriteLine($"Main.common.ovl: {texEntryCount} Texture entries, {textures.Count} decoded");
+    TestContext.Out.WriteLine(
+      $"Main.common.ovl: {texEntries.Count} Texture entries, {decodedTexNames.Count} genuine entries decoded");
 
-    Assert.That(texEntryCount, Is.EqualTo(84), "Expected 84 Texture entries per bug doc Part 4");
-    Assert.That(textures.Count, Is.GreaterThan(0),
-      "Expected at least some of Main.common.ovl's 84 Texture entries to decode after the relocation-table fix");
+    Assert.That(texEntries, Has.Count.EqualTo(84), "Expected 84 Texture entries per bug doc Part 4");
+    Assert.That(decodedTexNames, Is.Not.Empty,
+      "Expected at least one genuine Main.common.ovl Texture entry to decode after the relocation-table fix");
   }
 
   [Test]
@@ -59,10 +61,11 @@ public class TextureDecodeVerification {
 
     Assert.That(texEntries, Is.Not.Empty, "Expected at least one genuine tex-tagged entry");
 
-    var textures = Textures.Extract(ovl);
+    using var textures = Textures.Extract(ovl);
     TestContext.Out.WriteLine($"Decoded: {string.Join(", ", textures.Names)}");
+    var decodedTexNames = texEntries.Select(entry => entry.ToString()).Intersect(textures.Names).ToList();
 
-    Assert.That(textures.Count, Is.GreaterThan(0),
+    Assert.That(decodedTexNames, Is.Not.Empty,
       "Expected the genuine tex entry to decode after the relocation-table fix");
   }
 }

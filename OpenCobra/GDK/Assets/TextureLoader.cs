@@ -21,8 +21,13 @@ public static class TextureLoader {
 
   public static Texture LoadTexture(Ovl ovl, OvlFile file) {
     try {
-      var size = ovl[file].Size;
-      throw new NotImplementedException($"TODO: Load {file.Name}.{file.Type.ToTagString()} ({size} bytes) from  OVL.");
+      using var textures = Textures.Extract(ovl);
+      var decoded = textures[file.ToString()];
+      if (decoded.MipLevels.Length == 0 || decoded.MipLevels[0] == null)
+        throw new InvalidDataException($"Texture '{file}' has no decoded base mip.");
+
+      var pixels = decoded.MipLevels[0].Clone();
+      return new Texture(file.Name, pixels.Width, pixels.Height, pixels);
     }
     catch (Exception ex) {
       throw new AssetException(file.Name, ex);

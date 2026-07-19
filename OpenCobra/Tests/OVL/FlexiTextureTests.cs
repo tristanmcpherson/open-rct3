@@ -67,10 +67,22 @@ public class FlexiTextureTests {
     }
   }
 
-  [TestCase("ftx")]
-  [TestCase("flt")]
-  public void FlexibleTextureTags_AreAliases(string tag) {
-    Assert.That(tag.ToFileType(), Is.EqualTo(FileType.FlexibleTexture));
+  [Test]
+  public void FlexibleTextureTag_MapsOnlyFtx() {
+    using (Assert.EnterMultipleScope()) {
+      Assert.That("ftx".ToFileType(), Is.EqualTo(FileType.FlexibleTexture));
+      Assert.That(FileType.FlexibleTexture.ToTagString(), Is.EqualTo("ftx"));
+      Assert.That("flt".ToFileType(), Is.Not.EqualTo(FileType.FlexibleTexture));
+    }
+  }
+
+  [Test]
+  public void FloatTag_IsKnownAndRoundTrips() {
+    using (Assert.EnterMultipleScope()) {
+      Assert.That("flt".ToFileType(), Is.EqualTo(FileType.Float));
+      Assert.That(FileType.Float.ToTagString(), Is.EqualTo("flt"));
+      Assert.That(FileType.Float.ToDisplayName(), Is.EqualTo("Floating-Point Number"));
+    }
   }
 
   [TestCase(0)]

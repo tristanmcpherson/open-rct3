@@ -74,13 +74,13 @@ instead of pointer types to remain safe on 64-bit hosts:
 
 ### File Type Enumeration (`OpenCobra/OVL/Files/FileTypes.cs`)
 
-Expanded `FileType` from 8 to 29 members, covering all loader tags from
+Expanded `FileType` from 8 to 30 members, covering all loader tags from
 [libOVLng's Manager classes](https://github.com/chances/rct3-importer/tree/main/RCT3%20Importer/src/libOVLng). Each tag
 maps to a `FileType` via `ToFileType()` and a human-readable display name via `ToDisplayName()`.
 
 Key correction: the Flexi-Texture tag is `"ftx"` (per
-[`ManagerFTX.h`](https://github.com/chances/rct3-importer/blob/main/RCT3%20Importer/src/libOVLng/ManagerFTX.h)), not
-`"flt"`. The `"flt"` tag is retained as a backwards-compat alias.
+[`ManagerFTX.h`](https://github.com/chances/rct3-importer/blob/main/RCT3%20Importer/src/libOVLng/ManagerFTX.h)). The
+`"flt"` tag is a distinct floating-point resource, not a Flexi-Texture alias.
 
 | Tag    | FileType          | Display Name        |
 | ------ | ----------------- | ------------------- |
@@ -89,6 +89,7 @@ Key correction: the Flexi-Texture tag is `"ftx"` (per
 | `tex`  | Texture           | 2D Texture          |
 | `flic` | Flic              | Compressed 2D Image |
 | `ftx`  | FlexibleTexture   | Flexi-Texture       |
+| `flt`  | Float             | Floating-Point Number |
 | `gsi`  | GuiSkinItem       | GUI Skin Item       |
 | `sid`  | SceneryItem       | Scenery Item        |
 | `btbl` | BitmapTable       | Bitmap Table        |

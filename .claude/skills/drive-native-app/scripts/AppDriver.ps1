@@ -127,6 +127,33 @@ namespace Native {
       return results;
     }
 
+    public static List<IntPtr> FindWindowsByProcessAndTitle(uint processId, string titlePart) {
+      var results = new List<IntPtr>();
+      EnumWindows((hWnd, lParam) => {
+        if (!IsWindowVisible(hWnd)) return true;
+        uint windowProcessId;
+        GetWindowThreadProcessId(hWnd, out windowProcessId);
+        if (windowProcessId != processId) return true;
+        int len = GetWindowTextLength(hWnd);
+        if (len == 0) return true;
+        var sb = new StringBuilder(len + 1);
+        GetWindowText(hWnd, sb, sb.Capacity);
+        if (sb.ToString().IndexOf(titlePart, StringComparison.OrdinalIgnoreCase) >= 0)
+          results.Add(hWnd);
+        return true;
+      }, IntPtr.Zero);
+      results.Sort((left, right) => {
+        RECT leftRect;
+        RECT rightRect;
+        GetWindowRect(left, out leftRect);
+        GetWindowRect(right, out rightRect);
+        long leftArea = (long)(leftRect.Right - leftRect.Left) * (leftRect.Bottom - leftRect.Top);
+        long rightArea = (long)(rightRect.Right - rightRect.Left) * (rightRect.Bottom - rightRect.Top);
+        return rightArea.CompareTo(leftArea);
+      });
+      return results;
+    }
+
     public static string GetProcessImagePath(uint processId) {
       const uint QueryLimitedInformation = 0x1000;
       IntPtr process = OpenProcess(QueryLimitedInformation, false, processId);
@@ -223,8 +250,8 @@ function Get-TargetWindow {
   $hWnd = [IntPtr]::Zero
   $proc = Get-TrackedProcess
   if ($null -ne $proc) {
-    $proc.Refresh()
-    if ($proc.MainWindowHandle -ne [IntPtr]::Zero) { $hWnd = $proc.MainWindowHandle }
+    $matches = [Native.Win32]::FindWindowsByProcessAndTitle([uint32]$proc.Id, $WindowTitle)
+    if ($matches.Count -gt 0) { $hWnd = $matches[0] }
   }
   if ($StrictPid -and $hWnd -eq [IntPtr]::Zero) {
     throw "Strict PID target process $($proc.Id) has no visible main window."

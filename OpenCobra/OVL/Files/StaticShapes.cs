@@ -80,7 +80,6 @@ public static class StaticShapes {
   private const int MaximumShapeCount = 64 * 1024;
   private const int MaximumResourceCount = 1_000_000;
   private const int MaximumSymbolReferenceCount = 1_000_000;
-  private const int LoaderSize = 20;
 
   /// <summary>Decodes every static-shape resource from the unique half of an OVL pair.</summary>
   public static IReadOnlyList<StaticShape> Extract(Ovl ovl) {
@@ -634,13 +633,10 @@ public static class StaticShapes {
   }
 
   private sealed class OvlStaticShapeDataSource : IStaticShapeDataSource {
-    private const int MaximumBlockWalk = 4096;
     private readonly Ovl ovl;
     private readonly DecodeContext context;
-    private readonly IReadOnlyDictionary<string, List<OvlLoaderEntry>> loaderEntryGroups;
-    private readonly Dictionary<uint, OvlLoaderEntry> loaderEntriesByStructAddress = [];
+    private readonly IReadOnlyDictionary<uint, OvlLoaderEntry> loaderEntriesByStructAddress;
     private readonly Dictionary<uint, string> symbolStrings = [];
-    private readonly HashSet<uint> rejectedLoaderBlocks = [];
 
     public OvlStaticShapeDataSource(Ovl ovl, DecodeContext context) {
       this.ovl = ovl;
@@ -654,13 +650,13 @@ public static class StaticShapes {
         Convert.ToUInt64(ovl.LoaderEntriesInOrder.Count) * 4,
         "OVL",
         "loader metadata index");
-      var groups = new Dictionary<string, List<OvlLoaderEntry>>(StringComparer.OrdinalIgnoreCase);
+      var byStructAddress = new Dictionary<uint, OvlLoaderEntry>();
       var loaderMetadata = new Dictionary<uint, OvlLoaderEntry>();
       var shapeLoaders = new HashSet<uint>();
       foreach (var entry in ovl.LoaderEntriesInOrder) {
-        if (!groups.TryGetValue(entry.SourcePath, out var group))
-          groups.Add(entry.SourcePath, group = []);
-        group.Add(entry);
+        if (!byStructAddress.TryAdd(entry.StructAddress, entry))
+          throw new InvalidDataException(
+            $"OVL loader struct address {entry.StructAddress} is duplicated.");
         if (loaderMetadata.TryGetValue(entry.DataAddress, out var existing) &&
             !string.Equals(existing.Tag, entry.Tag, StringComparison.OrdinalIgnoreCase))
           throw new InvalidDataException(
@@ -669,7 +665,7 @@ public static class StaticShapes {
         if (entry.Tag.ToFileType() == FileType.StaticShape)
           shapeLoaders.Add(entry.DataAddress);
       }
-      loaderEntryGroups = groups;
+      loaderEntriesByStructAddress = byStructAddress;
       StaticShapeLoaderDataAddresses = shapeLoaders;
 
       var byAddress = new Dictionary<uint, StaticShapeResourceMetadata>();
@@ -764,74 +760,75 @@ public static class StaticShapes {
 
     private IReadOnlyDictionary<uint, StaticShapeResourceReference> ReadResourceReferences() {
       var references = new Dictionary<uint, StaticShapeResourceReference>();
-      var visitedBlocks = new HashSet<uint>();
-      var stride = ovl.Version == Version.One ? 12 : 16;
       ulong indexedRecordCount = 0;
 
-      foreach (var resourceAddress in StaticShapeLoaderDataAddresses) {
-        if (!ovl.TryResolveRelocation(resourceAddress, out _, out var resourceOffset)) continue;
-        var blockAddress = resourceAddress - resourceOffset;
-
-        for (var walked = 0; walked < MaximumBlockWalk && blockAddress > 0; walked++) {
-          var previousAddress = blockAddress - 1;
-          if (!ovl.TryResolveRelocation(previousAddress, out var block, out var offset)) break;
-          var previousBlockAddress = previousAddress - offset;
-          if (previousBlockAddress >= blockAddress) break;
-          blockAddress = previousBlockAddress;
-          if (visitedBlocks.Contains(blockAddress)) continue;
-          if (visitedBlocks.Count >= MaximumSymbolReferenceCount)
-            throw new InvalidDataException(
-              $"SHS SymbolRef block index exceeds the decoder limit {MaximumSymbolReferenceCount}.");
-          context.ReserveObjects(1, "OVL", "SymbolRef block index");
-          visitedBlocks.Add(blockAddress);
-
-          if (!TryReadSymbolReferenceBlock(
-                blockAddress, block, stride, references, ref indexedRecordCount))
-            continue;
-        }
+      if (ovl.SymbolReferenceBlocksInOrder.Count > MaximumSymbolReferenceCount)
+        throw new InvalidDataException(
+          $"SHS SymbolRef block count exceeds the decoder limit {MaximumSymbolReferenceCount}.");
+      foreach (var block in ovl.SymbolReferenceBlocksInOrder) {
+        context.ReserveObjects(1, "OVL", "SymbolRef block index");
+        ReadSymbolReferenceBlock(block, references, ref indexedRecordCount);
       }
       return references;
     }
 
-    private bool TryReadSymbolReferenceBlock(
-      uint blockAddress,
-      byte[] block,
-      int stride,
+    private void ReadSymbolReferenceBlock(
+      OvlBlockEntry blockEntry,
       Dictionary<uint, StaticShapeResourceReference> references,
       ref ulong indexedRecordCount
     ) {
-      if (block.Length == 0 || block.Length % stride != 0) return false;
-      var recordCount = block.Length / stride;
-      if (recordCount > MaximumSymbolReferenceCount) return false;
+      var block = blockEntry.Data;
+      var stride = blockEntry.RecordStride;
+      var expectedLength = Convert.ToUInt64(blockEntry.RecordCount) * Convert.ToUInt64(stride);
+      if (expectedLength != Convert.ToUInt64(block.Length))
+        throw new InvalidDataException(
+          $"OVL SymbolRef block size {block.Length} does not match its parsed count " +
+          $"{blockEntry.RecordCount} and stride {stride}.");
+      if (blockEntry.RecordCount > MaximumSymbolReferenceCount)
+        throw new InvalidDataException(
+          $"SHS SymbolRef count exceeds the decoder limit {MaximumSymbolReferenceCount}.");
 
       // Validate the complete relocation-backed record block before allocating or indexing it.
       for (var offset = 0; offset < block.Length; offset += stride) {
-        var recordAddressValue = Convert.ToUInt64(blockAddress) + Convert.ToUInt64(offset);
-        if (recordAddressValue + 8 > uint.MaxValue) return false;
+        var recordAddressValue = Convert.ToUInt64(blockEntry.Address) + Convert.ToUInt64(offset);
+        if (recordAddressValue + 8 > uint.MaxValue)
+          throw new InvalidDataException("OVL SymbolRef record address exceeds the address space.");
         var recordAddress = Convert.ToUInt32(recordAddressValue);
-        if (!ovl.TryGetRelocationSource(recordAddress + 8, out var loaderAddress) || loaderAddress == 0 ||
-            !TryGetLoaderEntry(loaderAddress, out _))
-          return false;
-        if (!ovl.TryGetRelocationSource(recordAddress, out var referenceAddress) || referenceAddress == 0 ||
-            !ovl.TryGetRelocationSource(recordAddress + 4, out var symbolAddress) ||
+        var hasReferenceRelocation =
+          ovl.TryGetRelocationSource(recordAddress, out var referenceAddress);
+        var hasSymbolRelocation =
+          ovl.TryGetRelocationSource(recordAddress + 4, out var symbolAddress);
+        var hasLoaderRelocation =
+          ovl.TryGetRelocationSource(recordAddress + 8, out var loaderAddress);
+        if (!hasLoaderRelocation ||
+            loaderAddress == 0 ||
+            !loaderEntriesByStructAddress.TryGetValue(loaderAddress, out var loader) ||
+            !string.Equals(
+              loader.SourcePath, blockEntry.SourcePath, StringComparison.OrdinalIgnoreCase))
+          throw new InvalidDataException(
+            $"OVL SymbolRef owner {loaderAddress} at {recordAddress} in '{blockEntry.SourcePath}' " +
+            "is not an exact loader-table entry.");
+        if (!hasReferenceRelocation || referenceAddress == 0 ||
+            !hasSymbolRelocation ||
             !ovl.TryResolveRelocation(referenceAddress, out _, out _) ||
             !TryGetSymbolStringLocation(
               symbolAddress, out var symbolBlock, out var symbolStart, out var symbolLength) ||
             Array.IndexOf(
               symbolBlock, Convert.ToByte(':'), symbolStart, symbolLength) < 0)
-          return false;
+          throw new InvalidDataException(
+            $"OVL SymbolRef record at {recordAddress} has invalid relocation or symbol data.");
       }
 
-      if (indexedRecordCount + Convert.ToUInt64(recordCount) > MaximumSymbolReferenceCount)
+      if (indexedRecordCount + blockEntry.RecordCount > MaximumSymbolReferenceCount)
         throw new InvalidDataException(
           $"SHS SymbolRef count exceeds the decoder limit {MaximumSymbolReferenceCount}.");
-      indexedRecordCount += Convert.ToUInt64(recordCount);
+      indexedRecordCount += blockEntry.RecordCount;
 
       for (var offset = 0; offset < block.Length; offset += stride) {
-        var recordAddress = blockAddress + Convert.ToUInt32(offset);
+        var recordAddress = blockEntry.Address + Convert.ToUInt32(offset);
         ovl.TryGetRelocationSource(recordAddress + 8, out var loaderAddress);
-        if (!TryGetLoaderEntry(loaderAddress, out var loader) ||
-            loader.Tag.ToFileType() != FileType.StaticShape)
+        var loader = loaderEntriesByStructAddress[loaderAddress];
+        if (loader.Tag.ToFileType() != FileType.StaticShape)
           continue;
         ovl.TryGetRelocationSource(recordAddress, out var referenceAddress);
         ovl.TryGetRelocationSource(recordAddress + 4, out var symbolAddress);
@@ -845,57 +842,6 @@ public static class StaticShapes {
         context.ReserveObjects(1, symbol, "SymbolRef index");
         references.Add(referenceAddress, reference);
       }
-      return true;
-    }
-
-    private bool TryGetLoaderEntry(uint loaderAddress, out OvlLoaderEntry entry) {
-      if (loaderEntriesByStructAddress.TryGetValue(loaderAddress, out entry!)) return true;
-      if (!ovl.TryResolveRelocation(loaderAddress, out var block, out var offset) ||
-          offset % LoaderSize != 0 || block.Length == 0 || block.Length % LoaderSize != 0) {
-        entry = null!;
-        return false;
-      }
-      var blockAddress = loaderAddress - offset;
-      if (rejectedLoaderBlocks.Contains(blockAddress)) {
-        entry = null!;
-        return false;
-      }
-
-      var recordCount = block.Length / LoaderSize;
-      KeyValuePair<string, List<OvlLoaderEntry>>? matched = null;
-      foreach (var group in loaderEntryGroups) {
-        if (group.Value.Count != recordCount || !LoaderBlockMatches(blockAddress, block, group.Value))
-          continue;
-        if (matched != null) {
-          rejectedLoaderBlocks.Add(blockAddress);
-          entry = null!;
-          return false;
-        }
-        matched = group;
-      }
-      if (matched == null) {
-        rejectedLoaderBlocks.Add(blockAddress);
-        entry = null!;
-        return false;
-      }
-
-      context.ReserveObjects(Convert.ToUInt64(recordCount), "OVL", "validated loader-table index");
-      for (var index = 0; index < recordCount; index++)
-        loaderEntriesByStructAddress.Add(
-          blockAddress + Convert.ToUInt32(index * LoaderSize), matched.Value.Value[index]);
-      return loaderEntriesByStructAddress.TryGetValue(loaderAddress, out entry!);
-    }
-
-    private bool LoaderBlockMatches(uint blockAddress, byte[] block, IReadOnlyList<OvlLoaderEntry> entries) {
-      for (var index = 0; index < entries.Count; index++) {
-        var offset = index * LoaderSize;
-        var dataFieldAddress = blockAddress + Convert.ToUInt32(offset + 4);
-        var rawDataAddress = ReadUInt32(block, offset + 4);
-        if (!ovl.TryGetRelocationSource(dataFieldAddress, out var relocatedDataAddress) ||
-            rawDataAddress != relocatedDataAddress || relocatedDataAddress != entries[index].DataAddress)
-          return false;
-      }
-      return true;
     }
 
     private bool TryResolveSymbolString(uint address, out string value) {

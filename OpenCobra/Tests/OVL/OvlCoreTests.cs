@@ -111,9 +111,12 @@ public class OvlCoreTests {
     using var ovl = Ovl.Load(commonPath);
 
     Assert.That(ovl.LoaderEntriesInOrder, Is.EqualTo(new[] {
-      new OvlLoaderEntry("btbl", common.AddressOf(1, 1), commonPath),
-      new OvlLoaderEntry("flic", common.AddressOf(1, 0), commonPath),
-      new OvlLoaderEntry("tex", uniqueResourceAddress, uniquePath),
+      new OvlLoaderEntry(
+        "btbl", common.AddressOf(1, 1), commonPath, common.AddressOf(2, 1)),
+      new OvlLoaderEntry(
+        "flic", common.AddressOf(1, 0), commonPath, common.AddressOf(2, 1, 20)),
+      new OvlLoaderEntry(
+        "tex", uniqueResourceAddress, uniquePath, unique.AddressOf(2, 1)),
     }));
   }
 
@@ -268,5 +271,109 @@ public class OvlCoreTests {
       writer.Write(Convert.ToUInt16(bytes.Length));
       writer.Write(bytes);
     }
+  }
+  private const int LoaderStructSize = 20;
+
+  [Test]
+  public void Load_RecordsExactLoaderStructAddresses() {
+    WithTownHallOvl(ovl => {
+      Assert.That(ovl.LoaderEntriesInOrder, Is.Not.Empty);
+      foreach (var entry in ovl.LoaderEntriesInOrder) {
+        Assert.That(
+          ovl.TryReadBytes(entry.StructAddress, LoaderStructSize, out var bytes), Is.True);
+        Assert.That(bytes, Has.Length.EqualTo(LoaderStructSize));
+        Assert.That(BitConverter.ToUInt32(bytes, 4), Is.EqualTo(entry.DataAddress));
+        Assert.That(
+          ovl.TryGetRelocationSource(entry.StructAddress + 4, out var dataAddress), Is.True);
+        Assert.That(dataAddress, Is.EqualTo(entry.DataAddress));
+      }
+
+      foreach (var group in ovl.LoaderEntriesInOrder.GroupBy(entry => entry.SourcePath)) {
+        var entries = group.ToList();
+        for (var index = 1; index < entries.Count; index++)
+          Assert.That(entries[index].StructAddress - entries[index - 1].StructAddress,
+            Is.EqualTo(Convert.ToUInt32(LoaderStructSize)));
+      }
+
+      foreach (var block in ovl.SymbolReferenceBlocksInOrder) {
+        using (Assert.EnterMultipleScope()) {
+          Assert.That(block.RecordStride,
+            Is.EqualTo(block.Version == OpenCobra.OVL.Version.One ? 12 : 16));
+          Assert.That(block.Data.Length,
+            Is.EqualTo(Convert.ToInt32(block.RecordCount) * block.RecordStride));
+        }
+      }
+
+      var shapeFile = ovl.Keys.Single(file =>
+        file.Name == "RS-TownHall" && file.Type == FileType.StaticShape);
+      Assert.That(ovl.TryGetDataPointer(shapeFile, out var shapeAddress), Is.True);
+      var shapeLoader = ovl.LoaderEntriesInOrder.Single(entry =>
+        entry.DataAddress == shapeAddress && entry.Tag.ToFileType() == FileType.StaticShape);
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(shapeLoader.StructAddress, Is.Not.Zero);
+        Assert.That(shapeLoader.SourcePath, Does.EndWith("fixture.unique.ovl"));
+      }
+    });
+  }
+
+  [Test]
+  public void Dispose_ClearsInternalLoaderAndSymbolReferenceIndexes() {
+    WithTownHallOvl(ovl => {
+      var loaderEntries = ovl.LoaderEntriesInOrder;
+      var symbolReferenceBlocks = ovl.SymbolReferenceBlocksInOrder;
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(loaderEntries, Is.Not.Empty);
+        Assert.That(symbolReferenceBlocks, Is.Not.Empty);
+      }
+
+      ovl.Dispose();
+
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(loaderEntries, Is.Empty);
+        Assert.That(symbolReferenceBlocks, Is.Empty);
+      }
+    });
+  }
+
+  [Test]
+  public void Load_SkyBeamZeroSymbolReferences_IgnoresUnrelatedThirdType2Block() {
+    WithEmbeddedOvl(".CFRs.SkyBeam.Style.common.ovl", ovl => {
+      Assert.That(ovl.Count, Is.Positive);
+      Assert.That(ovl.SymbolReferenceBlocksInOrder.Where(block =>
+        block.SourcePath.EndsWith("Style.common.ovl", StringComparison.OrdinalIgnoreCase)),
+        Is.Empty);
+    });
+  }
+
+  private static void WithTownHallOvl(Action<Ovl> action) =>
+    WithEmbeddedOvl(".RS-TownHall.common.ovl", action);
+
+  private static void WithEmbeddedOvl(string commonResourceSuffix, Action<Ovl> action) {
+    var assembly = typeof(OvlCoreTests).Assembly;
+    var resources = assembly.GetManifestResourceNames();
+    var commonResource = resources.Single(name =>
+      name.EndsWith(commonResourceSuffix, StringComparison.OrdinalIgnoreCase));
+    var uniqueResource = commonResource[..^".common.ovl".Length] + ".unique.ovl";
+    var tempDir = Directory.CreateTempSubdirectory().FullName;
+    try {
+      var commonPath = Path.Combine(tempDir, "fixture.common.ovl");
+      CopyResource(assembly, commonResource, commonPath);
+      CopyResource(assembly, uniqueResource, Path.Combine(tempDir, "fixture.unique.ovl"));
+      using var ovl = Ovl.Load(commonPath);
+      action(ovl);
+    } finally {
+      Directory.Delete(tempDir, recursive: true);
+    }
+  }
+
+  private static void CopyResource(
+    System.Reflection.Assembly assembly,
+    string resourceName,
+    string path
+  ) {
+    using var input = assembly.GetManifestResourceStream(resourceName);
+    Assert.That(input, Is.Not.Null, $"Embedded resource '{resourceName}' not found.");
+    using var output = File.Create(path);
+    input.CopyTo(output);
   }
 }

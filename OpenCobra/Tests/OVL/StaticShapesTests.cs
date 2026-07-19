@@ -216,6 +216,44 @@ public class StaticShapesTests {
   }
 
   [Test]
+  public void Extract_RejectsCopiedLoaderMetadataAtForgedAlignedAddress() {
+    WithTownHallOvl(ovl => {
+      var loaderEntries = (List<OvlLoaderEntry>)ovl.LoaderEntriesInOrder;
+      var shapeLoaderIndexes = loaderEntries
+        .Select((entry, index) => (entry, index))
+        .Where(item => item.entry.Tag.ToFileType() == FileType.StaticShape)
+        .ToList();
+      Assert.That(shapeLoaderIndexes, Is.Not.Empty);
+
+      foreach (var (entry, index) in shapeLoaderIndexes)
+        loaderEntries[index] = entry with { StructAddress = entry.StructAddress + 20_000 };
+
+      var error = Assert.Throws<InvalidDataException>(new Action(() => StaticShapes.Extract(ovl)));
+
+      Assert.That(error!.Message, Does.Contain("is not an exact loader-table entry"));
+    });
+  }
+
+  [TestCase(SymbolReferenceMetadataMutation.Count)]
+  [TestCase(SymbolReferenceMetadataMutation.Size)]
+  public void Extract_RejectsSymbolReferenceCountOrSizeMismatch(
+    SymbolReferenceMetadataMutation mutation
+  ) {
+    WithTownHallOvl(ovl => {
+      var blocks = (List<OvlBlockEntry>)ovl.SymbolReferenceBlocksInOrder;
+      Assert.That(blocks, Is.Not.Empty);
+      blocks[0] = mutation == SymbolReferenceMetadataMutation.Count
+        ? blocks[0] with { RecordCount = blocks[0].RecordCount + 1 }
+        : blocks[0] with { Data = blocks[0].Data[..^1] };
+
+      var error = Assert.Throws<InvalidDataException>(new Action(() => StaticShapes.Extract(ovl)));
+
+      Assert.That(error!.Message, Does.Contain("block size"));
+      Assert.That(error.Message, Does.Contain("does not match its parsed count"));
+    });
+  }
+
+  [Test]
   public void Extract_AllowsExternalSIOpaqueTextureStyle() {
     WithTownHallOvl(ovl => {
       var shapes = StaticShapes.Extract(ovl);
@@ -338,6 +376,11 @@ public class StaticShapesTests {
   public enum LocalLoaderMutation {
     Missing,
     WrongType
+  }
+
+  public enum SymbolReferenceMetadataMutation {
+    Count,
+    Size
   }
 
   public enum MalformedShape {

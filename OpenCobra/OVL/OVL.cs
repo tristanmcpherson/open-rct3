@@ -23,7 +23,15 @@ public record OvlFile(string Name, FileType Type, string Path) {
 public record OvlEntry(uint Offset, uint Size);
 
 internal record LoaderHeader(string Loader, string Name, uint Type, string Tag, uint SymbolCount);
-internal record OvlLoaderEntry(string Tag, uint DataAddress, string SourcePath);
+internal record OvlLoaderEntry(string Tag, uint DataAddress, string SourcePath, uint StructAddress);
+internal record OvlBlockEntry(
+  uint Address,
+  byte[] Data,
+  string SourcePath,
+  Version Version,
+  int RecordStride,
+  uint RecordCount
+);
 
 internal class FileBlock {
   /// <summary>
@@ -82,6 +90,10 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   // symbols, so callers that need every loader instance (not just symbol-backed resources) must
   // walk this instead of ovl.Keys. SourcePath keeps common and unique table state independent.
   private readonly List<OvlLoaderEntry> loaderEntriesInOrder = [];
+  // Exact type-2 SymbolRef blocks. LodSymRefManager allocates subblock 2 only when the sum of
+  // LoaderStruct.SymbolsToResolve for that source file is nonzero; otherwise a third type-2 block
+  // may belong to an unrelated manager.
+  private readonly List<OvlBlockEntry> symbolReferenceBlocksInOrder = [];
   private uint relocationOffset;
   private bool disposed = false;
 
@@ -92,6 +104,9 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   /// classified as their own symbol - see Part 6 Finding 4 of the texture-decoding bug doc.
   /// </summary>
   internal IReadOnlyList<OvlLoaderEntry> LoaderEntriesInOrder => loaderEntriesInOrder;
+  /// <summary>Exact per-source SymbolRef blocks and their serialized layout metadata.</summary>
+  internal IReadOnlyList<OvlBlockEntry> SymbolReferenceBlocksInOrder =>
+    symbolReferenceBlocksInOrder;
 
   /// <summary>Reads <paramref name="length"/> raw bytes at a relocation-resolved data address.</summary>
   public bool TryReadBytes(uint address, int length, [MaybeNullWhen(false)] out byte[] data) {
@@ -412,9 +427,10 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
 
     // LoaderStruct: LoaderType(4), data(ptr, 4), HasExtraData(4), Sym(ptr, 4), SymbolsToResolve(4)
     const int loaderStructSize = 20;
-    if (loaderBlock.Data.Length % loaderStructSize != 0)
-      throw new InvalidDataException("OVL loader table ends with a partial loader entry.");
+    if (loaderBlock.Size % loaderStructSize != 0 || loaderBlock.Data.Length != loaderBlock.Size)
+      throw new InvalidDataException("OVL loader table has a truncated record.");
     var loaderCount = loaderBlock.Data.Length / loaderStructSize;
+    ulong symbolReferenceCount = 0;
     foreach (var i in Enumerable.Range(0, loaderCount)) {
       var offset = i * loaderStructSize;
       var loaderType = BitConverter.ToUInt32(loaderBlock.Data, offset);
@@ -422,6 +438,9 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
       var dataFieldAddress = loaderBlock.RelativeOffset + Convert.ToUInt32(offset + 4);
       var dataPtr = TryGetRelocationSource(dataFieldAddress, out var resolved) ? resolved : rawDataPtr;
       var hasExtraDataRaw = BitConverter.ToUInt32(loaderBlock.Data, offset + 8);
+      symbolReferenceCount += BitConverter.ToUInt32(loaderBlock.Data, offset + 16);
+      if (symbolReferenceCount > uint.MaxValue)
+        throw new InvalidDataException("OVL SymbolRef count exceeds the addressable range.");
       // v5 packs a 16-bit extra-data count and a 16-bit unknown into this field; v1/v4 use it whole.
       var hasExtraData = version == Version.Five ? hasExtraDataRaw & 0xFFFF : hasExtraDataRaw;
 
@@ -429,7 +448,10 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
       if (loaderType >= loaderHeaders.Count)
         throw new InvalidDataException($"OVL loader type index {loaderType} is out of range.");
       loaderEntriesInOrder.Add(new OvlLoaderEntry(
-        loaderHeaders[Convert.ToInt32(loaderType)].Tag, dataPtr, loaderBlock.Path));
+        loaderHeaders[Convert.ToInt32(loaderType)].Tag,
+        dataPtr,
+        loaderBlock.Path,
+        loaderBlock.RelativeOffset + Convert.ToUInt32(offset)));
 
       foreach (var _ in Enumerable.Range(0, ToCount(hasExtraData, "loader extra-data count"))) {
         var chunkSize = ReadUInt32(reader, "loader extra-data size");
@@ -441,7 +463,32 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
         chunks.Add(chunk);
       }
     }
+    IndexSymbolReferenceBlock(
+      blocks, version, Convert.ToUInt32(symbolReferenceCount));
     return extraData;
+  }
+
+  private void IndexSymbolReferenceBlock(
+    FileTypeBlock[] blocks,
+    Version version,
+    uint recordCount
+  ) {
+    // LodSymRefManager's aggregate SymbolsToResolve count is the serialized discriminator. Block
+    // position or relocation-looking contents alone cannot prove this is a SymbolRef table.
+    if (recordCount == 0) return;
+    if (blocks.Length <= 2 || blocks[2].Blocks.Count <= 2)
+      throw new InvalidDataException("OVL SymbolRef table is missing.");
+    var block = blocks[2].Blocks[2];
+    var stride = version == Version.One ? 12 : 16;
+    var expectedSize = Convert.ToUInt64(recordCount) * Convert.ToUInt64(stride);
+    if (expectedSize > uint.MaxValue || block.Size != expectedSize ||
+        block.Data == null || Convert.ToUInt64(block.Data.Length) != expectedSize)
+      throw new InvalidDataException(
+        $"OVL SymbolRef table size {block.Size} does not match " +
+        $"{recordCount} records of {stride} bytes.");
+    symbolReferenceBlocksInOrder.Add(
+      new OvlBlockEntry(
+        block.RelativeOffset, block.Data, block.Path, version, stride, recordCount));
   }
 
   private static uint ReadV5References(BinaryReader reader, out uint subVersionFlag) {
@@ -727,6 +774,8 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
       allFileTypeBlocks.Clear();
       allLoaderHeaders.Clear();
       allExtraData.Clear();
+      loaderEntriesInOrder.Clear();
+      symbolReferenceBlocksInOrder.Clear();
     }
 
     disposed = true;

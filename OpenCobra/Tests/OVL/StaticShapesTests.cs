@@ -114,6 +114,45 @@ public class StaticShapesTests {
   }
 
   [Test]
+  public void Decode_ZeroEffects_IgnoresOneSidedResolvableNamesRelocation() {
+    var fixture = new StaticShapeFixture();
+    fixture.UseZeroEffectsWithOneSidedResolvableNamesRelocation();
+
+    var shape = fixture.Decode();
+
+    Assert.That(shape.Effects, Is.Empty);
+  }
+
+  [Test]
+  public void Decode_ZeroEffects_IgnoresOneSidedNullNamesRelocation() {
+    var fixture = new StaticShapeFixture();
+    fixture.UseZeroEffectsWithOneSidedNullNamesRelocation();
+
+    var shape = fixture.Decode();
+
+    Assert.That(shape.Effects, Is.Empty);
+  }
+
+  [Test]
+  public void Decode_PositiveEffects_RejectsOneSidedPointerRelocation() {
+    var fixture = new StaticShapeFixture();
+    fixture.RemoveEffectNamesRelocation();
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() => fixture.Decode()));
+
+    Assert.That(error!.Message,
+      Does.Contain("effect names is not a non-null relocated pointer"));
+  }
+
+  [Test]
+  public void Decode_PositiveEffects_RejectsDanglingPointerRelocation() {
+    var fixture = new StaticShapeFixture();
+    fixture.UseDanglingEffectPositionsRelocation();
+
+    Assert.Throws<InvalidDataException>(new Action(() => fixture.Decode()));
+  }
+
+  [Test]
   public void Extract_ChargesResourceMetadataBeforeBuildingIndexes() {
     var assembly = Assembly.GetExecutingAssembly();
     var resources = assembly.GetManifestResourceNames();
@@ -335,6 +374,28 @@ public class StaticShapesTests {
       WriteUInt32(source.Blocks[ShapeAddress], 28, Convert.ToUInt32(indices.Length / 3));
       source.ReplaceBlock(IndicesAddress, EncodeIndices(indices));
     }
+
+    public void UseZeroEffectsWithOneSidedResolvableNamesRelocation() {
+      var shape = source.Blocks[ShapeAddress];
+      WriteUInt32(shape, 44, 0);
+      WriteUInt32(shape, 48, 0);
+      source.Relocations.Remove(ShapeAddress + 48);
+      WritePointer(shape, ShapeAddress, 52, NamesAddress);
+    }
+
+    public void UseZeroEffectsWithOneSidedNullNamesRelocation() {
+      var shape = source.Blocks[ShapeAddress];
+      WriteUInt32(shape, 44, 0);
+      WriteUInt32(shape, 48, 0);
+      source.Relocations.Remove(ShapeAddress + 48);
+      WriteUInt32(shape, 52, 0);
+      source.Relocations[ShapeAddress + 52] = 0;
+    }
+
+    public void RemoveEffectNamesRelocation() => source.Relocations.Remove(ShapeAddress + 52);
+
+    public void UseDanglingEffectPositionsRelocation() =>
+      WritePointer(source.Blocks[ShapeAddress], ShapeAddress, 48, 1_000_000);
 
     public void UseDistinctMeshFanSharingGeometry(int count) {
       const uint fanPointersAddress = 12_000;

@@ -190,7 +190,7 @@ public static class StaticShapes {
         $"stored unsupported mesh count {unsupportedMeshCount} does not match decoded count " +
         decodedUnsupportedMeshCount);
 
-    var effects = ReadEffects(name, address, header, effectCount, source, context);
+    var effects = ReadEffects(name, address, effectCount, source, context);
     return new StaticShape(name, boundsMin, boundsMax, meshes, effects);
   }
 
@@ -338,16 +338,11 @@ public static class StaticShapes {
   private static IReadOnlyList<ShapeEffect> ReadEffects(
     string shapeName,
     uint shapeAddress,
-    byte[] header,
     uint effectCount,
     IStaticShapeDataSource source,
     DecodeContext context
   ) {
-    if (effectCount == 0) {
-      if (ReadUInt32(header, 48) != 0 || ReadUInt32(header, 52) != 0)
-        throw Invalid(shapeName, "zero effects have non-null effect pointers");
-      return [];
-    }
+    if (effectCount == 0) return [];
 
     var positionsAddress = ReadRequiredPointer(
       source, CheckedAdd(shapeAddress, 48, shapeName), shapeName, "effect positions");

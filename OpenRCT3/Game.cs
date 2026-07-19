@@ -40,7 +40,7 @@ public class Game : IGame {
   private readonly TimeSpan lagWarningDebounceInterval = TimeSpan.FromSeconds(10);
 
   private readonly static Logger logger = LogManager.GetCurrentClassLogger();
-  private bool isRunning = false;
+  private readonly GameRunLifecycle lifecycle = new();
   private bool isPaused = false;
   private readonly ManualResetEvent resumeSignal = new(true);
   private readonly Stopwatch stopwatch = new();
@@ -52,7 +52,7 @@ public class Game : IGame {
 
   public static Container IoC => IGame.IoC;
   public static Game? Instance { get; private set; }
-  public static bool IsRunning => Instance?.isRunning ?? false;
+  public static bool IsRunning => Instance?.lifecycle.IsRunning ?? false;
 
   internal static Game? DetachInstance() {
     var instance = Instance;
@@ -183,7 +183,7 @@ public class Game : IGame {
   /// <seealso cref="TargetFrameTime"/>
   /// <seealso href="https://gameprogrammingpatterns.com/game-loop.html"/>
   public void Run() {
-    isRunning = true;
+    if (!lifecycle.TryStart()) return;
 
     // Run the game loop
     Started?.Invoke();
@@ -197,7 +197,7 @@ public class Game : IGame {
     // smoothness (variable render rate).
     //
     // See https://gameprogrammingpatterns.com/game-loop.html
-    while (IsRunning) {
+    while (lifecycle.IsRunning) {
       // Wait for the resume signal if the game is paused
       if (isPaused) {
         resumeSignal.WaitOne();
@@ -272,11 +272,11 @@ public class Game : IGame {
   /// <returns>Whether the game stopped running.</returns>
   public bool Quit() {
     // TODO: Check for unsaved changes and prevent closure
-    isRunning = false;
+    lifecycle.Stop();
     resumeSignal.Set();
 
-    if (!isRunning) logger.Info("Exiting game...");
-    return !isRunning;
+    if (!lifecycle.IsRunning) logger.Info("Exiting game...");
+    return !lifecycle.IsRunning;
   }
 
   public void Dispose() {
@@ -293,7 +293,8 @@ public class Game : IGame {
       scene == null ? null : scene.Dispose,
       world == null ? null : world.Dispose,
       () => {
-        isRunning = false;
+        lifecycle.Stop();
+        resumeSignal.Set();
         Instance = null;
         GC.SuppressFinalize(this);
       });
@@ -336,4 +337,18 @@ public class Game : IGame {
     logger.Warn($"Lag has exceeded target frame time budget: {details}");
     lastLagWarning = DateTime.Now;
   }
+}
+
+internal sealed class GameRunLifecycle {
+  private const int Created = 0;
+  private const int Running = 1;
+  private const int Stopped = 2;
+  private int state = Created;
+
+  public bool IsRunning => Volatile.Read(ref state) == Running;
+
+  public bool TryStart() =>
+    Interlocked.CompareExchange(ref state, Running, Created) == Created;
+
+  public void Stop() => Interlocked.Exchange(ref state, Stopped);
 }

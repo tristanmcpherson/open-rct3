@@ -387,24 +387,33 @@ internal sealed class GameLoopCloseCoordinator {
     _ = task.ContinueWith(
       completed => {
         var error = completed.Exception;
-        marshal(() => {
-          try {
-            if (error != null) handleFailure?.Invoke(error);
-            prepareFinalClose();
-            lock (gate) finalClose = true;
-            requestFinalClose();
-          } catch {
-            lock (gate) {
-              finalClose = false;
-              closePending = false;
+        try {
+          marshal(() => {
+            try {
+              if (error != null) handleFailure?.Invoke(error);
+              prepareFinalClose();
+              lock (gate) finalClose = true;
+              requestFinalClose();
+            } catch {
+              ResetPendingClose();
+              throw;
             }
-            throw;
-          }
-        });
+          });
+        } catch (Exception marshalError) {
+          ResetPendingClose();
+          handleFailure?.Invoke(marshalError);
+        }
       },
       CancellationToken.None,
       TaskContinuationOptions.ExecuteSynchronously,
       TaskScheduler.Default);
     return true;
+  }
+
+  private void ResetPendingClose() {
+    lock (gate) {
+      finalClose = false;
+      closePending = false;
+    }
   }
 }

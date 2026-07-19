@@ -8,8 +8,10 @@ public class GameLifecycleTests {
   [Test]
   public void Quit_WakesPausedGameLoop() {
     using var resumeSignal = new ManualResetEvent(false);
+    var lifecycle = new GameRunLifecycle();
+    Assert.That(lifecycle.TryStart(), Is.True);
     var game = (Game)RuntimeHelpers.GetUninitializedObject(typeof(Game));
-    SetField(game, "isRunning", true);
+    SetField(game, "lifecycle", lifecycle);
     SetField(game, "isPaused", true);
     SetField(game, "resumeSignal", resumeSignal);
     var waiting = Task.Run(() => resumeSignal.WaitOne(TimeSpan.FromSeconds(2)));
@@ -19,6 +21,25 @@ public class GameLifecycleTests {
     using (Assert.EnterMultipleScope()) {
       Assert.That(stopped, Is.True);
       Assert.That(waiting.Result, Is.True);
+    }
+  }
+
+  [Test]
+  public void Run_QuitBeforeQueuedStartCannotBeUndone() {
+    using var resumeSignal = new ManualResetEvent(true);
+    var lifecycle = new GameRunLifecycle();
+    var game = (Game)RuntimeHelpers.GetUninitializedObject(typeof(Game));
+    SetField(game, "lifecycle", lifecycle);
+    SetField(game, "resumeSignal", resumeSignal);
+
+    var stopped = game.Quit();
+    var runCompleted = Task.Run(game.Run).Wait(TimeSpan.FromSeconds(2));
+    var visibleRunningState = Task.Run(() => lifecycle.IsRunning).Result;
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(stopped, Is.True);
+      Assert.That(runCompleted, Is.True);
+      Assert.That(visibleRunningState, Is.False);
     }
   }
 

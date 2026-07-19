@@ -128,6 +128,40 @@ public class WindowsLifecycleTests {
     }
   }
 
+  [Test]
+  public void CloseCoordinator_MarshalFailureIsReportedAndCanRetry() {
+    var coordinator = new GameLoopCloseCoordinator();
+    var marshalAttempts = 0;
+    var closeCount = 0;
+    var failures = new List<Exception>();
+
+    bool RequestClose() => coordinator.ShouldCancelClose(
+      () => true,
+      action => {
+        marshalAttempts++;
+        if (marshalAttempts == 1)
+          throw new InvalidOperationException("Injected BeginInvoke failure.");
+        action();
+      },
+      () => { },
+      () => closeCount++,
+      failures.Add);
+
+    var failedMarshalCloseCancelled = RequestClose();
+    var retryCloseCancelled = RequestClose();
+    var finalCloseCancelled = RequestClose();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(failedMarshalCloseCancelled, Is.True);
+      Assert.That(retryCloseCancelled, Is.True);
+      Assert.That(finalCloseCancelled, Is.False);
+      Assert.That(marshalAttempts, Is.EqualTo(2));
+      Assert.That(closeCount, Is.EqualTo(1));
+      Assert.That(failures, Has.Count.EqualTo(1));
+      Assert.That(failures.Single().Message, Is.EqualTo("Injected BeginInvoke failure."));
+    }
+  }
+
   [TestCase("GetDC")]
   [TestCase("PixelFormat")]
   [TestCase("Context")]
@@ -182,7 +216,10 @@ public class WindowsLifecycleTests {
 
   [Test]
   public void HandleRecreation_PreservesGameAndRebindsSecondRendererUntilFinalDisposal() {
+    using var resumeSignal = new ManualResetEvent(true);
     var game = (Game)RuntimeHelpers.GetUninitializedObject(typeof(Game));
+    SetGameField(game, "lifecycle", new GameRunLifecycle());
+    SetGameField(game, "resumeSignal", resumeSignal);
     var firstRenderer = new FakeRenderer();
     var secondRenderer = new FakeRenderer();
     SetGameInstance(game);
@@ -505,6 +542,12 @@ public class WindowsLifecycleTests {
       throw new InvalidOperationException(
         "Could not access the game disposal state.");
     return (bool)(disposedField.GetValue(game) ?? false);
+  }
+
+  private static void SetGameField(Game game, string fieldName, object value) {
+    var field = typeof(Game).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic) ??
+      throw new InvalidOperationException($"Could not access Game.{fieldName}.");
+    field.SetValue(game, value);
   }
 
   private sealed class FakeRenderer : IRenderer {

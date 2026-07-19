@@ -107,8 +107,9 @@ In C++, OVL resource pointers are stored as 32-bit virtual addresses. On 64-bit 
 *   `Flic` ([Textures.cs](../../../OpenCobra/OVL/Files/Textures.cs)): A 12-byte sequential structure storing animation/frame pointer locations.
 *   `FlicHeader` & `FlicMipHeader` ([Textures.cs](../../../OpenCobra/OVL/Files/Textures.cs)): Explicitly sized 16-byte sequential structures ensuring proper mapping of image dimensions, pitch, block size, and formatting enumerations.
 
-### File Type Tags (30 Supported Types)
-The `FileType` enumeration spans all loader tags defined by the `Manager` classes:
+### File Type Tags (Historical Partial List)
+This table is a historical subset of the loader tags represented by `FileType`. See
+[`FileTypes.cs`](../../../OpenCobra/OVL/Files/FileTypes.cs) for the current complete mapping.
 
 | Tag | Type | Name |
 | :--- | :--- | :--- |

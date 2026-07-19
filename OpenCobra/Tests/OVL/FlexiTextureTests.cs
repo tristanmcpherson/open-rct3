@@ -1,3 +1,4 @@
+using System.Reflection;
 using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
 using SixLabors.ImageSharp.PixelFormats;
@@ -22,7 +23,8 @@ public class FlexiTextureTests {
         Assert.That(textures[1].Texture[0, 0], Is.EqualTo(new Rgba32(1, 2, 3, 255)));
         Assert.That(textures[0].Texture, Is.Not.SameAs(textures[2].Texture));
       }
-    } finally {
+    }
+    finally {
       foreach (var frame in textures.Frames) frame.Texture.Dispose();
     }
   }
@@ -39,7 +41,8 @@ public class FlexiTextureTests {
         Assert.That(textures[0].Recolorable, Is.EqualTo(Recolorable.First));
         Assert.That(textures[1].Recolorable, Is.EqualTo(Recolorable.Third));
       }
-    } finally {
+    }
+    finally {
       foreach (var frame in textures.Frames) frame.Texture.Dispose();
     }
   }
@@ -62,8 +65,45 @@ public class FlexiTextureTests {
         Assert.That(textures[1].Texture.Width, Is.EqualTo(2));
         Assert.That(textures[1].Texture.Height, Is.EqualTo(2));
       }
-    } finally {
+    }
+    finally {
       foreach (var frame in textures.Frames) frame.Texture.Dispose();
+    }
+  }
+
+  [Test]
+  public void Load_UsesRelocatedPerFrameDimensionsAndPixelSpans() {
+    var fixture = new FlexiTextureFixture();
+    fixture.WriteFrame(1, 0, 0);
+    fixture.WriteFrame(1, 4, 1);
+    fixture.WriteFrame(1, 8, 1);
+    fixture.Data[FlexiTextureFixture.Texture1Address] = [1];
+    fixture.Data[FlexiTextureFixture.Alpha1Address] = [64];
+
+    var (ovl, file) = fixture.CreateOvl();
+    try {
+      using (ovl) {
+        var textures = FlexiTextureList.Load(ovl, file);
+        try {
+          using (Assert.EnterMultipleScope()) {
+            Assert.That(textures[0].Texture.Width, Is.EqualTo(1));
+            Assert.That(textures[0].Texture.Height, Is.EqualTo(1));
+            Assert.That(textures[0].Texture[0, 0], Is.EqualTo(new Rgba32(7, 8, 9, 64)));
+            Assert.That(textures[1].Texture.Width, Is.EqualTo(2));
+            Assert.That(textures[1].Texture.Height, Is.EqualTo(2));
+            Assert.That(textures[1].Texture[0, 0], Is.EqualTo(new Rgba32(1, 2, 3, 255)));
+            Assert.That(textures[1].Texture[1, 0], Is.EqualTo(new Rgba32(10, 20, 30, 255)));
+            Assert.That(textures[1].Texture[0, 1], Is.EqualTo(new Rgba32(10, 20, 30, 255)));
+            Assert.That(textures[1].Texture[1, 1], Is.EqualTo(new Rgba32(1, 2, 3, 255)));
+          }
+        }
+        finally {
+          foreach (var frame in textures.Frames) frame.Texture.Dispose();
+        }
+      }
+    }
+    finally {
+      File.Delete(file.Path);
     }
   }
 
@@ -251,6 +291,38 @@ public class FlexiTextureTests {
 
     public FlexiTextureList Decode() => FlexiTextureList.Decode(
       "fixture", Header, ResourceAddress, Resolve, IsRelocatedPointer);
+
+    public (Ovl Ovl, OvlFile File) CreateOvl() {
+      var ovl = new Ovl("fixture");
+      var file = new OvlFile("fixture", FileType.FlexibleTexture, Path.GetTempFileName());
+      File.WriteAllBytes(file.Path, Header);
+      ovl.Add(file, new OvlEntry(0, Convert.ToUInt32(Header.Length)));
+
+      var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+      var entryDataPtrs = (Dictionary<OvlFile, uint>)typeof(Ovl)
+        .GetField("entryDataPtrs", flags)!.GetValue(ovl)!;
+      entryDataPtrs[file] = ResourceAddress;
+
+      var fileTypeBlocks = (List<FileTypeBlock[]>)typeof(Ovl)
+        .GetField("allFileTypeBlocks", flags)!.GetValue(ovl)!;
+      fileTypeBlocks.Add([
+        new FileTypeBlock {
+          Blocks = [.. Data.Select(pair => new FileBlock {
+            Path = file.Path,
+            RelativeOffset = pair.Key,
+            Size = Convert.ToUInt32(pair.Value.Length),
+            Data = pair.Value,
+          })],
+        },
+      ]);
+
+      var relocations = (Dictionary<uint, uint>)typeof(Ovl)
+        .GetField("relocations", flags)!.GetValue(ovl)!;
+      foreach (var relocation in Relocations)
+        relocations.Add(relocation.Key, relocation.Value);
+
+      return (ovl, file);
+    }
 
     public void WriteHeader(int offset, uint value) => WriteUInt32(Header, offset, value);
 

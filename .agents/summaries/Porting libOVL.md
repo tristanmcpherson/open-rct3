@@ -74,9 +74,10 @@ instead of pointer types to remain safe on 64-bit hosts:
 
 ### File Type Enumeration (`OpenCobra/OVL/Files/FileTypes.cs`)
 
-Expanded `FileType` from 8 to 30 members, covering all loader tags from
-[libOVLng's Manager classes](https://github.com/chances/rct3-importer/tree/main/RCT3%20Importer/src/libOVLng). Each tag
-maps to a `FileType` via `ToFileType()` and a human-readable display name via `ToDisplayName()`.
+Expanded `FileType` beyond its initial 8 members using tags from
+[libOVLng's Manager classes](https://github.com/chances/rct3-importer/tree/main/RCT3%20Importer/src/libOVLng). The table
+below is a historical partial list; see [`FileTypes.cs`](../../OpenCobra/OVL/Files/FileTypes.cs) for the current
+complete enum and tag mappings.
 
 Key correction: the Flexi-Texture tag is `"ftx"` (per
 [`ManagerFTX.h`](https://github.com/chances/rct3-importer/blob/main/RCT3%20Importer/src/libOVLng/ManagerFTX.h)). The

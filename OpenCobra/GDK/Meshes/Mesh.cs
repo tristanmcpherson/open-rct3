@@ -50,6 +50,7 @@ public class Mesh(List<Vertex> vertices, List<uint> indices) : IResource {
   /// </summary>
   // TODO: Extract this method into the renderer
   public void Upload(Shader shader) {
+    ObjectDisposedException.ThrowIf(State == State.Disposed, this);
     if (State == State.Ready) return;
     var gl = IGame.IoC.Resolve<GL>();
 
@@ -144,12 +145,14 @@ public class Mesh(List<Vertex> vertices, List<uint> indices) : IResource {
   public void Dispose() {
     if (State == State.Disposed) return;
 
-    var gl = IGame.IoC.Resolve<GL>();
-    gl.DeleteVertexArray(Vao);
+    if (State == State.Ready) {
+      var gl = IGame.IoC.Resolve<GL>();
+      gl.DeleteVertexArray(Vao);
+      gl.DeleteBuffer(Vbo);
+      gl.DeleteBuffer(Ebo);
+    }
     Vao = 0;
-    gl.DeleteBuffer(Vbo);
     Vbo = 0;
-    gl.DeleteBuffer(Ebo);
     Ebo = 0;
 
     State = State.Disposed;

@@ -16,7 +16,6 @@ using OpenCobra.GDK.Shaders;
 using OpenCobra.GDK.Threading;
 using Silk.NET.Core.Contexts;
 using Silk.NET.OpenGL;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
@@ -29,9 +28,16 @@ public class Renderer : ThreadAffine, IRenderer {
   private readonly static Logger logger = LogManager.GetCurrentClassLogger();
   private readonly IGLContext context = Game.IoC.Resolve<IGLContext>();
   private readonly GL gl = Game.IoC.Resolve<GL>();
-  private readonly ConcurrentDictionary<Material, ShaderProgram> shaders = new();
   private readonly Controller gui = Game.IoC.Resolve<Controller>();
+  private readonly ResourceCache<MaterialCacheKey, ShaderProgram> shaders;
+  private readonly ResourceCache<TextureCacheKey, uint> textures;
+  private readonly HashSet<Materials.Texture> uploadedTextures = [];
   private bool? appliedVSync;
+
+  public Renderer() {
+    shaders = new(program => gl.DeleteProgram(program.Shader.Handle));
+    textures = new(gl.DeleteTexture);
+  }
 
   public State State { get; private set; } = State.Uninitialized;
   public Color ClearColor { get; set; } = Color.FromArgb(45, 45, 48);
@@ -52,7 +58,10 @@ public class Renderer : ThreadAffine, IRenderer {
     if (State == State.Disposed) return;
     GC.SuppressFinalize(this);
 
-    foreach (var program in shaders.Values) gl.DeleteProgram(program.Shader.Handle);
+    shaders.Dispose();
+    textures.Dispose();
+    foreach (var texture in uploadedTextures) texture.ResetUpload();
+    uploadedTextures.Clear();
     State = State.Disposed;
   });
 
@@ -66,7 +75,7 @@ public class Renderer : ThreadAffine, IRenderer {
     if (!viewProj.HasValue) return;
 
     // Upload uninitialized models and materials
-    var models = scene.UninitializedModels.ToArray();
+    var models = scene.Models.Where(NeedsUpload).ToArray();
     if (models.Length > 0) UploadChanges(scene.Camera, models);
 
     // Render the scene
@@ -148,7 +157,7 @@ public class Renderer : ThreadAffine, IRenderer {
         Vao: mesh.Vao,
         Vbo: mesh.Vbo,
         TextureHandle: material.AlbedoTexture?.Handle ?? null,
-        ShaderHandle: shaders[material].Shader.Handle,
+        ShaderHandle: shaders[material.CacheKey].Shader.Handle,
         IndexCount: Convert.ToUInt32(mesh.Indices.Count),
         ModelTransform: model.Transform.Matrix
       );
@@ -159,43 +168,69 @@ public class Renderer : ThreadAffine, IRenderer {
     foreach (var model in models) {
       Debug.Assert(model.Material != null);
       // TODO: Use KhrParallelShaderCompile
-      UploadMaterial(model.Material);
+      var shaderProgram = UploadMaterial(model.Material);
 
       // Attach model and scene uniforms
-      var shaderProgram = shaders[model.Material];
-      shaderProgram.Uniforms.Add(model.Transform);
-      shaderProgram.Uniforms.Add(camera);
+      if (!shaderProgram.Uniforms.Contains(model.Transform))
+        shaderProgram.Uniforms.Add(model.Transform);
+      if (!shaderProgram.Uniforms.Contains(camera)) shaderProgram.Uniforms.Add(camera);
       // Upload mesh data
-      Debug.Assert(model.Mesh.State == State.Uninitialized);
       model.Mesh.Upload(shaderProgram.Shader);
     }
   }
 
-  private void UploadMaterial(Material material) {
-    // Material textures
-    foreach (var texture in material.Textures.Where(t => t.State == State.Uninitialized))
-      texture!.Upload();
+  private bool NeedsUpload(Model model) {
+    var material = model.Material;
+    if (model.Mesh.State == State.Disposed || material is not { State: not State.Disposed })
+      return false;
+    if (model.Mesh.State == State.Uninitialized || !shaders.ContainsKey(material.CacheKey))
+      return true;
+    return material.Textures.Any(texture =>
+      texture.State == State.Uninitialized || !textures.ContainsKey(texture.CacheKey));
+  }
 
+  private ShaderProgram UploadMaterial(Material material) {
+    // Material textures
+    foreach (var texture in material.Textures) {
+      var handle = textures.GetOrAdd(texture.CacheKey, _ => {
+        texture.Upload();
+        return texture.Handle;
+      });
+      texture.EnsureUploaded(() => handle);
+      uploadedTextures.Add(texture);
+    }
+
+    return shaders.GetOrAdd(material.CacheKey, _ => CompileShaderProgram(material));
+  }
+
+  private ShaderProgram CompileShaderProgram(Material material) {
     // Compile shaders
     var vertexShader = gl.CreateShader(ShaderType.VertexShader);
-    gl.ShaderSource(vertexShader, material.Shaders.Vertex);
-    gl.CompileShader(vertexShader);
-    CheckShaderError(gl, vertexShader);
+    var fragmentShader = 0u;
+    var program = 0u;
+    try {
+      gl.ShaderSource(vertexShader, material.Shaders.Vertex);
+      gl.CompileShader(vertexShader);
+      CheckShaderError(gl, vertexShader);
 
-    var fragmentShader = gl.CreateShader(ShaderType.FragmentShader);
-    gl.ShaderSource(fragmentShader, material.Shaders.Fragment);
-    gl.CompileShader(fragmentShader);
-    CheckShaderError(gl, fragmentShader);
+      fragmentShader = gl.CreateShader(ShaderType.FragmentShader);
+      gl.ShaderSource(fragmentShader, material.Shaders.Fragment);
+      gl.CompileShader(fragmentShader);
+      CheckShaderError(gl, fragmentShader);
 
-    var program = gl.CreateProgram();
-    gl.AttachShader(program, vertexShader);
-    gl.AttachShader(program, fragmentShader);
-    gl.LinkProgram(program);
-    CheckProgramError(gl, program);
-    shaders[material] = new(program);
-
-    gl.DeleteShader(vertexShader);
-    gl.DeleteShader(fragmentShader);
+      program = gl.CreateProgram();
+      gl.AttachShader(program, vertexShader);
+      gl.AttachShader(program, fragmentShader);
+      gl.LinkProgram(program);
+      CheckProgramError(gl, program);
+      return new(program);
+    } catch {
+      if (program != 0) gl.DeleteProgram(program);
+      throw;
+    } finally {
+      gl.DeleteShader(vertexShader);
+      if (fragmentShader != 0) gl.DeleteShader(fragmentShader);
+    }
   }
 
   private static void CheckShaderError(GL gl, uint shader) {
@@ -212,5 +247,39 @@ public class Renderer : ThreadAffine, IRenderer {
       logger.Error($"Shader Program Error: {infoLog}");
       throw new ShaderError(infoLog);
     }
+  }
+}
+
+internal sealed class ResourceCache<TKey, TResource>(Action<TResource> release) : IDisposable
+  where TKey : notnull {
+  private readonly Dictionary<TKey, TResource> resources = [];
+  private bool disposed;
+
+  public TResource this[TKey key] {
+    get {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      return resources[key];
+    }
+  }
+
+  public bool ContainsKey(TKey key) {
+    ObjectDisposedException.ThrowIf(disposed, this);
+    return resources.ContainsKey(key);
+  }
+
+  public TResource GetOrAdd(TKey key, Func<TKey, TResource> create) {
+    ObjectDisposedException.ThrowIf(disposed, this);
+    if (resources.TryGetValue(key, out var resource)) return resource;
+
+    resource = create(key);
+    resources.Add(key, resource);
+    return resource;
+  }
+
+  public void Dispose() {
+    if (disposed) return;
+    foreach (var resource in resources.Values) release(resource);
+    resources.Clear();
+    disposed = true;
   }
 }

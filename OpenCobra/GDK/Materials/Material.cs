@@ -5,10 +5,7 @@
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved
 
-using DryIoc;
-using OpenCobra.GDK.Game;
 using OpenCobra.GDK.Shaders;
-using Silk.NET.OpenGL;
 using System.ComponentModel;
 
 namespace OpenCobra.GDK.Materials;
@@ -16,18 +13,37 @@ namespace OpenCobra.GDK.Materials;
 public abstract class Material : IResource, IDisposable {
   // FIXME: Inline this into `Material.State`.
   private bool disposed;
+  private Texture? albedoTexture;
+  private Texture? normalMap;
+  private Texture? specularMap;
+  private Texture? emissiveMap;
 
   [Category("GPU")]
   public ShaderSource Shaders { get; protected set; }
 
+  [Browsable(false)]
+  public MaterialCacheKey CacheKey => new(Shaders);
+
   [Category("Appearance")]
-  public Texture? AlbedoTexture { get; set; }
+  public Texture? AlbedoTexture {
+    get => albedoTexture;
+    set => SetTexture(ref albedoTexture, value);
+  }
   [Category("Appearance")]
-  public Texture? NormalMap { get; set; }
+  public Texture? NormalMap {
+    get => normalMap;
+    set => SetTexture(ref normalMap, value);
+  }
   [Category("Appearance")]
-  public Texture? SpecularMap { get; set; }
+  public Texture? SpecularMap {
+    get => specularMap;
+    set => SetTexture(ref specularMap, value);
+  }
   [Category("Appearance")]
-  public Texture? EmissiveMap { get; set; }
+  public Texture? EmissiveMap {
+    get => emissiveMap;
+    set => SetTexture(ref emissiveMap, value);
+  }
 
   public IEnumerable<Texture> Textures {
     get {
@@ -52,18 +68,25 @@ public abstract class Material : IResource, IDisposable {
     if (disposed) return;
     GC.SuppressFinalize(this);
 
-    var gl = IGame.IoC.Resolve<GL>();
     // FIXME: Dispose of shader sources
-    Texture?[] textures = [AlbedoTexture, NormalMap, SpecularMap, EmissiveMap];
-    foreach (var texture in textures.Where(t => t != null)) {
-      Debug.Assert(texture != null);
-      gl.DeleteTexture(texture.Handle);
-      texture.Dispose();
-    }
+    Texture?[] textures = [albedoTexture, normalMap, specularMap, emissiveMap];
+    foreach (var texture in textures.Where(t => t != null).Cast<Texture>()) texture.Dispose();
+    foreach (var texture in textures.Where(t => t != null).Cast<Texture>()) texture.Release();
 
     disposed = true;
   }
+
+  private void SetTexture(ref Texture? field, Texture? value) {
+    ObjectDisposedException.ThrowIf(disposed, this);
+    if (ReferenceEquals(field, value)) return;
+
+    value?.Retain();
+    field?.Release();
+    field = value;
+  }
 }
+
+public readonly record struct MaterialCacheKey(ShaderSource Shaders);
 
 public class Flat : Material {
   public Flat() {

@@ -27,6 +27,7 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
   private readonly SurfaceSettings settings;
   private GL? gl;
   private Renderer? renderer;
+  private readonly WindowsSurfaceResourceOwner resources = new();
 
   /// <inheritdoc/>
   /// <remarks>
@@ -45,6 +46,7 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
 
     this.settings = settings?.Clone() ?? new SurfaceSettings();
     Context = new GLContext(settings!);
+    resources.OwnContext(Context.Dispose);
   }
 
   [Browsable(false)]
@@ -85,11 +87,20 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     SetWindowLongPtr(Handle, WindowLongs.GWL_STYLE, (IntPtr)styles);
 
     // Try to create an appropriate OpenGL context
-    Context.Hdc = GetDC(Handle);
+    var hdc = GetDC(Handle);
+    if (hdc == nint.Zero)
+      throw new InvalidOperationException("Could not acquire the surface device context.");
+    resources.OwnDeviceContext(() => {
+      _ = ReleaseDC(Handle, hdc);
+      Context.Hdc = nint.Zero;
+    });
+    Context.Hdc = hdc;
 
     // Load Silk.NET OpenGL with the current context
-    gl = GL.GetApi(Context.GetProcAddress);
-    Debug.Assert(gl is not null);
+    var ownedGl = GL.GetApi(Context.GetProcAddress);
+    gl = ownedGl;
+    resources.OwnGl(ownedGl.Dispose);
+    Debug.Assert(ownedGl is not null);
     logger.Info("Created OpenGL context: {ctxSettings}", settings);
     Context.MakeCurrent();
 
@@ -100,47 +111,31 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
 
     // Initialize the GUI controller first, renderer implementations depend on it
     var mainWindow = Parent as GameWindow ?? throw new InvalidOperationException();
-    Game.IoC.RegisterInstance(new Controller(mainWindow.CreateInput()), IfAlreadyRegistered.Throw);
+    var input = mainWindow.CreateInput();
+    resources.OwnInput(input.Dispose);
+    var controller = new Controller(input);
+    resources.OwnController(controller.Dispose);
+    Game.IoC.RegisterInstance(controller, IfAlreadyRegistered.Throw);
 
     // Initialize the scene renderer
-    renderer = new Renderer { FramebufferSize = new(ClientSize.Width, ClientSize.Height) };
-    renderer.Initialize();
-    Game.IoC.RegisterInstance<IRenderer>(renderer);
+    var ownedRenderer = new Renderer {
+      FramebufferSize = new(ClientSize.Width, ClientSize.Height)
+    };
+    renderer = ownedRenderer;
+    resources.OwnRenderer(ownedRenderer.Dispose);
+    ownedRenderer.Initialize();
+    Game.IoC.RegisterInstance<IRenderer>(ownedRenderer);
 
-    SurfaceCreated?.Invoke(this, renderer);
+    resources.OwnGame(() => Game.Instance?.Dispose());
+    SurfaceCreated?.Invoke(this, ownedRenderer);
     base.OnHandleCreated(e);
     Invalidate();
   }
 
   protected override void OnHandleDestroyed(EventArgs e) {
     try {
-      if (DesignMode || !IsValid) return;
-
-      var releases = new Action[] {
-        () => {
-          Game.Instance?.Dispose();
-          logger.Trace("Game instance disposed");
-        },
-        () => {
-          Context.Dispose();
-          if (Context.Hdc != nint.Zero) {
-            _ = ReleaseDC(Handle, Context.Hdc);
-            Context.Hdc = nint.Zero;
-          }
-          logger.Trace("Context disposed");
-        },
-        () => {
-          gl?.Dispose();
-          logger.Trace("Surface disposed");
-        },
-      };
-
-      if (renderer != null) {
-        renderer.Dispose(releases[0], releases[1], releases[2]);
-        logger.Trace("Renderer disposed");
-      } else {
-        RendererTeardown.Run(Context, releases);
-      }
+      resources.Dispose(Context);
+      logger.Trace("Surface resources disposed");
     } finally {
       renderer = null;
       gl = null;

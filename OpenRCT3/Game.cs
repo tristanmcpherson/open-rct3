@@ -16,6 +16,7 @@ using OpenRCT3.OpenGL;
 using OpenRCT3.Platforms;
 using OpenRCT3.Scenario;
 using OpenRCT3.Simulation;
+using System.Collections.Generic;
 using System.Numerics;
 using System.Threading;
 
@@ -46,6 +47,9 @@ public class Game : IGame {
   private DateTime lastLagWarning = DateTime.Now;
   private readonly Renderer renderer = Game.IoC.Resolve<IRenderer>() as Renderer ??
     throw new InvalidOperationException();
+  private Scene? ownedScene;
+  private Simulation.World? ownedWorld;
+  private bool disposed;
 
   public static Container IoC => IGame.IoC;
   public static Game? Instance { get; private set; }
@@ -105,6 +109,8 @@ public class Game : IGame {
   public Scene Scene { get; } = new();
 
   public Game() {
+    ownedScene = Scene;
+    ownedWorld = World;
     Instance = this;
 
     logger.Trace("Creating game world...");
@@ -248,12 +254,38 @@ public class Game : IGame {
   }
 
   public void Dispose() {
+    if (disposed) return;
+    disposed = true;
+    var scene = ownedScene;
+    var world = ownedWorld;
+    ownedScene = null;
+    ownedWorld = null;
+
     // Dispose GPU-backed scene resources while the graphics context is still alive, then release
     // the world-owned texture reference and simulation systems.
-    Scene.Dispose();
-    World.Dispose();
-    GC.SuppressFinalize(this);
-    Instance = null;
+    DisposeOwnedResources(
+      scene == null ? null : scene.Dispose,
+      world == null ? null : world.Dispose,
+      () => {
+        isRunning = false;
+        Instance = null;
+        GC.SuppressFinalize(this);
+      });
+  }
+
+  internal static void DisposeOwnedResources(
+    Action? disposeScene,
+    Action? disposeWorld,
+    Action clearState
+  ) {
+    try {
+      var releases = new List<Action>();
+      if (disposeScene != null) releases.Add(disposeScene);
+      if (disposeWorld != null) releases.Add(disposeWorld);
+      ResourceReleaser.Run(releases);
+    } finally {
+      clearState();
+    }
   }
 
   /// <summary>

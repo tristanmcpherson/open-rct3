@@ -316,7 +316,18 @@ internal static class RendererTeardown {
     if (!context.IsCurrent)
       throw new InvalidOperationException("The renderer's OpenGL context is not current.");
 
+    ResourceReleaser.Run(releases);
+  }
+}
+
+internal static class ResourceReleaser {
+  public static void Run(IEnumerable<Action> releases) {
     var errors = new List<Exception>();
+    Collect(releases, errors);
+    if (errors.Count > 0) throw new AggregateException(errors);
+  }
+
+  public static void Collect(IEnumerable<Action> releases, List<Exception> errors) {
     foreach (var release in releases) {
       try {
         release();
@@ -324,6 +335,80 @@ internal static class RendererTeardown {
         errors.Add(error);
       }
     }
-    if (errors.Count > 0) throw new AggregateException(errors);
   }
+}
+
+internal sealed class MacSurfaceResourceOwner {
+  private readonly OrderedResourceOwners resources = new();
+
+  public void OwnContext(Action release) => resources.Own(50, release);
+  public void OwnGl(Action release) => resources.Own(40, release);
+  public void OwnInput(Action release) => resources.Own(30, release);
+  public void OwnController(Action release) => resources.Own(20, release, true);
+  public void OwnRenderer(Action release) => resources.Own(10, release, true);
+  public void OwnGame(Action release) => resources.Own(0, release, true);
+  public void Dispose(IGLContext context) => resources.Dispose(context);
+}
+
+internal sealed class WindowsSurfaceResourceOwner {
+  private readonly OrderedResourceOwners resources = new();
+
+  public void OwnContext(Action release) => resources.Own(40, release);
+  public void OwnDeviceContext(Action release) => resources.Own(50, release);
+  public void OwnGl(Action release) => resources.Own(60, release);
+  public void OwnInput(Action release) => resources.Own(30, release);
+  public void OwnController(Action release) => resources.Own(20, release, true);
+  public void OwnRenderer(Action release) => resources.Own(10, release, true);
+  public void OwnGame(Action release) => resources.Own(0, release, true);
+  public void Dispose(IGLContext context) => resources.Dispose(context);
+}
+
+internal sealed class OrderedResourceOwners {
+  private readonly object lifetimeLock = new();
+  private readonly List<OwnedRelease> releases = [];
+  private bool disposed;
+
+  public void Own(int order, Action release, bool requiresCurrent = false) {
+    lock (lifetimeLock) {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      releases.Add(new(order, release, requiresCurrent));
+    }
+  }
+
+  public void Dispose(IGLContext context) {
+    OwnedRelease[] ownedReleases;
+    lock (lifetimeLock) {
+      if (disposed) return;
+      ownedReleases = [.. releases.OrderBy(resource => resource.Order)];
+      releases.Clear();
+      disposed = true;
+    }
+
+    if (!ownedReleases.Any(resource => resource.RequiresCurrent)) {
+      ResourceReleaser.Run(ownedReleases.Select(resource => resource.Release));
+      return;
+    }
+
+    try {
+      context.MakeCurrent();
+      if (!context.IsCurrent)
+        throw new InvalidOperationException("The renderer's OpenGL context is not current.");
+    } catch (Exception contextError) {
+      var errors = new List<Exception> { contextError };
+      ResourceReleaser.Collect(
+        ownedReleases
+          .Where(resource => !resource.RequiresCurrent)
+          .Select(resource => resource.Release),
+        errors);
+      throw new AggregateException(errors);
+    }
+
+    ResourceReleaser.Run(ownedReleases.Select(resource => resource.Release));
+  }
+
+  private readonly record struct OwnedRelease(
+    int Order,
+    Action Release,
+    bool RequiresCurrent
+  );
 }

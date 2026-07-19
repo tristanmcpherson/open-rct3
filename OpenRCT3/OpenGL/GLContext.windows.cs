@@ -126,7 +126,10 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
 
   public void Dispose() {
     GC.SuppressFinalize(this);
-    if (context != nint.Zero) wgl.DeleteContext(context);
+    if (context != nint.Zero) {
+      if (wgl.GetCurrentContext() == context) wgl.MakeCurrent(Hdc, nint.Zero);
+      wgl.DeleteContext(context);
+    }
     context = nint.Zero;
     if (openglLib != nint.Zero) FreeLibrary(openglLib);
   }

@@ -12,8 +12,17 @@ using OpenCobra.GDK.GUI;
 namespace OpenCobra.GDK;
 
 public class Scene : IResource, IDisposable {
-  private readonly Platform.IGraphicsSurface surface = IGame.IoC.Resolve<Platform.IGraphicsSurface>();
-  private readonly Controller gui = IGame.IoC.Resolve<Controller>();
+  private readonly Platform.IGraphicsSurface? surface;
+  private readonly Controller? gui;
+
+  public Scene() : this(
+    IGame.IoC.Resolve<Platform.IGraphicsSurface>(),
+    IGame.IoC.Resolve<Controller>()) { }
+
+  protected Scene(Platform.IGraphicsSurface? surface, Controller? gui) {
+    this.surface = surface;
+    this.gui = gui;
+  }
 
   public State State { get; private set; } = State.Uninitialized;
 
@@ -32,6 +41,9 @@ public class Scene : IResource, IDisposable {
   /// <param name="delta">The time since the last update.</param>
   ///
   public void Update(TimeSpan delta) {
+    ObjectDisposedException.ThrowIf(State == State.Disposed, this);
+    if (surface == null || gui == null)
+      throw new InvalidOperationException("Scene services are unavailable.");
     Camera.Update(surface.AspectRatio);
     gui.Update(delta.TotalSeconds);
   }
@@ -39,9 +51,13 @@ public class Scene : IResource, IDisposable {
   public void Dispose() {
     if (State == State.Disposed) return;
 
-    foreach (var model in Models) model.Dispose();
+    var models = Models.ToArray();
     Models.Clear();
     GC.SuppressFinalize(this);
-    State = State.Disposed;
+    try {
+      ResourceDisposal.Run(models.Select<Model, Action>(model => model.Dispose));
+    } finally {
+      State = State.Disposed;
+    }
   }
 }

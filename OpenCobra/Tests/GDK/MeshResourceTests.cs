@@ -56,6 +56,45 @@ public class MeshResourceTests {
       Is.EqualTo(deletionCount));
   }
 
+  [TestCase("Vao", new uint[] { }, new uint[] { })]
+  [TestCase("Vbo", new uint[] { }, new uint[] { 1 })]
+  [TestCase("Ebo", new uint[] { 2 }, new uint[] { 1 })]
+  public void ZeroHandle_ReleasesPriorAllocationsAndAllowsRetryAndDispose(
+    string zeroAllocation,
+    uint[] expectedBuffers,
+    uint[] expectedVertexArrays
+  ) {
+    var mesh = new Mesh([], []);
+    var gpu = new FakeMeshGpuApi { ZeroAllocation = zeroAllocation };
+
+    Assert.Throws<InvalidOperationException>(new Action(() =>
+      mesh.Upload(new Shader(1), gpu)));
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(mesh.State, Is.EqualTo(State.Uninitialized));
+      Assert.That(mesh.Vao, Is.Zero);
+      Assert.That(mesh.Vbo, Is.Zero);
+      Assert.That(mesh.Ebo, Is.Zero);
+      Assert.That(gpu.DeletedBuffers, Is.EqualTo(expectedBuffers));
+      Assert.That(gpu.DeletedVertexArrays, Is.EqualTo(expectedVertexArrays));
+    }
+
+    gpu.ZeroAllocation = null;
+    mesh.Upload(new Shader(1), gpu);
+    Assert.That(mesh.State, Is.EqualTo(State.Ready));
+    var deletionCount = gpu.DeletedBuffers.Count + gpu.DeletedVertexArrays.Count;
+
+    mesh.Dispose(gpu);
+    mesh.Dispose(gpu);
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(mesh.State, Is.EqualTo(State.Disposed));
+      Assert.That(gpu.DeletedBuffers, Has.Count.EqualTo(expectedBuffers.Length + 2));
+      Assert.That(gpu.DeletedVertexArrays,
+        Has.Count.EqualTo(expectedVertexArrays.Length + 1));
+      Assert.That(gpu.DeletedBuffers.Count + gpu.DeletedVertexArrays.Count,
+        Is.EqualTo(deletionCount + 3));
+    }
+  }
+
   [Test]
   public void DisposingUninitializedMesh_IsIdempotentWithoutGlContext() {
     var mesh = new Mesh([], []);
@@ -72,12 +111,15 @@ public class MeshResourceTests {
     private uint nextHandle = 1;
 
     public string? Failure { get; set; }
+    public string? ZeroAllocation { get; set; }
     public bool FailFirstBufferDeletion { get; set; }
     public List<uint> DeletedBuffers { get; } = [];
     public List<uint> DeletedVertexArrays { get; } = [];
 
-    public uint CreateVertexArray() => nextHandle++;
-    public uint CreateBuffer() => nextHandle++;
+    public uint CreateVertexArray() => Allocate(nameof(Mesh.Vao));
+
+    public uint CreateBuffer() => Allocate(
+      nextHandle % 3 == 2 ? nameof(Mesh.Vbo) : nameof(Mesh.Ebo));
     public void BindVertexArray(uint handle) => MaybeFail(nameof(BindVertexArray));
     public void BindVertexBuffer(uint handle) => MaybeFail(nameof(BindVertexBuffer));
     public void UploadVertices(Vertex[] vertices) => MaybeFail(nameof(UploadVertices));
@@ -105,6 +147,11 @@ public class MeshResourceTests {
     private void MaybeFail(string operation) {
       if (Failure == operation)
         throw new InvalidOperationException($"Injected {operation} failure.");
+    }
+
+    private uint Allocate(string resource) {
+      if (ZeroAllocation == resource) return 0;
+      return nextHandle++;
     }
   }
 }

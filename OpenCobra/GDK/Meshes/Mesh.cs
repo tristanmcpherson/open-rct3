@@ -67,17 +67,20 @@ public class Mesh(List<Vertex> vertices, List<uint> indices) : IResource {
     try {
       // VAO
       vao = gpu.CreateVertexArray();
+      ValidateHandle(vao, "vertex array");
       gpu.BindVertexArray(vao);
       gpu.CheckError(string.Format("Binding {0} vertex array", Name));
 
       // VBO
       vbo = gpu.CreateBuffer();
+      ValidateHandle(vbo, "vertex buffer");
       gpu.BindVertexBuffer(vbo);
       gpu.UploadVertices(Vertices.ToArray());
       gpu.CheckError(string.Format("Uploading {0} vertex buffer", Name));
 
       // EBO
       ebo = gpu.CreateBuffer();
+      ValidateHandle(ebo, "index buffer");
       gpu.BindIndexBuffer(ebo);
       gpu.UploadIndices(Indices.ToArray());
       gpu.CheckError(string.Format("Uploading {0} index buffer", Name));
@@ -178,6 +181,11 @@ public class Mesh(List<Vertex> vertices, List<uint> indices) : IResource {
     if (vbo != 0) TryRelease(() => gpu.DeleteBuffer(vbo), errors);
     if (vao != 0) TryRelease(() => gpu.DeleteVertexArray(vao), errors);
     return errors;
+  }
+
+  private static void ValidateHandle(uint handle, string resource) {
+    if (handle == 0)
+      throw new InvalidOperationException($"GPU allocation returned a zero {resource} handle.");
   }
 
   private static void TryRelease(Action release, List<Exception> errors) {

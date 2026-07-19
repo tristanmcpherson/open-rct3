@@ -16,6 +16,32 @@ namespace OpenRCT3.Tests.OpenGL;
 [TestFixture]
 public class WindowsLifecycleTests {
   [Test]
+  public void FirstFramePresentation_PreparesSceneBeforeForcingSynchronousPaint() {
+    var order = new List<string>();
+
+    WindowsFramePresentation.Present(
+      () => order.Add("prepare-scene"),
+      () => order.Add("invalidate"),
+      () => order.Add("update"));
+
+    Assert.That(order, Is.EqualTo(new[] {
+      "prepare-scene", "invalidate", "update",
+    }));
+  }
+
+  [Test]
+  public void StartupFramePresentation_ForcesPaintWithoutAReadyScene() {
+    var order = new List<string>();
+
+    WindowsFramePresentation.Present(
+      prepareFrame: null,
+      () => order.Add("invalidate"),
+      () => order.Add("update"));
+
+    Assert.That(order, Is.EqualTo(new[] { "invalidate", "update" }));
+  }
+
+  [Test]
   public void CloseCoordinator_WaitsForGameLoopBeforeAllowingFinalClose() {
     var coordinator = new GameLoopCloseCoordinator();
     var gameLoop = new TaskCompletionSource();

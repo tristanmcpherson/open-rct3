@@ -25,9 +25,16 @@ public class World : GDK.Game.World {
   public override void Load() {
     var measurement = Progress.MeasureTasks([
       new(() => {
-        var terrain = Terrain.Load();
-        Terrain = terrain;
-        Park = new Park(terrain);
+        var terrain = Terrain.Load(out var waterManager);
+        try {
+          var park = new Park(terrain);
+          if (waterManager != null) WaterManagerLoader.Load(park, terrain, waterManager);
+          Terrain = terrain;
+          Park = park;
+        } catch {
+          terrain.TextureCatalog?.Dispose();
+          throw;
+        }
       }, "Loading park terrain"),
     ]);
     Progress = measurement.Progress;
@@ -36,7 +43,7 @@ public class World : GDK.Game.World {
 
   protected override void Dispose(bool disposing) {
     if (disposing) {
-      Terrain?.GrassTexture?.Dispose();
+      Terrain?.TextureCatalog?.Dispose();
     }
 
     Terrain = null;

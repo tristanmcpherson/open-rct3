@@ -63,6 +63,9 @@ function Get-NativeSmokeLogState {
     HasTerrainMesh = @($lines | Where-Object {
       $_ -match '\|DEBUG\|OpenRCT3\.Game\|Added terrain mesh'
     }).Count -gt 0
+    HasInitialFrame = @($lines | Where-Object {
+      $_ -match '\|DEBUG\|OpenRCT3\.Platforms\.Windows\.GameWindow\|Presented initial scene frame'
+    }).Count -gt 0
     HasFailure = @($lines | Where-Object { $_ -match '\|(ERROR|FATAL)\|' }).Count -gt 0
     LoadedMapCount = $loadedMapLines.Count
     LoadedMapPath = $loadedMapPath
@@ -87,6 +90,7 @@ function Assert-NativeSmokeCompletion {
   if (-not $State.HasStartup) { $missing += 'Windows startup' }
   if (-not $State.HasWorldLoaded) { $missing += 'Game world loaded' }
   if (-not $State.HasTerrainMesh) { $missing += 'Added terrain mesh' }
+  if (-not $State.HasInitialFrame) { $missing += 'Presented initial scene frame' }
   if ($State.LoadedMapCount -ne 1) { $missing += 'exactly one application loaded-map identity' }
   if ($missing.Count -gt 0) {
     throw "Native smoke did not reach required completion markers: $($missing -join ', ')."

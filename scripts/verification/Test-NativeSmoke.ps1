@@ -298,6 +298,7 @@ try {
     }
     if ($state.HasFailure) { Assert-NativeSmokeCompletion -State $state }
     if ($state.HasStartup -and $state.HasWorldLoaded -and $state.HasTerrainMesh -and
+        $state.HasInitialFrame -and
         $state.LoadedMapCount -eq 1) { break }
     Start-Sleep -Milliseconds 250
   } while ((Get-Date) -lt $deadline)
@@ -371,9 +372,19 @@ try {
       $manifest.cleanup.closeResult = 'already-exited'
     } else {
       $close = Invoke-NativeDriver -Arguments @(
-        '-Action', 'Close', '-TimeoutSec', '5', '-StrictPid')
+        '-Action', 'Close', '-TimeoutSec', '10', '-StrictPid')
       Write-DriverEvidence -Invocation $close
-      $candidate = Get-Process -Id $candidatePid -ErrorAction SilentlyContinue
+      $closeDeadline = (Get-Date).AddSeconds(1)
+      do {
+        $candidate = Get-Process -Id $candidatePid -ErrorAction SilentlyContinue
+        if ($null -eq $candidate) { break }
+        $candidate.Refresh()
+        if ($candidate.HasExited) {
+          $candidate = $null
+          break
+        }
+        Start-Sleep -Milliseconds 50
+      } while ((Get-Date) -lt $closeDeadline)
       if ($close.ExitCode -eq 0 -and $null -eq $candidate) {
         $manifest.cleanup.closeResult = 'graceful'
       } else {

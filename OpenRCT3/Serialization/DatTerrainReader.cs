@@ -3,12 +3,14 @@
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Text;
 
 namespace OpenRCT3.Serialization;
 
 /// <summary>
-/// Reads the first EngineTerrain/GE_Terrain field from an RCT3 DAT file.
+/// Reads the first EngineTerrain/GE_Terrain field and first WaterManager payload from an RCT3 DAT
+/// file while consuming every declared value.
 /// </summary>
 internal static class DatTerrainReader {
   private const string TargetFieldName = "EngineTerrain";
@@ -26,6 +28,10 @@ internal static class DatTerrainReader {
   private const int MaxPayloadBytes = 64 * 1024 * 1024;
   private const int TerrainHeaderBytes = 18;
   private const int TerrainTailBytes = 8;
+  private const int WaterManagerHeaderBytes = 6;
+  private const int WaterPoolHeaderBytes = 8;
+  private const int WaterRecordBytes = 4;
+  private const int MaxWaterRecordCount = 2 * byte.MaxValue * byte.MaxValue;
 
   public static DatTerrainData Read(string path) {
     if (string.IsNullOrWhiteSpace(path))
@@ -52,13 +58,14 @@ internal static class DatTerrainReader {
 
       reader.ReadUInt64();
       var structure = structures[Convert.ToInt32(structureIndex)];
-      foreach (var field in structure.Fields) {
-        var terrain = ReadFieldValue(reader, field, state);
-        if (terrain != null) return terrain;
-      }
+      foreach (var field in structure.Fields)
+        ReadFieldValue(reader, field, state);
     }
 
-    throw new InvalidDataException("The DAT file does not contain an EngineTerrain/GE_Terrain field.");
+    var terrain = state.Terrain
+      ?? throw new InvalidDataException(
+        "The DAT file does not contain an EngineTerrain/GE_Terrain field.");
+    return AttachWaterManager(terrain, state.WaterManager);
   }
 
   private static int ReadStructureCount(DatBinaryReader reader) {
@@ -156,7 +163,7 @@ internal static class DatTerrainReader {
     _ => throw new InvalidDataException($"Unsupported DAT field kind '{kind}'."),
   };
 
-  private static DatTerrainData? ReadFieldValue(
+  private static void ReadFieldValue(
     DatBinaryReader reader,
     FieldDefinition field,
     ValueReadState state) {
@@ -167,40 +174,41 @@ internal static class DatTerrainReader {
       case FieldKind.Int8:
       case FieldKind.UInt8:
         reader.Skip(1);
-        return null;
+        return;
       case FieldKind.Int16:
       case FieldKind.UInt16:
         reader.Skip(2);
-        return null;
+        return;
       case FieldKind.Int32:
       case FieldKind.UInt32:
       case FieldKind.Float32:
         reader.Skip(4);
-        return null;
+        return;
       case FieldKind.ManagedObjectPtr:
       case FieldKind.Reference:
         reader.Skip(8);
-        return null;
+        return;
       case FieldKind.Vector3:
       case FieldKind.Orientation:
         reader.Skip(12);
-        return null;
+        return;
       case FieldKind.Matrix44:
         reader.Skip(64);
-        return null;
+        return;
       case FieldKind.String:
         reader.Skip(ReadBoundedSize(reader.ReadUInt32(), MaxStringBytes, "string length"));
-        return null;
+        return;
       case FieldKind.Array:
       case FieldKind.List:
-        return ReadCollection(reader, field, state);
+        ReadCollection(reader, field, state);
+        return;
       case FieldKind.Struct:
         // dat.rs records this size but walks the child definitions directly. Treat it as bounded
         // metadata rather than inventing an unproven container boundary.
         ReadSizedValueLength(reader, field.FixedSize, "structure payload");
-        return ReadChildValues(reader, field, state);
+        ReadChildValues(reader, field, state);
+        return;
       case FieldKind.GraphedValue:
-      case FieldKind.WaterManager:
       case FieldKind.SkirtTrees:
       case FieldKind.PathTileList:
       case FieldKind.WaypointList:
@@ -211,18 +219,30 @@ internal static class DatTerrainReader {
       case FieldKind.StringTable:
       case FieldKind.BlockingScenery:
         reader.Skip(ReadSizedValueLength(reader, field.FixedSize, "custom payload"));
-        return null;
+        return;
+      case FieldKind.WaterManager:
+        var waterPayloadSize = ReadSizedValueLength(
+          reader,
+          field.FixedSize,
+          "WaterManager payload");
+        var waterManager = ReadWaterManager(reader, waterPayloadSize, state);
+        state.CaptureWaterManager(waterManager);
+        return;
       case FieldKind.GETerrain:
         var payloadSize = ReadSizedValueLength(reader, field.FixedSize, "GE_Terrain payload");
-        if (field.Name == TargetFieldName) return ReadTerrain(reader, payloadSize);
+        if (field.Name == TargetFieldName) {
+          var terrain = ReadTerrain(reader, payloadSize);
+          state.CaptureTerrain(terrain);
+          return;
+        }
         reader.Skip(payloadSize);
-        return null;
+        return;
       default:
         throw new InvalidDataException($"Unsupported DAT field kind '{field.Kind}'.");
     }
   }
 
-  private static DatTerrainData? ReadCollection(
+  private static void ReadCollection(
     DatBinaryReader reader,
     FieldDefinition field,
     ValueReadState state) {
@@ -232,22 +252,16 @@ internal static class DatTerrainReader {
     var length = ReadBoundedCount(reader.ReadUInt32(), MaxCollectionLength, "collection length");
     state.AddCollectionElements(length);
 
-    for (var elementIndex = 0; elementIndex < length; elementIndex++) {
-      var terrain = ReadChildValues(reader, field, state);
-      if (terrain != null) return terrain;
-    }
-    return null;
+    for (var elementIndex = 0; elementIndex < length; elementIndex++)
+      ReadChildValues(reader, field, state);
   }
 
-  private static DatTerrainData? ReadChildValues(
+  private static void ReadChildValues(
     DatBinaryReader reader,
     FieldDefinition field,
     ValueReadState state) {
-    foreach (var child in field.Children) {
-      var terrain = ReadFieldValue(reader, child, state);
-      if (terrain != null) return terrain;
-    }
-    return null;
+    foreach (var child in field.Children)
+      ReadFieldValue(reader, child, state);
   }
 
   private static int ReadSizedValueLength(
@@ -256,6 +270,134 @@ internal static class DatTerrainReader {
     string description) {
     var size = fixedSize == 0 ? reader.ReadUInt32() : fixedSize;
     return ReadBoundedSize(size, MaxPayloadBytes, description);
+  }
+
+  private static DatWaterManagerData ReadWaterManager(
+    DatBinaryReader reader,
+    int payloadSize,
+    ValueReadState state) {
+    var payloadStart = reader.Position;
+    EnsurePayloadBytesRemaining(
+      reader,
+      payloadStart,
+      payloadSize,
+      WaterManagerHeaderBytes,
+      "WaterManager header");
+
+    var width = Convert.ToInt32(reader.ReadByte());
+    var height = Convert.ToInt32(reader.ReadByte());
+    if (width == 0 || height == 0)
+      throw new InvalidDataException("WaterManager dimensions must be positive.");
+
+    var poolCount = ReadBoundedCount(
+      reader.ReadUInt32(),
+      MaxCollectionLength,
+      "WaterManager pool count");
+    state.AddCollectionElements(poolCount);
+
+    var minimumPayloadSize = Convert.ToInt64(WaterManagerHeaderBytes)
+      + (Convert.ToInt64(poolCount) * WaterPoolHeaderBytes);
+    if (minimumPayloadSize > payloadSize)
+      throw new InvalidDataException("WaterManager pool count exceeds its payload size.");
+
+    var pools = new DatWaterPoolData[poolCount];
+    var maximumRecordCount = checked(width * height * 2);
+    for (var poolIndex = 0; poolIndex < poolCount; poolIndex++) {
+      EnsurePayloadBytesRemaining(
+        reader,
+        payloadStart,
+        payloadSize,
+        WaterPoolHeaderBytes,
+        $"WaterManager pool {poolIndex} header");
+
+      var poolHeight = reader.ReadSingle();
+      if (!float.IsFinite(poolHeight))
+        throw new InvalidDataException(
+          $"WaterManager pool {poolIndex} contains a non-finite height.");
+
+      var recordCount = ReadBoundedCount(
+        reader.ReadUInt32(),
+        MaxWaterRecordCount,
+        $"WaterManager pool {poolIndex} record count");
+      if (recordCount > maximumRecordCount)
+        throw new InvalidDataException(
+          $"WaterManager pool {poolIndex} record count exceeds its grid bounds.");
+      state.AddCollectionElements(recordCount);
+
+      var recordPayloadSize = checked(recordCount * WaterRecordBytes);
+      EnsurePayloadBytesRemaining(
+        reader,
+        payloadStart,
+        payloadSize,
+        recordPayloadSize,
+        $"WaterManager pool {poolIndex} records");
+
+      var records = new DatWaterRecord[recordCount];
+      HashSet<int>? occupiedTriangles = null;
+      for (var recordIndex = 0; recordIndex < recordCount; recordIndex++) {
+        var x = reader.ReadByte();
+        var y = reader.ReadByte();
+        var triangle = reader.ReadByte();
+        var vertexMask = reader.ReadByte();
+        if (x >= width || y >= height)
+          throw new InvalidDataException(
+            $"WaterManager pool {poolIndex} record {recordIndex} is outside the manager bounds.");
+        if (triangle > 1)
+          throw new InvalidDataException(
+            $"WaterManager pool {poolIndex} record {recordIndex} has an invalid triangle.");
+        if (vertexMask is < 1 or > 7)
+          throw new InvalidDataException(
+            $"WaterManager pool {poolIndex} record {recordIndex} has an invalid vertex mask.");
+
+        var triangleAddress = ((((Convert.ToInt32(y) * width) + x) * 2) + triangle);
+        occupiedTriangles ??= new HashSet<int>();
+        if (!occupiedTriangles.Add(triangleAddress))
+          throw new InvalidDataException(
+            $"WaterManager pool {poolIndex} contains a duplicate terrain triangle.");
+        records[recordIndex] = new DatWaterRecord(x, y, triangle, vertexMask);
+      }
+
+      pools[poolIndex] = new DatWaterPoolData(poolHeight, records);
+    }
+
+    var consumed = reader.Position - payloadStart;
+    if (consumed != payloadSize)
+      throw new InvalidDataException(
+        "WaterManager payload size does not exactly match its decoded contents.");
+    return new DatWaterManagerData(width, height, pools);
+  }
+
+  private static void EnsurePayloadBytesRemaining(
+    DatBinaryReader reader,
+    long payloadStart,
+    int payloadSize,
+    int requiredBytes,
+    string description) {
+    var consumed = reader.Position - payloadStart;
+    if (consumed < 0 || requiredBytes < 0 || consumed + requiredBytes > payloadSize)
+      throw new InvalidDataException($"The {description} exceeds its declared payload size.");
+  }
+
+  private static DatTerrainData AttachWaterManager(
+    DatTerrainData terrain,
+    DatWaterManagerData? waterManager) {
+    if (waterManager == null) return terrain;
+    if (waterManager.Width != terrain.Width || waterManager.Height != terrain.Height)
+      throw new InvalidDataException(
+        "WaterManager dimensions do not match the decoded GE_Terrain dimensions.");
+
+    var cells = new DatTerrainCell[terrain.Cells.Count];
+    for (var index = 0; index < cells.Length; index++)
+      cells[index] = terrain.Cells[index];
+    return new DatTerrainData(
+      terrain.Width,
+      terrain.Height,
+      terrain.OriginX,
+      terrain.OriginY,
+      terrain.TileSizeX,
+      terrain.TileSizeY,
+      cells,
+      waterManager);
   }
 
   private static DatTerrainData ReadTerrain(DatBinaryReader reader, int payloadSize) {
@@ -443,6 +585,9 @@ internal static class DatTerrainReader {
     private int _collectionElementCount;
     private int _valueReadCount;
 
+    public DatTerrainData? Terrain { get; private set; }
+    public DatWaterManagerData? WaterManager { get; private set; }
+
     public void AddCollectionElements(int count) {
       if (count > MaxTotalCollectionElements - _collectionElementCount)
         throw new InvalidDataException("DAT collection element count exceeds the supported limit.");
@@ -453,6 +598,14 @@ internal static class DatTerrainReader {
       if (_valueReadCount >= MaxValueReadCount)
         throw new InvalidDataException("DAT value count exceeds the supported limit.");
       _valueReadCount++;
+    }
+
+    public void CaptureTerrain(DatTerrainData terrain) {
+      Terrain ??= terrain;
+    }
+
+    public void CaptureWaterManager(DatWaterManagerData waterManager) {
+      WaterManager ??= waterManager;
     }
   }
 

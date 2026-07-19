@@ -231,6 +231,7 @@ $wrongMapJson = @{ path = $wrongMapPath; sha256 = $wrongMapHash } | ConvertTo-Js
   "${stalePrefix}INFO|OpenRCT3.Program|Starting OpenRCT3 on Windows...",
   "${stalePrefix}DEBUG|OpenRCT3.Game|Game world loaded",
   "${stalePrefix}DEBUG|OpenRCT3.Game|Added terrain mesh",
+  "${stalePrefix}DEBUG|OpenRCT3.Platforms.Windows.GameWindow|Presented initial scene frame",
   "${stalePrefix}INFO|OpenRCT3.Simulation.Terrain|Native smoke loaded map $mapJson",
   "${currentPrefix}INFO|OpenRCT3.Program|Starting OpenRCT3 on Windows..."
 ) | Set-Content -LiteralPath $logPath -Encoding UTF8
@@ -242,6 +243,7 @@ Assert-Throws { Assert-NativeSmokeCompletion -State $state } `
 Add-Content -LiteralPath $logPath -Value @(
   "${currentPrefix}DEBUG|OpenRCT3.Game|Game world loaded",
   "${currentPrefix}DEBUG|OpenRCT3.Game|Added terrain mesh",
+  "${currentPrefix}DEBUG|OpenRCT3.Platforms.Windows.GameWindow|Presented initial scene frame",
   "${currentPrefix}INFO|OpenRCT3.Simulation.Terrain|Native smoke loaded map $wrongMapJson"
 )
 $state = Get-NativeSmokeLogState `
@@ -253,6 +255,7 @@ Assert-Throws { Assert-NativeSmokeCompletion -State $state } `
   "${currentPrefix}INFO|OpenRCT3.Program|Starting OpenRCT3 on Windows...",
   "${currentPrefix}DEBUG|OpenRCT3.Game|Game world loaded",
   "${currentPrefix}DEBUG|OpenRCT3.Game|Added terrain mesh",
+  "${currentPrefix}DEBUG|OpenRCT3.Platforms.Windows.GameWindow|Presented initial scene frame",
   "${currentPrefix}INFO|OpenRCT3.Simulation.Terrain|Native smoke loaded map $mapJson"
 ) | Set-Content -LiteralPath $logPath -Encoding UTF8
 $state = Get-NativeSmokeLogState `

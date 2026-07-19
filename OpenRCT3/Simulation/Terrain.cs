@@ -10,7 +10,6 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using NLog;
 using OpenCobra.GDK.Assets;
-using OpenCobra.GDK.Materials;
 using OpenRCT3.Platforms;
 using OpenRCT3.Serialization;
 
@@ -80,7 +79,11 @@ public class Terrain {
     Origin + new Vector2(Width * TileSize.X, Height * TileSize.Y)
   );
 
-  public Texture? GrassTexture { get; private set; }
+  /// <summary>The complete decoded terrain/cliff texture catalog for this map.</summary>
+  public TerrainTextureCatalog? TextureCatalog { get; private set; }
+
+  /// <summary>The default grass texture retained for callers that only need Terrain_00.</summary>
+  public OpenCobra.GDK.Materials.Texture? GrassTexture => TextureCatalog?.GetSurface(0);
 
   private readonly TerrainCorner[] _corners;
 
@@ -131,7 +134,13 @@ public class Terrain {
   /// order when this is omitted.
   /// </param>
   /// <returns>A loaded <see cref="Terrain"/> instance.</returns>
-  public static Terrain Load(string? mapPath = null) {
+  public static Terrain Load(string? mapPath = null) => Load(out _, mapPath);
+
+  /// <summary>Loads terrain plus its decoded WaterManager data for world construction.</summary>
+  internal static Terrain Load(
+    out DatWaterManagerData? waterManager,
+    string? mapPath = null
+  ) {
     var config = AppConfig.Instance;
     Debug.Assert(config.InstallPath != null);
     var installPath = config.InstallPath
@@ -167,10 +176,11 @@ public class Terrain {
       logger.Info($"Native smoke loaded map {loadedMapIdentity}");
     }
     var terrain = FromData(data);
+    waterManager = data.WaterManager;
 
     // Load textures from terrain/RCT3/Terrain_RCT3.common.ovl
     var terrainOvl = Path.Combine(installPath, "terrain", "RCT3", "Terrain_RCT3.common.ovl");
-    terrain.GrassTexture = TextureLoader.LoadTexture(terrainOvl, "Terrain_00");
+    terrain.TextureCatalog = TextureLoader.LoadTerrainCatalog(terrainOvl);
 
     return terrain;
   }

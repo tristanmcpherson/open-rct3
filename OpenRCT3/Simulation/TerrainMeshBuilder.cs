@@ -7,22 +7,25 @@
 
 using OpenCobra.GDK.Meshes;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 
 namespace OpenRCT3.Simulation;
 
 /// <summary>
-/// Builds a renderable <see cref="Mesh"/> from a <see cref="Terrain"/>'s corner-height grid.
+/// Builds renderable <see cref="Mesh"/> geometry from a <see cref="Terrain"/>'s corner-height grid.
 /// </summary>
 /// <remarks>
 /// Each tile emits a top face (two triangles) from its four corners, plus
 /// a vertical cliff face on its South/West edges when <see cref="Terrain.IsEdgeDetached"/> reports a
 /// detached edge. Checking only South/West per tile (rather than all four) emits each interior edge's
 /// cliff face exactly once, since a tile's South edge is the same world edge as its southern
-/// neighbor's North edge. Surface painting (<see cref="TerrainCorner.SurfaceIndex"/>) isn't wired up
-/// yet — every vertex uses the Terrain_00 material and the same <paramref name="color"/> tint.
+/// neighbor's North edge. <see cref="BuildBatches"/> separates top and cliff geometry by the decoded
+/// <see cref="TerrainCorner.SurfaceIndex"/>/<see cref="TerrainCorner.CliffIndex"/> material keys while
+/// retaining the same <paramref name="color"/> tint for every vertex.
 /// </remarks>
 public static class TerrainMeshBuilder {
+  /// <summary>Builds one aggregate mesh for geometry-only callers.</summary>
   public static Mesh Build(Terrain terrain, Vector4 color, string? name = "Terrain") {
     var vertices = new List<Vertex>();
     var indices = new List<uint>();
@@ -40,6 +43,95 @@ public static class TerrainMeshBuilder {
 
     return new Mesh(vertices, indices) { Name = name };
   }
+
+  /// <summary>
+  /// Builds deterministic texture batches for the terrain's decoded per-tile surface and cliff
+  /// indices.
+  /// </summary>
+  /// <remarks>
+  /// RCT3 DAT cells store one surface and one cliff index per tile. The simulation duplicates those
+  /// values onto the tile's four corners so future paint tools can support blended terrain. Until
+  /// that blending is implemented, mixed corner indices fail explicitly instead of silently choosing
+  /// the wrong texture.
+  /// </remarks>
+  public static IReadOnlyList<TerrainMeshBatch> BuildBatches(
+    Terrain terrain,
+    Vector4 color,
+    string name = "Terrain"
+  ) {
+    var geometry = new Dictionary<(TerrainMaterialKind Kind, byte Index), MeshGeometry>();
+
+    for (var tileY = 0; tileY < terrain.Height; tileY++) {
+      for (var tileX = 0; tileX < terrain.Width; tileX++) {
+        var surfaceIndex = GetUniformMaterialIndex(
+          terrain, tileX, tileY, TerrainMaterialKind.Surface);
+        var surface = GetGeometry(geometry, TerrainMaterialKind.Surface, surfaceIndex);
+        AddTopFace(terrain, tileX, tileY, color, surface.Vertices, surface.Indices);
+
+        if (terrain.IsEdgeDetached(tileX, tileY, Edge.South)) {
+          var cliffIndex = GetUniformMaterialIndex(
+            terrain, tileX, tileY, TerrainMaterialKind.Cliff);
+          var cliff = GetGeometry(geometry, TerrainMaterialKind.Cliff, cliffIndex);
+          AddCliffFace(
+            terrain, tileX, tileY, Edge.South, color, cliff.Vertices, cliff.Indices);
+        }
+        if (terrain.IsEdgeDetached(tileX, tileY, Edge.West)) {
+          var cliffIndex = GetUniformMaterialIndex(
+            terrain, tileX, tileY, TerrainMaterialKind.Cliff);
+          var cliff = GetGeometry(geometry, TerrainMaterialKind.Cliff, cliffIndex);
+          AddCliffFace(
+            terrain, tileX, tileY, Edge.West, color, cliff.Vertices, cliff.Indices);
+        }
+      }
+    }
+
+    return geometry
+      .OrderBy(batch => batch.Key.Kind)
+      .ThenBy(batch => batch.Key.Index)
+      .Select(batch => new TerrainMeshBatch(
+        batch.Key.Kind,
+        batch.Key.Index,
+        new Mesh(batch.Value.Vertices, batch.Value.Indices) {
+          Name = $"{name} {batch.Key.Kind} {batch.Key.Index}"
+        }))
+      .ToArray();
+  }
+
+  private static MeshGeometry GetGeometry(
+    Dictionary<(TerrainMaterialKind Kind, byte Index), MeshGeometry> geometry,
+    TerrainMaterialKind kind,
+    byte index
+  ) {
+    var key = (kind, index);
+    if (!geometry.TryGetValue(key, out var batch)) {
+      batch = new MeshGeometry();
+      geometry.Add(key, batch);
+    }
+    return batch;
+  }
+
+  private static byte GetUniformMaterialIndex(
+    Terrain terrain,
+    int tileX,
+    int tileY,
+    TerrainMaterialKind kind
+  ) {
+    var corners = terrain.GetCorners(tileX, tileY);
+    var index = GetMaterialIndex(corners[0], kind);
+    foreach (var corner in corners[1..]) {
+      if (GetMaterialIndex(corner, kind) == index) continue;
+      throw new InvalidOperationException(
+        $"Terrain tile ({tileX}, {tileY}) has mixed {kind.ToString().ToLowerInvariant()} " +
+        "indices; blended terrain rendering is not implemented.");
+    }
+    return index;
+  }
+
+  private static byte GetMaterialIndex(TerrainCorner corner, TerrainMaterialKind kind) => kind switch {
+    TerrainMaterialKind.Surface => corner.SurfaceIndex,
+    TerrainMaterialKind.Cliff => corner.CliffIndex,
+    _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+  };
 
   private static Vector3 CornerPosition(Terrain terrain, int tileX, int tileY, TerrainCornerSlot slot) {
     var (dx, dy) = slot switch {
@@ -68,14 +160,32 @@ public static class TerrainMeshBuilder {
     var nw = CornerPosition(terrain, tileX, tileY, TerrainCornerSlot.NorthWest);
     var ne = CornerPosition(terrain, tileX, tileY, TerrainCornerSlot.NorthEast);
 
-    // Two triangles, CCW when viewed from +Z: (SW, SE, NE) and (SW, NE, NW).
-    var normal = Vector3.Normalize(Vector3.Cross(se - sw, ne - sw));
+    // RCT3 splits each terrain cell along its SouthEast-to-NorthWest diagonal. These are the same
+    // two triangle orders serialized by WaterManager: (SW, SE, NW) and (NE, NW, SE).
+    var southWestNormal = Vector3.Normalize(Vector3.Cross(se - sw, nw - sw));
+    var northEastNormal = Vector3.Normalize(Vector3.Cross(nw - ne, se - ne));
+    var sharedNormal = Vector3.Normalize(southWestNormal + northEastNormal);
     var baseIndex = (uint)vertices.Count;
-    vertices.Add(new Vertex { Position = sw, Normal = normal, TexCoord = new Vector2(0, 0), Color = color });
-    vertices.Add(new Vertex { Position = se, Normal = normal, TexCoord = new Vector2(1, 0), Color = color });
-    vertices.Add(new Vertex { Position = ne, Normal = normal, TexCoord = new Vector2(1, 1), Color = color });
-    vertices.Add(new Vertex { Position = nw, Normal = normal, TexCoord = new Vector2(0, 1), Color = color });
-    indices.AddRange([baseIndex, baseIndex + 1, baseIndex + 2, baseIndex, baseIndex + 2, baseIndex + 3]);
+    vertices.Add(new Vertex {
+      Position = sw, Normal = southWestNormal, TexCoord = new Vector2(0, 0), Color = color
+    });
+    vertices.Add(new Vertex {
+      Position = se, Normal = sharedNormal, TexCoord = new Vector2(1, 0), Color = color
+    });
+    vertices.Add(new Vertex {
+      Position = ne, Normal = northEastNormal, TexCoord = new Vector2(1, 1), Color = color
+    });
+    vertices.Add(new Vertex {
+      Position = nw, Normal = sharedNormal, TexCoord = new Vector2(0, 1), Color = color
+    });
+    indices.AddRange([
+      baseIndex,
+      baseIndex + 1,
+      baseIndex + 3,
+      baseIndex + 1,
+      baseIndex + 2,
+      baseIndex + 3
+    ]);
   }
 
   private static void AddCliffFace(
@@ -122,4 +232,18 @@ public static class TerrainMeshBuilder {
     });
     indices.AddRange([baseIndex, baseIndex + 1, baseIndex + 2, baseIndex, baseIndex + 2, baseIndex + 3]);
   }
+
+  private sealed class MeshGeometry {
+    public List<Vertex> Vertices { get; } = [];
+    public List<uint> Indices { get; } = [];
+  }
 }
+
+/// <summary>Identifies which terrain texture catalog partition a mesh batch uses.</summary>
+public enum TerrainMaterialKind {
+  Surface,
+  Cliff,
+}
+
+/// <summary>A terrain mesh whose faces all use one decoded texture catalog entry.</summary>
+public sealed record TerrainMeshBatch(TerrainMaterialKind Kind, byte Index, Mesh Mesh);

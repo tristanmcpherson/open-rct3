@@ -230,6 +230,11 @@ internal partial class GameWindow : Form, IWindow {
     if (Game.Instance == null) {
       logger.Trace("Starting game...");
       var game = new Game();
+      // Game construction finishes loading and framing the scene before the worker loop starts.
+      // Force that first scene through WM_PAINT now so startup never depends on a later resize,
+      // activation, or other incidental Windows message to present the back buffer.
+      glSurface.PresentFrame(() => game.Scene.Update(game.TargetFrameTime));
+      logger.Debug("Presented initial scene frame");
       closeCoordinator.Track(Task.Run(game.Run));
     } else {
       logger.Trace("Resuming game...");

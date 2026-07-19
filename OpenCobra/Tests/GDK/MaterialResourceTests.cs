@@ -19,6 +19,19 @@ public class MaterialResourceTests {
   }
 
   [Test]
+  public void TexturedMaterial_UsesNormalsForBasicDirectionalLighting() {
+    using var material = new Textured();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(material.Shaders.Vertex, Does.Contain("in vec3 a_Normal;"));
+      Assert.That(material.Shaders.Vertex, Does.Contain("normalLength > 0.0001"));
+      Assert.That(material.Shaders.Vertex, Does.Contain("v_Light = 0.45 + (0.55 * diffuse);"));
+      Assert.That(material.Shaders.Fragment,
+        Does.Contain("texColor.rgb * v_Color.rgb * v_Light"));
+    }
+  }
+
+  [Test]
   public void EquivalentTextureDefinitions_HaveEqualCacheKeys() {
     using var first = CreateTexture("shared", new Rgba32(10, 20, 30, 255));
     using var second = CreateTexture("shared", new Rgba32(10, 20, 30, 255));

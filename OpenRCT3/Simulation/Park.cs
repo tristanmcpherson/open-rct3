@@ -5,6 +5,7 @@
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 
 namespace OpenRCT3.Simulation;
@@ -67,17 +68,22 @@ public class Park {
   public Dictionary<(int X, int Y), PathTile> Paths { get; } = [];
 
   /// <summary>
-  /// Every placed <see cref="WaterPool"/>. Prefer <see cref="WaterTiles"/> for tile-based lookups; this
-  /// list exists for iteration (e.g. rendering every pool) and O(1) removal by reference.
+  /// Every placed <see cref="WaterPool"/>. Prefer <see cref="WaterTiles"/> for tile occupancy and
+  /// <see cref="WaterTriangles"/> for exact coverage; this list exists for iteration (e.g. rendering
+  /// every pool) and O(1) removal by reference.
   /// </summary>
   public List<WaterPool> WaterPools { get; } = [];
 
   /// <summary>
-  /// Maps each tile a <see cref="WaterPool"/> covers to that pool, so a tile query resolves its pool
-  /// (if any) in O(1) without scanning <see cref="WaterPools"/>. Multiple tiles alias the same
-  /// <see cref="WaterPool"/> reference.
+  /// Maps each occupied tile to every pool touching either of its terrain triangles. Two distinct
+  /// pools may occupy opposite triangles of one tile, matching RCT3's two-record grid layout.
   /// </summary>
-  public Dictionary<(int X, int Y), WaterPool> WaterTiles { get; } = [];
+  public Dictionary<(int X, int Y), HashSet<WaterPool>> WaterTiles { get; } = [];
+
+  /// <summary>Maps exact tile-triangle coverage to its one owning pool.</summary>
+  public Dictionary<(int X, int Y, WaterTerrainTriangle Triangle), WaterPool> WaterTriangles {
+    get;
+  } = [];
 
   /// <summary>
   /// Every placed <see cref="SceneryPlacement"/>. Placement data lives directly on <see cref="Park"/>,
@@ -214,14 +220,40 @@ public class Park {
     var tileList = tiles as ICollection<(int X, int Y)> ?? [.. tiles];
     if (tileList.Count == 0) return false;
 
-    foreach (var tile in tileList) {
-      if (!terrain.HasTile(tile.X, tile.Y)) return false;
-      if (WaterTiles.ContainsKey(tile)) return false;
+    return TryAddWaterPool(new WaterPool(height, tileList, isOcean), terrain);
+  }
+
+  /// <summary>Places a decoded pool with exact partial-triangle coverage.</summary>
+  internal bool TryPlaceWaterTriangles(
+    IEnumerable<WaterSurfaceTriangle> triangles,
+    int height,
+    Terrain terrain,
+    bool isOcean = false
+  ) {
+    ArgumentNullException.ThrowIfNull(triangles);
+    var triangleList = triangles as ICollection<WaterSurfaceTriangle> ?? [.. triangles];
+    if (triangleList.Count == 0) return false;
+
+    return TryAddWaterPool(new WaterPool(height, triangleList, isOcean), terrain);
+  }
+
+  private bool TryAddWaterPool(WaterPool pool, Terrain terrain) {
+    foreach (var triangle in pool.Triangles) {
+      if (!terrain.HasTile(triangle.X, triangle.Y)) return false;
+      var key = (triangle.X, triangle.Y, triangle.Triangle);
+      if (WaterTriangles.ContainsKey(key)) return false;
     }
 
-    var pool = new WaterPool(height, tileList, isOcean);
     WaterPools.Add(pool);
-    foreach (var tile in tileList) WaterTiles[tile] = pool;
+    foreach (var triangle in pool.Triangles)
+      WaterTriangles[(triangle.X, triangle.Y, triangle.Triangle)] = pool;
+    foreach (var tile in pool.Tiles) {
+      if (!WaterTiles.TryGetValue(tile, out var pools)) {
+        pools = [];
+        WaterTiles[tile] = pools;
+      }
+      pools.Add(pool);
+    }
     return true;
   }
 
@@ -237,11 +269,21 @@ public class Park {
   /// </remarks>
   /// <returns><c>true</c> if a pool was found and removed.</returns>
   public bool InvalidateWaterPoolAt(int tileX, int tileY) {
-    if (!WaterTiles.TryGetValue((tileX, tileY), out var pool)) return false;
+    if (!WaterTiles.TryGetValue((tileX, tileY), out var pools)) return false;
 
-    WaterPools.Remove(pool);
-    foreach (var tile in pool.Tiles) WaterTiles.Remove(tile);
+    foreach (var pool in pools.ToArray()) RemoveWaterPool(pool);
     return true;
+  }
+
+  private void RemoveWaterPool(WaterPool pool) {
+    WaterPools.Remove(pool);
+    foreach (var triangle in pool.Triangles)
+      WaterTriangles.Remove((triangle.X, triangle.Y, triangle.Triangle));
+    foreach (var tile in pool.Tiles) {
+      if (!WaterTiles.TryGetValue(tile, out var pools)) continue;
+      pools.Remove(pool);
+      if (pools.Count == 0) WaterTiles.Remove(tile);
+    }
   }
 
   /// <summary>

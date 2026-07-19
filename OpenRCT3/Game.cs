@@ -138,39 +138,51 @@ public class Game : IGame {
     World.Load();
     logger.Debug("Game world loaded");
 
-    // Build a mesh from the loaded terrain's corner-height grid. Surface painting isn't wired up
-    // yet, so every tile uses the decoded Terrain_00 grass texture.
+    // Build texture-batched meshes from the loaded terrain's corner-height grid. Each DAT cell's
+    // decoded surface/cliff indices select the matching texture from the terrain catalog.
     Debug.Assert(World.Terrain != null);
-    Debug.Assert(World.Terrain.GrassTexture != null);
-    var terrainMesh = TerrainMeshBuilder.Build(World.Terrain, Vector4.One);
-    var ground = new Model(terrainMesh) {
-      Material = new Textured { AlbedoTexture = World.Terrain.GrassTexture }
-    };
-    Scene.Models.Add(ground);
-    logger.Debug("Added terrain mesh");
+    Debug.Assert(World.Terrain.TextureCatalog != null);
+    foreach (var batch in TerrainMeshBuilder.BuildBatches(World.Terrain, Vector4.One)) {
+      var texture = batch.Kind switch {
+        TerrainMaterialKind.Surface => World.Terrain.TextureCatalog.GetSurface(batch.Index),
+        TerrainMaterialKind.Cliff => World.Terrain.TextureCatalog.GetCliff(batch.Index),
+        _ => throw new ArgumentOutOfRangeException(nameof(batch.Kind), batch.Kind, null),
+      };
+      var terrainModel = new Model(batch.Mesh) {
+        Material = new Textured { AlbedoTexture = texture }
+      };
+      Scene.Models.Add(terrainModel);
+    }
+    logger.Debug("Added terrain meshes");
 
-    // Frame the camera on the loaded park's buildable area. Camera's default framing (a small fixed
-    // offset from the origin) only suits a toy scene — it doesn't scale to the actual, much larger,
-    // map, so most or all of the terrain ends up outside the view frustum entirely.
-    //
-    // `distance = diagonal` alone isn't enough margin: Camera's default view direction sits at an
-    // exact 45° azimuth (equal X/Y offset), so a square/rectangular map's corners land exactly on its
-    // diagonals and render as a rotated "diamond" rather than an upright rectangle. Perspective then
-    // foreshortens the near corner (closest to the eye) more than the sine-of-half-FOV bounding-sphere
-    // formula accounts for, pushing it outside the frustum before the far corner even reaches the
-    // frustum's edge. FramingDistanceMargin was picked empirically (see CameraFramingTests) to keep
-    // every corner — including the OOB border outside BuildableBounds, which the diagonal alone
-    // doesn't cover either — comfortably on-screen.
-    const float FramingDistanceMargin = 1.8f;
+    // Water is a separate overlay over the terrain. Each decoded DAT WaterManager pool keeps its
+    // exact triangle masks and surface height while rendering independently from the terrain mesh.
     Debug.Assert(World.Park != null);
-    var bounds = World.Park.BuildableBounds;
-    var parkCenter = new Vector3((bounds.Min.X + bounds.Max.X) / 2f, (bounds.Min.Y + bounds.Max.Y) / 2f, 0f);
-    var parkDiagonal = Vector2.Distance(bounds.Min, bounds.Max);
-    Scene.Camera.Frame(parkCenter, parkDiagonal * FramingDistanceMargin);
-    logger.Trace("Framed camera on park");
+    foreach (var pool in World.Park.WaterPools) {
+      var waterModel = new Model(WaterMeshBuilder.Build(
+        World.Terrain,
+        pool,
+        new Vector4(0.12f, 0.42f, 0.72f, 1f))) {
+        Material = new Flat()
+      };
+      Scene.Models.Add(waterModel);
+    }
+    logger.Debug("Added {Count} water meshes", World.Park.WaterPools.Count);
 
-    // Add the scenario editor window
-    Scene.Windows.Add(new Editor());
+    // Frame the camera on the loaded terrain's full 3D bounds. Camera's default framing (a small
+    // fixed offset from the origin) only suits a toy scene; it doesn't scale to an actual map, so
+    // most or all of the terrain otherwise ends up outside the view frustum.
+    //
+    // TerrainCameraFraming includes the OOB border and scans the real corner-height range. Centering
+    // on XYZ keeps elevated maps aimed correctly, while the full 3D diagonal bounds the 45°-azimuth
+    // "diamond" without the old buildable-area-only 1.8x heuristic (see CameraFramingTests).
+    var framing = TerrainCameraFraming.Calculate(World.Terrain);
+    Scene.Camera.Frame(framing.Target, framing.Distance);
+    logger.Trace("Framed camera on terrain");
+
+    // Keep normal gameplay unchanged while allowing native visual verification to capture the map
+    // without an incidental editor panel obscuring it.
+    if (GamePresentationOptions.ShowUserInterface) Scene.Windows.Add(new Editor());
   }
 
   /// <summary>
@@ -288,7 +300,7 @@ public class Game : IGame {
     ownedWorld = null;
 
     // Dispose GPU-backed scene resources while the graphics context is still alive, then release
-    // the world-owned texture reference and simulation systems.
+    // the world-owned texture catalog and simulation systems.
     DisposeOwnedResources(
       scene == null ? null : scene.Dispose,
       world == null ? null : world.Dispose,

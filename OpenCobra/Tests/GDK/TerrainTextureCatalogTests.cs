@@ -74,6 +74,27 @@ public class TerrainTextureCatalogTests {
   }
 
   [Test]
+  public void CatalogDisposal_WaitsForTerrainMaterialLeases() {
+    var catalog = CreateCompleteCatalog();
+    var surface = catalog.GetSurface(11);
+    var cliff = catalog.GetCliff(4);
+    var surfaceMaterial = new Textured { AlbedoTexture = surface };
+    var cliffMaterial = new Textured { AlbedoTexture = cliff };
+
+    catalog.Dispose();
+
+    Assert.That(surface.State, Is.EqualTo(State.Uninitialized));
+    Assert.That(cliff.State, Is.EqualTo(State.Uninitialized));
+    Assert.Throws<ObjectDisposedException>(new Action(() => catalog.GetSurface(0)));
+
+    surfaceMaterial.Dispose();
+    cliffMaterial.Dispose();
+
+    Assert.That(surface.State, Is.EqualTo(State.Disposed));
+    Assert.That(cliff.State, Is.EqualTo(State.Disposed));
+  }
+
+  [Test]
   public void Cache_ReturnsSameLiveCatalogAndReloadsAfterDisposal() {
     var loadCount = 0;
     var cache = new TerrainTextureCatalogCache(_ => {

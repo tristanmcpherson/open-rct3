@@ -178,6 +178,367 @@ public class DatTerrainReaderTests {
   }
 
   [Test]
+  public void Read_TerrainThenWaterManager_DecodesPoolsAndRecords() {
+    var terrainPayload = BuildTerrainPayload(
+      width: 3,
+      height: 2,
+      TerrainRecord24Bytes,
+      [
+        new CellSpec(1f, 2f, 3f, 4f, 5, 6),
+        new CellSpec(2f, 3f, 4f, 5f, 5, 6),
+        new CellSpec(3f, 4f, 5f, 6f, 5, 6),
+        new CellSpec(4f, 5f, 6f, 7f, 5, 6),
+        new CellSpec(5f, 6f, 7f, 8f, 5, 6),
+        new CellSpec(6f, 7f, 8f, 9f, 5, 6),
+      ]);
+    var waterPayload = BuildWaterManagerPayload(
+      width: 3,
+      height: 2,
+      [
+        new WaterPoolSpec(
+          12.5f,
+          [
+            new WaterRecordSpec(0, 0, 0, 7),
+            new WaterRecordSpec(0, 0, 1, 3),
+            new WaterRecordSpec(2, 1, 0, 5),
+          ]),
+        new WaterPoolSpec(-2.25f, []),
+      ]);
+    using var stream = BuildDat(
+      [TargetTerrainField(), WaterManagerField()],
+      writer => {
+        WriteDynamicPayload(writer, terrainPayload);
+        WriteDynamicPayload(writer, waterPayload);
+      });
+
+    var terrain = DatTerrainReader.Read(stream);
+
+    Assert.Multiple(new Action(() => {
+      Assert.That(terrain.WaterManager, Is.Not.Null);
+      Assert.That(terrain.WaterManager!.Width, Is.EqualTo(3));
+      Assert.That(terrain.WaterManager.Height, Is.EqualTo(2));
+      Assert.That(terrain.WaterManager.Pools, Has.Count.EqualTo(2));
+      Assert.That(terrain.WaterManager.Pools[0].Height, Is.EqualTo(12.5f));
+      Assert.That(terrain.WaterManager.Pools[0].Records, Has.Count.EqualTo(3));
+      Assert.That(terrain.WaterManager.Pools[0].Records[1].X, Is.EqualTo(0));
+      Assert.That(terrain.WaterManager.Pools[0].Records[1].Y, Is.EqualTo(0));
+      Assert.That(terrain.WaterManager.Pools[0].Records[1].Triangle, Is.EqualTo(1));
+      Assert.That(terrain.WaterManager.Pools[0].Records[1].VertexMask, Is.EqualTo(3));
+      Assert.That(terrain.WaterManager.Pools[1].Height, Is.EqualTo(-2.25f));
+      Assert.That(terrain.WaterManager.Pools[1].Records, Is.Empty);
+    }));
+  }
+
+  [Test]
+  public void Read_WaterRecordCountAtGridCapacity_IsAccepted() {
+    var terrainPayload = BuildTerrainPayload(
+      width: 1,
+      height: 1,
+      TerrainRecord24Bytes,
+      [new CellSpec(1f, 2f, 3f, 4f, 5, 6)]);
+    var waterPayload = BuildWaterManagerPayload(
+      width: 1,
+      height: 1,
+      [
+        new WaterPoolSpec(
+          4f,
+          [new WaterRecordSpec(0, 0, 0, 7), new WaterRecordSpec(0, 0, 1, 7)]),
+      ]);
+    using var stream = BuildDat(
+      [TargetTerrainField(), WaterManagerField()],
+      writer => {
+        WriteDynamicPayload(writer, terrainPayload);
+        WriteDynamicPayload(writer, waterPayload);
+      });
+
+    var terrain = DatTerrainReader.Read(stream);
+
+    Assert.That(terrain.WaterManager!.Pools[0].Records, Has.Count.EqualTo(2));
+  }
+
+  [Test]
+  public void Read_WaterRecordCountAboveGridCapacity_ThrowsInvalidDataException() {
+    var payload = BuildWaterManagerPayload(
+      width: 1,
+      height: 1,
+      [
+        new WaterPoolSpec(
+          4f,
+          [
+            new WaterRecordSpec(0, 0, 0, 7),
+            new WaterRecordSpec(0, 0, 1, 7),
+            new WaterRecordSpec(0, 0, 1, 7),
+          ]),
+      ]);
+
+    AssertInvalidWater(payload);
+  }
+
+  [Test]
+  public void Read_DuplicateWaterManagers_KeepsFirstAndConsumesFollowingFields() {
+    var terrainPayload = BuildTerrainPayload(
+      width: 1,
+      height: 1,
+      TerrainRecord24Bytes,
+      [new CellSpec(1f, 2f, 3f, 4f, 5, 6)]);
+    var firstWater = BuildWaterManagerPayload(width: 1, height: 1, []);
+    var secondWater = BuildWaterManagerPayload(
+      width: 1,
+      height: 1,
+      [new WaterPoolSpec(4f, [new WaterRecordSpec(0, 0, 0, 7)])]);
+    using var stream = BuildDat(
+      [
+        TargetTerrainField(),
+        WaterManagerField(),
+        WaterManagerField(),
+        new FieldSpec("Sentinel", "uint32"),
+      ],
+      writer => {
+        WriteDynamicPayload(writer, terrainPayload);
+        WriteDynamicPayload(writer, firstWater);
+        WriteDynamicPayload(writer, secondWater);
+        writer.Write(0x01020304u);
+      });
+
+    var terrain = DatTerrainReader.Read(stream);
+
+    Assert.That(terrain.WaterManager!.Pools, Is.Empty);
+    Assert.That(stream.Position, Is.EqualTo(stream.Length));
+  }
+
+  [Test]
+  public void Read_WaterManagerDimensionsDifferFromTerrain_ThrowsInvalidDataException() {
+    var terrainPayload = BuildTerrainPayload(
+      width: 1,
+      height: 1,
+      TerrainRecord24Bytes,
+      [new CellSpec(1f, 2f, 3f, 4f, 5, 6)]);
+    var waterPayload = BuildWaterManagerPayload(width: 2, height: 1, []);
+    using var stream = BuildDat(
+      [TargetTerrainField(), WaterManagerField()],
+      writer => {
+        WriteDynamicPayload(writer, terrainPayload);
+        WriteDynamicPayload(writer, waterPayload);
+      });
+
+    Assert.Throws<InvalidDataException>(new Action(() => DatTerrainReader.Read(stream)));
+  }
+
+  [Test]
+  public void Read_FixedSizeWaterManagerBeforeTerrain_DecodesWithoutSizePrefix() {
+    var terrainPayload = BuildTerrainPayload(
+      width: 1,
+      height: 1,
+      TerrainRecord24Bytes,
+      [new CellSpec(1f, 2f, 3f, 4f, 5, 6)]);
+    var waterPayload = BuildWaterManagerPayload(width: 1, height: 1, []);
+    using var stream = BuildDat(
+      [
+        new FieldSpec("Water", "WaterManager", Convert.ToUInt32(waterPayload.Length)),
+        TargetTerrainField(),
+      ],
+      writer => {
+        writer.Write(waterPayload);
+        WriteDynamicPayload(writer, terrainPayload);
+      });
+
+    var terrain = DatTerrainReader.Read(stream);
+
+    Assert.Multiple(new Action(() => {
+      Assert.That(terrain.WaterManager, Is.Not.Null);
+      Assert.That(terrain.WaterManager!.Width, Is.EqualTo(1));
+      Assert.That(terrain.Cells[0].NorthEastHeight, Is.EqualTo(4f));
+    }));
+  }
+
+  [Test]
+  public void Read_TerrainInsideCollection_ConsumesRemainingValuesBeforeWaterManager() {
+    var firstTerrainPayload = BuildTerrainPayload(
+      width: 1,
+      height: 1,
+      TerrainRecord24Bytes,
+      [new CellSpec(1f, 2f, 3f, 4f, 5, 6)]);
+    var secondTerrainPayload = BuildTerrainPayload(
+      width: 1,
+      height: 1,
+      TerrainRecord24Bytes,
+      [new CellSpec(10f, 20f, 30f, 40f, 7, 8)]);
+    var waterPayload = BuildWaterManagerPayload(width: 1, height: 1, []);
+    var terrainCollection = new FieldSpec(
+      "Terrains",
+      "array",
+      children: [TargetTerrainField()]);
+    using var stream = BuildDat(
+      [terrainCollection, WaterManagerField()],
+      writer => {
+        writer.Write(0u);
+        writer.Write(2u);
+        WriteDynamicPayload(writer, firstTerrainPayload);
+        WriteDynamicPayload(writer, secondTerrainPayload);
+        WriteDynamicPayload(writer, waterPayload);
+      });
+
+    var terrain = DatTerrainReader.Read(stream);
+
+    Assert.Multiple(new Action(() => {
+      Assert.That(terrain.Cells[0].SouthWestHeight, Is.EqualTo(1f));
+      Assert.That(terrain.WaterManager, Is.Not.Null);
+      Assert.That(terrain.WaterManager!.Pools, Is.Empty);
+    }));
+  }
+
+  [Test]
+  public void Read_WaterManagerWithExtraPayloadByte_ThrowsInvalidDataException() {
+    var payload = BuildWaterManagerPayload(width: 1, height: 1, []);
+    Array.Resize(ref payload, payload.Length + 1);
+
+    AssertInvalidWater(payload);
+  }
+
+  [Test]
+  public void Read_TruncatedWaterManager_ThrowsInvalidDataException() {
+    var completePayload = BuildWaterManagerPayload(
+      width: 1,
+      height: 1,
+      [new WaterPoolSpec(4f, [new WaterRecordSpec(0, 0, 0, 7)])]);
+    var truncatedPayload = (byte[])completePayload.Clone();
+    Array.Resize(ref truncatedPayload, truncatedPayload.Length - 1);
+
+    AssertInvalidWater(truncatedPayload, Convert.ToUInt32(completePayload.Length));
+  }
+
+  [Test]
+  public void Read_ExcessiveWaterPoolCount_ThrowsInvalidDataException() {
+    var payload = BuildRawWaterPayload(writer => {
+      writer.Write(Convert.ToByte(1));
+      writer.Write(Convert.ToByte(1));
+      writer.Write(uint.MaxValue);
+    });
+
+    AssertInvalidWater(payload);
+  }
+
+  [Test]
+  public void Read_ExcessiveWaterRecordCount_ThrowsInvalidDataException() {
+    var payload = BuildRawWaterPayload(writer => {
+      writer.Write(Convert.ToByte(1));
+      writer.Write(Convert.ToByte(1));
+      writer.Write(1u);
+      writer.Write(4f);
+      writer.Write(uint.MaxValue);
+    });
+
+    AssertInvalidWater(payload);
+  }
+
+  [Test]
+  public void Read_WaterRecordsOutsideRowMajorOrder_DecodesInFileOrder() {
+    var payload = BuildWaterManagerPayload(
+      width: 2,
+      height: 1,
+      [
+        new WaterPoolSpec(
+          4f,
+          [new WaterRecordSpec(1, 0, 0, 7), new WaterRecordSpec(0, 0, 1, 7)]),
+      ]);
+
+    var terrainPayload = BuildTerrainPayload(
+      width: 2,
+      height: 1,
+      TerrainRecord24Bytes,
+      [
+        new CellSpec(1f, 2f, 3f, 4f, 5, 6),
+        new CellSpec(7f, 8f, 9f, 10f, 11, 12),
+      ],
+      includeTail: true);
+    using var stream = BuildDat(
+      [TargetTerrainField(), WaterManagerField()],
+      writer => {
+        WriteDynamicPayload(writer, terrainPayload);
+        WriteDynamicPayload(writer, payload);
+      });
+
+    var terrain = DatTerrainReader.Read(stream);
+
+    Assert.That(terrain.WaterManager!.Pools[0].Records, Is.EqualTo(new[] {
+      new DatWaterRecord(1, 0, 0, 7),
+      new DatWaterRecord(0, 0, 1, 7),
+    }));
+  }
+
+  [Test]
+  public void Read_DuplicateWaterTriangle_ThrowsInvalidDataException() {
+    var payload = BuildWaterManagerPayload(
+      width: 1,
+      height: 1,
+      [
+        new WaterPoolSpec(
+          4f,
+          [new WaterRecordSpec(0, 0, 1, 3), new WaterRecordSpec(0, 0, 1, 7)]),
+      ]);
+
+    AssertInvalidWater(payload);
+  }
+
+  [TestCase(2, 0)]
+  [TestCase(0, 2)]
+  public void Read_WaterRecordOutsideManagerBounds_ThrowsInvalidDataException(int x, int y) {
+    var payload = BuildWaterManagerPayload(
+      width: 2,
+      height: 2,
+      [
+        new WaterPoolSpec(
+          4f,
+          [new WaterRecordSpec(Convert.ToByte(x), Convert.ToByte(y), 0, 7)]),
+      ]);
+
+    AssertInvalidWater(payload);
+  }
+
+  [Test]
+  public void Read_InvalidWaterTriangle_ThrowsInvalidDataException() {
+    var payload = BuildWaterManagerPayload(
+      width: 1,
+      height: 1,
+      [new WaterPoolSpec(4f, [new WaterRecordSpec(0, 0, 2, 7)])]);
+
+    AssertInvalidWater(payload);
+  }
+
+  [TestCase(0)]
+  [TestCase(8)]
+  public void Read_InvalidWaterVertexMask_ThrowsInvalidDataException(int vertexMask) {
+    var payload = BuildWaterManagerPayload(
+      width: 1,
+      height: 1,
+      [
+        new WaterPoolSpec(
+          4f,
+          [new WaterRecordSpec(0, 0, 0, Convert.ToByte(vertexMask))]),
+      ]);
+
+    AssertInvalidWater(payload);
+  }
+
+  [TestCase(0, 1)]
+  [TestCase(1, 0)]
+  public void Read_EmptyWaterManagerDimension_ThrowsInvalidDataException(int width, int height) {
+    var payload = BuildWaterManagerPayload(width, height, []);
+
+    AssertInvalidWater(payload);
+  }
+
+  [Test]
+  public void Read_NonFiniteWaterHeight_ThrowsInvalidDataException() {
+    var payload = BuildWaterManagerPayload(
+      width: 1,
+      height: 1,
+      [new WaterPoolSpec(float.NaN, [])]);
+
+    AssertInvalidWater(payload);
+  }
+
+  [Test]
   public void Read_TruncatedTerrain_ThrowsInvalidDataException() {
     var bytes = BuildValidDatBytes();
     Array.Resize(ref bytes, bytes.Length - 1);
@@ -335,6 +696,9 @@ public class DatTerrainReaderTests {
   private static FieldSpec TargetTerrainField()
     => new("EngineTerrain", "GE_Terrain");
 
+  private static FieldSpec WaterManagerField()
+    => new("Water", "WaterManager");
+
   private static MemoryStream BuildDat(
     IReadOnlyList<FieldSpec> fields,
     Action<BinaryWriter> writeValues,
@@ -421,6 +785,51 @@ public class DatTerrainReaderTests {
     return stream.ToArray();
   }
 
+  private static byte[] BuildWaterManagerPayload(
+    int width,
+    int height,
+    IReadOnlyList<WaterPoolSpec> pools) {
+    return BuildRawWaterPayload(writer => {
+      writer.Write(Convert.ToByte(width));
+      writer.Write(Convert.ToByte(height));
+      writer.Write(Convert.ToUInt32(pools.Count));
+      foreach (var pool in pools) {
+        writer.Write(pool.Height);
+        writer.Write(Convert.ToUInt32(pool.Records.Count));
+        foreach (var record in pool.Records) {
+          writer.Write(record.X);
+          writer.Write(record.Y);
+          writer.Write(record.Triangle);
+          writer.Write(record.VertexMask);
+        }
+      }
+    });
+  }
+
+  private static byte[] BuildRawWaterPayload(Action<BinaryWriter> writePayload) {
+    using var stream = new MemoryStream();
+    using (var writer = new BinaryWriter(stream, Encoding.ASCII, leaveOpen: true))
+      writePayload(writer);
+    return stream.ToArray();
+  }
+
+  private static void AssertInvalidWater(byte[] payload, uint? declaredSize = null) {
+    var terrainPayload = BuildTerrainPayload(
+      width: 1,
+      height: 1,
+      TerrainRecord24Bytes,
+      [new CellSpec(1f, 2f, 3f, 4f, 5, 6)]);
+    using var stream = BuildDat(
+      [TargetTerrainField(), WaterManagerField()],
+      writer => {
+        WriteDynamicPayload(writer, terrainPayload);
+        writer.Write(declaredSize ?? Convert.ToUInt32(payload.Length));
+        writer.Write(payload);
+      });
+
+    Assert.Throws<InvalidDataException>(new Action(() => DatTerrainReader.Read(stream)));
+  }
+
   private static void AssertInvalid(byte[] bytes) {
     using var stream = new MemoryStream(bytes);
     Assert.Throws<InvalidDataException>(new Action(() => DatTerrainReader.Read(stream)));
@@ -465,6 +874,30 @@ public class DatTerrainReaderTests {
       NorthEast = northEast;
       SurfaceIndex = surfaceIndex;
       CliffIndex = cliffIndex;
+    }
+  }
+
+  private readonly struct WaterPoolSpec {
+    public float Height { get; }
+    public IReadOnlyList<WaterRecordSpec> Records { get; }
+
+    public WaterPoolSpec(float height, IReadOnlyList<WaterRecordSpec> records) {
+      Height = height;
+      Records = records;
+    }
+  }
+
+  private readonly struct WaterRecordSpec {
+    public byte X { get; }
+    public byte Y { get; }
+    public byte Triangle { get; }
+    public byte VertexMask { get; }
+
+    public WaterRecordSpec(byte x, byte y, byte triangle, byte vertexMask) {
+      X = x;
+      Y = y;
+      Triangle = triangle;
+      VertexMask = vertexMask;
     }
   }
 }

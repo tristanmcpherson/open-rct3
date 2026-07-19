@@ -17,6 +17,7 @@ internal sealed class DatTerrainData {
   public float TileSizeX { get; }
   public float TileSizeY { get; }
   public IReadOnlyList<DatTerrainCell> Cells { get; }
+  public DatWaterManagerData? WaterManager { get; }
 
   public DatTerrainData(
     int width,
@@ -25,7 +26,8 @@ internal sealed class DatTerrainData {
     float originY,
     float tileSizeX,
     float tileSizeY,
-    DatTerrainCell[] cells) {
+    DatTerrainCell[] cells,
+    DatWaterManagerData? waterManager = null) {
     if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
     if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
     ArgumentNullException.ThrowIfNull(cells);
@@ -39,5 +41,6 @@ internal sealed class DatTerrainData {
     TileSizeX = tileSizeX;
     TileSizeY = tileSizeY;
     Cells = Array.AsReadOnly((DatTerrainCell[])cells.Clone());
+    WaterManager = waterManager;
   }
 }

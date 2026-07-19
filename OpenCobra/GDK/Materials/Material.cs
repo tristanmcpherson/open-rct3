@@ -129,6 +129,7 @@ public class Textured : Material {
   public Textured() {
     var vertexSource = @"#version 410 core
 in vec3 a_Position;
+in vec3 a_Normal;
 in vec2 a_TexCoord;
 in vec4 a_Color;
 
@@ -137,22 +138,32 @@ uniform mat4 u_ViewProj;
 
 out vec2 v_TexCoord;
 out vec4 v_Color;
+out float v_Light;
 
 void main() {
     gl_Position = u_ViewProj * u_Model * vec4(a_Position, 1.0);
     v_TexCoord = a_TexCoord; // FIXME: Flip Y if needed for texture orientation
     v_Color = a_Color;
+    vec3 transformedNormal = mat3(transpose(inverse(u_Model))) * a_Normal;
+    float normalLength = length(transformedNormal);
+    vec3 worldNormal = normalLength > 0.0001
+        ? transformedNormal / normalLength
+        : vec3(0.0, 0.0, 1.0);
+    vec3 lightDirection = normalize(vec3(-0.35, -0.45, 0.82));
+    float diffuse = max(dot(worldNormal, lightDirection), 0.0);
+    v_Light = 0.45 + (0.55 * diffuse);
 }";
     var fragmentSource = @"#version 410 core
 uniform sampler2D u_Texture;
 in vec2 v_TexCoord;
 in vec4 v_Color;
+in float v_Light;
 
 out vec4 FragColor;
 
 void main() {
     vec4 texColor = texture(u_Texture, v_TexCoord);
-    FragColor = texColor * v_Color;
+    FragColor = vec4(texColor.rgb * v_Color.rgb * v_Light, texColor.a * v_Color.a);
 }";
 
     Shaders = new(vertexSource, fragmentSource);

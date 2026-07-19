@@ -86,6 +86,25 @@ public class TerrainMeshBuilderTests {
   }
 
   [Test]
+  public void Build_DecodedTerrain_UsesSerializedSouthEastNorthWestDiagonal() {
+    var data = new DatTerrainData(
+      1,
+      1,
+      0f,
+      0f,
+      4f,
+      4f,
+      [new DatTerrainCell(0f, 0f, 0f, 1f, 0, 0)]
+    );
+
+    var mesh = TerrainMeshBuilder.Build(Terrain.FromData(data), Vector4.One);
+
+    Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 0, 1, 3, 1, 2, 3 }));
+    Assert.That(mesh.Vertices[0].Normal, Is.EqualTo(Vector3.UnitZ));
+    Assert.That(mesh.Vertices[2].Normal, Is.Not.EqualTo(Vector3.UnitZ));
+  }
+
+  [Test]
   public void Build_DecodedTerrain_ScalesCliffUvsByTheSerializedEdgeLength() {
     var data = new DatTerrainData(
       1,
@@ -117,5 +136,69 @@ public class TerrainMeshBuilderTests {
       new Vector2(1, 1),
       new Vector2(0, 1),
     }));
+  }
+
+  [Test]
+  public void BuildBatches_DecodedTerrain_GroupsTopFacesBySurfaceIndex() {
+    var data = new DatTerrainData(
+      3,
+      1,
+      0f,
+      0f,
+      4f,
+      4f,
+      [
+        new DatTerrainCell(0f, 0f, 0f, 0f, 11, 1),
+        new DatTerrainCell(0f, 0f, 0f, 0f, 12, 2),
+        new DatTerrainCell(0f, 0f, 0f, 0f, 11, 3),
+      ]
+    );
+
+    var batches = TerrainMeshBuilder.BuildBatches(Terrain.FromData(data), Vector4.One);
+
+    Assert.That(batches.Select(batch => (batch.Kind, batch.Index)), Is.EqualTo(new[] {
+      (TerrainMaterialKind.Surface, Convert.ToByte(11)),
+      (TerrainMaterialKind.Surface, Convert.ToByte(12)),
+    }));
+    Assert.That(batches[0].Mesh.Vertices, Has.Count.EqualTo(8));
+    Assert.That(batches[0].Mesh.Indices, Has.Count.EqualTo(12));
+    Assert.That(batches[1].Mesh.Vertices, Has.Count.EqualTo(4));
+    Assert.That(batches[1].Mesh.Indices, Has.Count.EqualTo(6));
+  }
+
+  [Test]
+  public void BuildBatches_DetachedEdge_UsesDecodedCliffIndex() {
+    var data = new DatTerrainData(
+      1,
+      2,
+      0f,
+      0f,
+      4f,
+      4f,
+      [
+        new DatTerrainCell(0f, 0f, 0f, 0f, 7, 2),
+        new DatTerrainCell(5f, 5f, 5f, 5f, 7, 4),
+      ]
+    );
+
+    var batches = TerrainMeshBuilder.BuildBatches(Terrain.FromData(data), Vector4.One);
+    var cliff = batches.Single(batch => batch.Kind == TerrainMaterialKind.Cliff);
+
+    Assert.That(cliff.Index, Is.EqualTo(4));
+    Assert.That(cliff.Mesh.Vertices, Has.Count.EqualTo(4));
+    Assert.That(cliff.Mesh.Indices, Has.Count.EqualTo(6));
+  }
+
+  [Test]
+  public void BuildBatches_MixedSurfaceIndices_FailsUntilBlendingIsImplemented() {
+    var terrain = NewTerrain();
+    var corner = terrain.GetCorner(0, 0, TerrainCornerSlot.NorthEast);
+    corner.SurfaceIndex = 1;
+    terrain.SetCorner(0, 0, TerrainCornerSlot.NorthEast, corner);
+
+    var exception = Assert.Throws<InvalidOperationException>(new Action(() =>
+      TerrainMeshBuilder.BuildBatches(terrain, Vector4.One)));
+
+    Assert.That(exception!.Message, Does.Contain("mixed surface indices"));
   }
 }

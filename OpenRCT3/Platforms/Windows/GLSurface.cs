@@ -134,7 +134,7 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     Game.Instance?.BindRenderer(ownedRenderer);
     SurfaceCreated?.Invoke(this, ownedRenderer);
     base.OnHandleCreated(e);
-    Invalidate();
+    PresentFrame();
   }
 
   protected override void OnHandleDestroyed(EventArgs e) {
@@ -213,6 +213,11 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     Invalidate();
   }
 
+  internal void PresentFrame(Action? prepareFrame = null) {
+    if (DesignMode || !IsValid) return;
+    WindowsFramePresentation.Present(prepareFrame, Invalidate, Update);
+  }
+
   protected override void OnPaint(PaintEventArgs e) {
     if (DesignMode) {
       e.Graphics.Clear(Drawing.Color.FromArgb(45, 45, 48));
@@ -242,6 +247,21 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
       Context.Clear();
       Context.SwapBuffers();
     }
+  }
+}
+
+internal static class WindowsFramePresentation {
+  public static void Present(
+    Action? prepareFrame,
+    Action invalidate,
+    Action update
+  ) {
+    ArgumentNullException.ThrowIfNull(invalidate);
+    ArgumentNullException.ThrowIfNull(update);
+
+    prepareFrame?.Invoke();
+    invalidate();
+    update();
   }
 }
 

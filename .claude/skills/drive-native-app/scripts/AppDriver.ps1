@@ -281,7 +281,11 @@ function Get-WindowRect([IntPtr]$hWnd) {
 # screenshot, click, or type into whatever window actually has focus instead - e.g. capturing
 # or clicking into an unrelated app on the user's desktop.
 function Set-Foreground([IntPtr]$hWnd) {
-  [Native.Win32]::ShowWindow($hWnd, 9) | Out-Null # SW_RESTORE, no-op if already normal
+  # SW_RESTORE also unmaximizes a maximized window. Only restore an actually minimized target so
+  # screenshots and input preserve the window state the caller deliberately chose.
+  if ([Native.Win32]::IsIconic($hWnd)) {
+    [Native.Win32]::ShowWindow($hWnd, 9) | Out-Null
+  }
   $ok = $false
   for ($attempt = 0; $attempt -lt 3 -and -not $ok; $attempt++) {
     if ($attempt -gt 0) { Start-Sleep -Milliseconds 150 }
@@ -521,7 +525,8 @@ switch ($Action) {
       }
     }
     $remainingProcess = Get-Process -Id $procId -ErrorAction SilentlyContinue
-    if ($null -ne $remainingProcess) {
+    if ($null -ne $remainingProcess) { $remainingProcess.Refresh() }
+    if ($null -ne $remainingProcess -and -not $remainingProcess.HasExited) {
       throw "Process $procId is still running after Close."
     }
     Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue

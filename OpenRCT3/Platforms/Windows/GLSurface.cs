@@ -163,9 +163,13 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
 
     if (finalGame != null) {
       try {
-        Context.MakeCurrent();
-        if (!Context.IsCurrent)
-          throw new InvalidOperationException("The renderer's OpenGL context is not current.");
+        // WinForms may destroy the child handle before disposing its component. In that path,
+        // renderer teardown already released every context-bound resource.
+        if (resources.HasPending || Context.IsValid) {
+          Context.MakeCurrent();
+          if (!Context.IsCurrent)
+            throw new InvalidOperationException("The renderer's OpenGL context is not current.");
+        }
         var game = finalGame;
         finalGame = null;
         game.Dispose();

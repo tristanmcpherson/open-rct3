@@ -267,6 +267,81 @@ Assert-Throws { Assert-NativeSmokeCompletion -State $state } `
 
 Assert-NativeSmokeFileLoggingConfiguration -ConfigPath (Join-Path $repo 'OpenRCT3\nlog.config')
 
+$loggingContractDirectory = Join-Path $results 'isolated-logging-contract'
+$isolatedApplicationData = Join-Path $loggingContractDirectory 'AppData'
+$isolatedLogPath = Join-Path $isolatedApplicationData 'OpenRCT3\logs\app.log'
+$isolatedArchivePath = Join-Path $isolatedApplicationData 'OpenRCT3\logs\app.archive.log'
+$isolatedNlogPath = Join-Path $loggingContractDirectory 'nlog.config'
+New-Item -ItemType Directory -Path $loggingContractDirectory -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $repo 'OpenRCT3\nlog.config') -Destination $isolatedNlogPath
+Set-NativeSmokeIsolatedLoggingConfiguration `
+  -ConfigPath $isolatedNlogPath `
+  -ApplicationDataPath $isolatedApplicationData `
+  -LogPath $isolatedLogPath `
+  -ArchiveLogPath $isolatedArchivePath
+
+$outsideLogPath = Join-Path $loggingContractDirectory 'outside.log'
+Assert-Throws {
+  Set-NativeSmokeIsolatedLoggingConfiguration `
+    -ConfigPath $isolatedNlogPath `
+    -ApplicationDataPath $isolatedApplicationData `
+    -LogPath $outsideLogPath `
+    -ArchiveLogPath $isolatedArchivePath
+} 'native logging rejects a path outside isolated application data' 'must stay inside'
+
+$knownApplicationData = [Environment]::GetFolderPath(
+  [Environment+SpecialFolder]::ApplicationData)
+if (-not [string]::IsNullOrWhiteSpace($knownApplicationData)) {
+  Assert-Throws {
+    Assert-NativeSmokeApplicationDataRoot -ApplicationDataPath $knownApplicationData
+  } 'native logging rejects the user profile application-data root' 'must not be the user profile'
+}
+
+Add-Type -AssemblyName System.Drawing
+$blankCapturePath = Join-Path $loggingContractDirectory 'blank.png'
+$blankCapture = New-Object System.Drawing.Bitmap 160, 120
+$blankGraphics = [System.Drawing.Graphics]::FromImage($blankCapture)
+try {
+  $blankGraphics.Clear([System.Drawing.Color]::White)
+  $blankCapture.Save($blankCapturePath, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+  $blankGraphics.Dispose()
+  $blankCapture.Dispose()
+}
+Assert-Throws { Assert-NativeSmokeScreenshotContent -Path $blankCapturePath } `
+  'native screenshot rejects a uniform client area' 'no rendered scene is visible'
+
+$renderedCapturePath = Join-Path $loggingContractDirectory 'rendered.png'
+$renderedCapture = New-Object System.Drawing.Bitmap 160, 120
+$renderedGraphics = [System.Drawing.Graphics]::FromImage($renderedCapture)
+try {
+  $renderedGraphics.Clear([System.Drawing.Color]::CornflowerBlue)
+  $renderedGraphics.FillRectangle(
+    [System.Drawing.Brushes]::ForestGreen,
+    0,
+    60,
+    160,
+    60)
+  $renderedCapture.Save($renderedCapturePath, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+  $renderedGraphics.Dispose()
+  $renderedCapture.Dispose()
+}
+Assert-NativeSmokeScreenshotContent -Path $renderedCapturePath
+
+$nativeSmokeSource = Get-Content -Raw -LiteralPath (
+  Join-Path $repo 'scripts\verification\Test-NativeSmoke.ps1')
+foreach ($requiredIsolationBoundary in @(
+    '$env:OPENRCT3_APPDATA_PATH = $isolatedAppData',
+    '$env:OPENRCT3_MAP_PATH = $null',
+    'Set-NativeSmokeIsolatedLoggingConfiguration',
+    'Assert-NativeSmokeScreenshotContent -Path $capturePath',
+    "'-Action', 'Screenshot', '-OutFile', `$capturePath, '-StrictPid'")) {
+  if ($nativeSmokeSource.IndexOf($requiredIsolationBoundary, [StringComparison]::Ordinal) -lt 0) {
+    throw "Native smoke does not enforce its application-data/capture contract: $requiredIsolationBoundary"
+  }
+}
+
 $terrainSource = Get-Content -Raw -LiteralPath (Join-Path $repo 'OpenRCT3\Simulation\Terrain.cs')
 foreach ($requiredReadBoundary in @(
     'File.ReadAllBytes(loadedMapPath)',
@@ -471,6 +546,17 @@ $unboundApplicationLog.artifacts.applicationLog.sha256 =
     -Algorithm SHA256).Hash
 Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $unboundApplicationLog } `
   'manifest rejects application log without run nonce' 'Application log is not bound'
+
+$boundCapture = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+$boundCapturePath = Join-Path $results 'bound-screen.png'
+'synthetic screenshot artifact' | Set-Content -LiteralPath $boundCapturePath -Encoding UTF8
+$boundCapture.capture.mode = 'screenshot'
+$boundCapture.capture.artifacts = @([PSCustomObject]@{
+  available = $true
+  path = $boundCapturePath
+  sha256 = (Get-FileHash -LiteralPath $boundCapturePath -Algorithm SHA256).Hash
+})
+Assert-NativeSmokeEvidenceRecord -Evidence $boundCapture
 
 $missingCaptureHash = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
 $capturePath = Join-Path $results 'screen.png'

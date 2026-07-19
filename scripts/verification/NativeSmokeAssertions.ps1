@@ -130,6 +130,147 @@ function Assert-NativeSmokeFileLoggingConfiguration {
   }
 }
 
+function Assert-NativeSmokePathWithinRoot {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Root,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  if (-not [System.IO.Path]::IsPathRooted($Path)) {
+    throw "$Name must be an absolute path."
+  }
+  if (-not [System.IO.Path]::IsPathRooted($Root)) {
+    throw 'Native smoke application-data root must be an absolute path.'
+  }
+
+  $normalizedPath = Get-NormalizedSmokePath $Path
+  $normalizedRoot = Get-NormalizedSmokePath $Root
+  $rootPrefix = $normalizedRoot + [System.IO.Path]::DirectorySeparatorChar
+  if (-not $normalizedPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Name must stay inside the isolated native smoke application-data root."
+  }
+}
+
+function Assert-NativeSmokeApplicationDataRoot {
+  param([Parameter(Mandatory = $true)][string]$ApplicationDataPath)
+
+  if (-not [System.IO.Path]::IsPathRooted($ApplicationDataPath)) {
+    throw 'Native smoke application-data root must be an absolute path.'
+  }
+
+  $knownApplicationData = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::ApplicationData)
+  if (-not [string]::IsNullOrWhiteSpace($knownApplicationData) -and
+      (Get-NormalizedSmokePath $ApplicationDataPath).Equals(
+        (Get-NormalizedSmokePath $knownApplicationData),
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Native smoke application-data root must not be the user profile application-data path.'
+  }
+}
+
+function Assert-NativeSmokeIsolatedLoggingConfiguration {
+  param(
+    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$ApplicationDataPath,
+    [Parameter(Mandatory = $true)][string]$LogPath,
+    [Parameter(Mandatory = $true)][string]$ArchiveLogPath
+  )
+
+  Assert-NativeSmokeApplicationDataRoot -ApplicationDataPath $ApplicationDataPath
+  Assert-NativeSmokePathWithinRoot `
+    -Path $LogPath -Root $ApplicationDataPath -Name 'Native smoke application log'
+  Assert-NativeSmokePathWithinRoot `
+    -Path $ArchiveLogPath -Root $ApplicationDataPath -Name 'Native smoke archive log'
+
+  [xml]$config = Get-Content -Raw -LiteralPath $ConfigPath
+  $fileTarget = $config.SelectSingleNode("//*[local-name()='target' and @name='file']")
+  if ($null -eq $fileTarget) { throw 'Native nlog.config has no file target.' }
+
+  $configuredLogPath = [string]$fileTarget.GetAttribute('fileName')
+  $configuredArchivePath = [string]$fileTarget.GetAttribute('archiveFileName')
+  if (-not (Get-NormalizedSmokePath $configuredLogPath).Equals(
+      (Get-NormalizedSmokePath $LogPath),
+      [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Native nlog.config file target is not bound to the isolated application log.'
+  }
+  if (-not (Get-NormalizedSmokePath $configuredArchivePath).Equals(
+      (Get-NormalizedSmokePath $ArchiveLogPath),
+      [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Native nlog.config archive target is not bound to the isolated archive log.'
+  }
+
+  $expectedLayout =
+    'run=${environment:variable=OPENRCT3_SMOKE_RUN_ID}|${longdate}|${level:uppercase=true}|${logger}|${message} ${exception:format=tostring}'
+  if ([string]$fileTarget.GetAttribute('layout') -ne $expectedLayout) {
+    throw 'Native nlog.config file target is not bound to the smoke run nonce.'
+  }
+}
+
+function Set-NativeSmokeIsolatedLoggingConfiguration {
+  param(
+    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$ApplicationDataPath,
+    [Parameter(Mandatory = $true)][string]$LogPath,
+    [Parameter(Mandatory = $true)][string]$ArchiveLogPath
+  )
+
+  Assert-NativeSmokeApplicationDataRoot -ApplicationDataPath $ApplicationDataPath
+  Assert-NativeSmokeFileLoggingConfiguration -ConfigPath $ConfigPath
+  Assert-NativeSmokePathWithinRoot `
+    -Path $LogPath -Root $ApplicationDataPath -Name 'Native smoke application log'
+  Assert-NativeSmokePathWithinRoot `
+    -Path $ArchiveLogPath -Root $ApplicationDataPath -Name 'Native smoke archive log'
+
+  [xml]$config = Get-Content -Raw -LiteralPath $ConfigPath
+  $fileTarget = $config.SelectSingleNode("//*[local-name()='target' and @name='file']")
+  if ($null -eq $fileTarget) { throw 'Native nlog.config has no file target.' }
+  $fileTarget.SetAttribute('fileName', (Get-NormalizedSmokePath $LogPath))
+  $fileTarget.SetAttribute('archiveFileName', (Get-NormalizedSmokePath $ArchiveLogPath))
+  $fileTarget.SetAttribute(
+    'layout',
+    'run=${environment:variable=OPENRCT3_SMOKE_RUN_ID}|${longdate}|${level:uppercase=true}|${logger}|${message} ${exception:format=tostring}')
+  $config.Save($ConfigPath)
+
+  Assert-NativeSmokeIsolatedLoggingConfiguration `
+    -ConfigPath $ConfigPath `
+    -ApplicationDataPath $ApplicationDataPath `
+    -LogPath $LogPath `
+    -ArchiveLogPath $ArchiveLogPath
+}
+
+function Assert-NativeSmokeScreenshotContent {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  Add-Type -AssemblyName System.Drawing
+  $bitmap = [System.Drawing.Bitmap]::FromFile((Resolve-Path -LiteralPath $Path).Path)
+  try {
+    if ($bitmap.Width -lt 100 -or $bitmap.Height -lt 100) {
+      throw 'Native smoke screenshot is too small to prove the rendered game window.'
+    }
+
+    $left = [int]($bitmap.Width * 0.1)
+    $right = [int]($bitmap.Width * 0.9)
+    $top = [int]($bitmap.Height * 0.12)
+    $bottom = [int]($bitmap.Height * 0.9)
+    $stepX = [Math]::Max(1, [int](($right - $left) / 64))
+    $stepY = [Math]::Max(1, [int](($bottom - $top) / 64))
+    $colors = @{}
+    foreach ($y in $top..($bottom - 1) | Where-Object { ($_ - $top) % $stepY -eq 0 }) {
+      foreach ($x in $left..($right - 1) | Where-Object { ($_ - $left) % $stepX -eq 0 }) {
+        $color = $bitmap.GetPixel($x, $y).ToArgb()
+        $colors[$color] = 1 + [int]$colors[$color]
+      }
+    }
+
+    if ($colors.Count -lt 2) {
+      throw 'Native smoke screenshot has a uniform client area; no rendered scene is visible.'
+    }
+  } finally {
+    $bitmap.Dispose()
+  }
+}
+
 function Assert-NativeSmokeConfig {
   param(
     [Parameter(Mandatory = $true)]

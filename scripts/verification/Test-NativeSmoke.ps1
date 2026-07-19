@@ -144,6 +144,8 @@ $isolatedTemp = Join-Path $results 'Temp'
 $configDirectory = Join-Path $isolatedAppData 'OpenRCT3'
 $configPath = Join-Path $configDirectory 'config.json'
 $logPath = Join-Path $isolatedAppData 'OpenRCT3\logs\app.log'
+$archiveLogPath = Join-Path $isolatedAppData "OpenRCT3\logs\app.$runId.archive.log"
+$capturePath = Join-Path $results "native-smoke-$runId.png"
 $pidFile = Join-Path $isolatedTemp 'openrct3-driver.pid'
 $timeoutSeconds = 30
 if (-not [string]::IsNullOrWhiteSpace($env:OPENRCT3_NATIVE_TIMEOUT_SECONDS)) {
@@ -157,7 +159,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:OPENRCT3_NATIVE_TIMEOUT_SECONDS)) {
 }
 
 New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+New-Item -ItemType Directory -Path (Split-Path $logPath -Parent) -Force | Out-Null
 New-Item -ItemType Directory -Path $isolatedTemp -Force | Out-Null
+Assert-NativeSmokeApplicationDataRoot -ApplicationDataPath $isolatedAppData
 @{
   InstallPath = $rct3Path
   MapPath = $mapPath
@@ -171,7 +175,10 @@ Assert-NativeSmokeConfig -ConfigPath $configPath -InstallPath $rct3Path -MapPath
   "requested-map=$mapPath",
   "requested-map-sha256=$mapHash",
   "requested-map-bytes=$((Get-Item -LiteralPath $mapPath).Length)",
+  "application-data-root=$isolatedAppData",
   "config=$configPath",
+  "application-log=$logPath",
+  "screenshot=$capturePath",
   "manifest=$manifestPath"
 ) | Set-Content -LiteralPath $evidencePath -Encoding UTF8
 
@@ -180,11 +187,13 @@ $originalTemp = $env:TEMP
 $originalTmp = $env:TMP
 $originalMapPath = $env:OPENRCT3_MAP_PATH
 $originalRunId = $env:OPENRCT3_SMOKE_RUN_ID
+$originalApplicationDataPath = $env:OPENRCT3_APPDATA_PATH
 $env:APPDATA = $isolatedAppData
 $env:TEMP = $isolatedTemp
 $env:TMP = $isolatedTemp
-$env:OPENRCT3_MAP_PATH = $mapPath
+$env:OPENRCT3_MAP_PATH = $null
 $env:OPENRCT3_SMOKE_RUN_ID = $runId
+$env:OPENRCT3_APPDATA_PATH = $isolatedAppData
 
 $candidatePid = $null
 $candidateMetadata = $null
@@ -224,13 +233,11 @@ try {
   }
   Assert-NativeSmokeFileLoggingConfiguration -ConfigPath $nlogPath
   $originalNlogBytes = [System.IO.File]::ReadAllBytes($nlogPath)
-  [xml]$nlog = Get-Content -Raw -LiteralPath $nlogPath
-  $fileTarget = $nlog.SelectSingleNode("//*[local-name()='target' and @name='file']")
-  if ($null -eq $fileTarget) { throw 'Native nlog.config has no file target.' }
-  $fileTarget.SetAttribute(
-    'layout',
-    'run=${environment:variable=OPENRCT3_SMOKE_RUN_ID}|${longdate}|${level:uppercase=true}|${logger}|${message} ${exception:format=tostring}')
-  $nlog.Save($nlogPath)
+  Set-NativeSmokeIsolatedLoggingConfiguration `
+    -ConfigPath $nlogPath `
+    -ApplicationDataPath $isolatedAppData `
+    -LogPath $logPath `
+    -ArchiveLogPath $archiveLogPath
 
   $launch = Invoke-NativeDriver -Arguments @(
     '-Action', 'Launch', '-TimeoutSec', [string]$timeoutSeconds, '-StrictPid', '-Json')
@@ -320,6 +327,30 @@ try {
     height = [int]$infoObject.ClientHeight
   }
 
+  $capture = Invoke-NativeDriver -Arguments @(
+    '-Action', 'Screenshot', '-OutFile', $capturePath, '-StrictPid')
+  Write-DriverEvidence -Invocation $capture
+  if ($capture.ExitCode -ne 0) {
+    throw "Native screenshot failed with exit code $($capture.ExitCode)."
+  }
+  if (-not (Test-Path -LiteralPath $capturePath -PathType Leaf)) {
+    throw "Native screenshot did not produce the requested artifact: $capturePath"
+  }
+  $reportedCapturePath = @($capture.Lines | Where-Object {
+    -not [string]::IsNullOrWhiteSpace([string]$_)
+  }) | Select-Object -Last 1
+  if ($null -eq $reportedCapturePath -or
+      -not (Get-NormalizedSmokePath ([string]$reportedCapturePath)).Equals(
+        (Get-NormalizedSmokePath $capturePath),
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Native screenshot driver did not report the requested artifact path.'
+  }
+  $manifest.capture = [PSCustomObject]@{
+    mode = 'screenshot'
+    artifacts = @(Get-NativeFileIdentity -Path $capturePath)
+  }
+  Assert-NativeSmokeScreenshotContent -Path $capturePath
+
   $smokeChecksPassed = $true
 } catch {
   $primaryError = $_
@@ -399,6 +430,7 @@ try {
   $env:TMP = $originalTmp
   $env:OPENRCT3_MAP_PATH = $originalMapPath
   $env:OPENRCT3_SMOKE_RUN_ID = $originalRunId
+  $env:OPENRCT3_APPDATA_PATH = $originalApplicationDataPath
 }
 
 if ($cleanupErrors.Count -eq 0 -and $null -eq $primaryError -and $smokeChecksPassed) {

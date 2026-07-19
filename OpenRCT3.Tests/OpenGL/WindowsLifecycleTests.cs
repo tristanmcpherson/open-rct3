@@ -102,6 +102,23 @@ public class WindowsLifecycleTests {
 
   [Test]
   [Apartment(ApartmentState.STA)]
+  public void FinalDisposal_AfterContextWasReleased_DetachesGameAndIsIdempotent() {
+    var game = (Game)RuntimeHelpers.GetUninitializedObject(typeof(Game));
+    var surface = new GLSurface();
+    SetGameInstance(game);
+
+    surface.Context.Dispose();
+    Assert.DoesNotThrow(new Action(surface.Dispose));
+    Assert.DoesNotThrow(new Action(surface.Dispose));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(Game.Instance, Is.Null);
+      Assert.That(GetGameDisposed(game), Is.True);
+    }
+  }
+
+  [Test]
+  [Apartment(ApartmentState.STA)]
   public void HandleRecreation_ReplacesEveryOwnerManagedContainerRegistration() {
     using var container = new Container();
     using var surface = new GLSurface();
@@ -366,6 +383,15 @@ public class WindowsLifecycleTests {
       throw new InvalidOperationException(
         "Could not access the game singleton backing field.");
     instanceField.SetValue(null, game);
+  }
+
+  private static bool GetGameDisposed(Game game) {
+    var disposedField = typeof(Game).GetField(
+      "disposed",
+      BindingFlags.NonPublic | BindingFlags.Instance) ??
+      throw new InvalidOperationException(
+        "Could not access the game disposal state.");
+    return (bool)(disposedField.GetValue(game) ?? false);
   }
 
   private sealed class FakeRenderer : IRenderer {

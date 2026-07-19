@@ -13,6 +13,8 @@ using NLog;
 namespace OpenRCT3.Platforms;
 
 public record AppConfig {
+  internal const string AppDataPathEnvironmentVariable = "OPENRCT3_APPDATA_PATH";
+
   private static AppConfig? instance = null;
   public static AppConfig Instance => instance
     ?? throw new InvalidOperationException("App configuration is not initialized!");
@@ -37,19 +39,23 @@ public record AppConfig {
   /// </summary>
   public bool SuppressCrashAlerts { get; set; }
 
-  public static string LogsFolder => Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-    "OpenRCT3",
-    "logs"
-  );
+  private static string ApplicationDataFolder => ResolveApplicationDataFolder(
+    Environment.GetEnvironmentVariable(AppDataPathEnvironmentVariable),
+    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
+
+  public static string LogsFolder => Path.Combine(ApplicationDataFolder, "OpenRCT3", "logs");
 
   public static string LogPath => Path.Combine(LogsFolder, "app.log");
 
-  private static string ConfigPath => Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-    "OpenRCT3",
-    "config.json"
-  );
+  private static string ConfigPath => Path.Combine(ApplicationDataFolder, "OpenRCT3", "config.json");
+
+  internal static string ResolveApplicationDataFolder(string? configuredPath, string fallbackPath) {
+    if (string.IsNullOrWhiteSpace(configuredPath)) return fallbackPath;
+    if (!Path.IsPathRooted(configuredPath))
+      throw new InvalidOperationException(
+        $"{AppDataPathEnvironmentVariable} must contain an absolute path.");
+    return Path.GetFullPath(configuredPath);
+  }
 
   public static AppConfig Load() {
     if (!File.Exists(ConfigPath)) return instance = new AppConfig();

@@ -14,6 +14,8 @@ namespace OpenCobra.GDK.Assets;
 /// Stable, numerically ordered terrain and cliff textures decoded from a paired terrain OVL.
 /// </summary>
 public sealed class TerrainTextureCatalog : IDisposable {
+  public const int SurfaceCount = 26;
+  public const int CliffCount = 6;
   internal const string SurfacePrefix = "Terrain_";
   internal const string CliffPrefix = "TerrainCliff";
 
@@ -27,8 +29,10 @@ public sealed class TerrainTextureCatalog : IDisposable {
   internal TerrainTextureCatalog(IEnumerable<Texture> textures) {
     var ownedTextures = textures.ToArray();
     try {
-      var surfaces = OrderAndValidate(ownedTextures, SurfacePrefix, "surface");
-      var cliffs = OrderAndValidate(ownedTextures, CliffPrefix, "cliff");
+      var surfaces = OrderAndValidate(
+        ownedTextures, SurfacePrefix, "surface", SurfaceCount);
+      var cliffs = OrderAndValidate(
+        ownedTextures, CliffPrefix, "cliff", CliffCount);
       surfaceTextures = Array.AsReadOnly(surfaces);
       cliffTextures = Array.AsReadOnly(cliffs);
       surfaceNames = Array.AsReadOnly(surfaces.Select(texture => texture.Name).ToArray());
@@ -94,6 +98,8 @@ public sealed class TerrainTextureCatalog : IDisposable {
   internal static bool IsCatalogAssetName(string name) =>
     TryParseIndex(name, SurfacePrefix, out _) || TryParseIndex(name, CliffPrefix, out _);
 
+  internal bool IsDisposed => Volatile.Read(ref disposed) != 0;
+
   internal void SetDisposalCallback(Action<TerrainTextureCatalog> callback) {
     disposalCallback = callback;
     if (Volatile.Read(ref disposed) == 0) return;
@@ -101,7 +107,7 @@ public sealed class TerrainTextureCatalog : IDisposable {
   }
 
   private static Texture[] OrderAndValidate(
-    IEnumerable<Texture> textures, string prefix, string kind
+    IEnumerable<Texture> textures, string prefix, string kind, int expectedCount
   ) {
     var indexed = textures
       .Select(texture => (
@@ -125,6 +131,11 @@ public sealed class TerrainTextureCatalog : IDisposable {
         throw new InvalidDataException(
           $"The terrain catalog is missing {FormatName(prefix, expectedIndex)}.");
     }
+
+    if (indexed.Length != expectedCount)
+      throw new InvalidDataException(
+        $"The terrain catalog must contain exactly {expectedCount} {kind} textures; " +
+        $"found {indexed.Length}.");
 
     return indexed.Select(item => item.texture).ToArray();
   }

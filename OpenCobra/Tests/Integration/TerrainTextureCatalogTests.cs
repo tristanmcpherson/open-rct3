@@ -1,14 +1,15 @@
 // Installed Terrain Texture Catalog Tests
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
-using OpenCobra.GDK.Assets;
 using OpenCobra.GDK;
+using OpenCobra.GDK.Assets;
+using OVL.Tests;
 
-namespace OVL.Tests.GDK;
+namespace OpenCobra.Tests.Integration;
 
 [TestFixture]
 [NonParallelizable]
-public class TerrainTextureCatalogInstalledTests {
+public class TerrainTextureCatalogTests {
   [Test]
   [SkipIfEnvironmentMissing("RCT3_PATH")]
   public void InstalledPair_HasStableNamesCountsAndCacheIdentity() {
@@ -19,15 +20,19 @@ public class TerrainTextureCatalogInstalledTests {
 
     Assert.That(cached, Is.SameAs(catalog));
     Assert.That(catalog.SurfaceNames,
-      Is.EqualTo(Enumerable.Range(0, 26).Select(index => $"Terrain_{index:D2}")));
+      Is.EqualTo(Enumerable.Range(0, TerrainTextureCatalog.SurfaceCount)
+        .Select(index => $"Terrain_{index:D2}")));
     Assert.That(catalog.CliffNames,
-      Is.EqualTo(Enumerable.Range(0, 6).Select(index => $"TerrainCliff{index}")));
+      Is.EqualTo(Enumerable.Range(0, TerrainTextureCatalog.CliffCount)
+        .Select(index => $"TerrainCliff{index}")));
     Assert.That(catalog.SurfaceTextures, Has.All.Matches<OpenCobra.GDK.Materials.Texture>(
       texture => texture.Width > 0 && texture.Height > 0));
     Assert.That(catalog.CliffTextures, Has.All.Matches<OpenCobra.GDK.Materials.Texture>(
       texture => texture.Width > 0 && texture.Height > 0));
-    Assert.Throws<ArgumentOutOfRangeException>(new Action(() => catalog.GetSurface(26)));
-    Assert.Throws<ArgumentOutOfRangeException>(new Action(() => catalog.GetCliff(6)));
+    Assert.Throws<ArgumentOutOfRangeException>(new Action(
+      () => catalog.GetSurface(TerrainTextureCatalog.SurfaceCount)));
+    Assert.Throws<ArgumentOutOfRangeException>(new Action(
+      () => catalog.GetCliff(TerrainTextureCatalog.CliffCount)));
 
     TestContext.Out.WriteLine(
       $"Terrain_RCT3 catalog: {catalog.SurfaceTextures.Count} surfaces, " +

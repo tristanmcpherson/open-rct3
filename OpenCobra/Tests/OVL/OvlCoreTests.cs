@@ -144,6 +144,59 @@ public class OvlCoreTests {
     Assert.Throws<InvalidDataException>(new Action(() => Ovl.Load(commonPath)));
   }
 
+  [TestCase(0u)]
+  [TestCase(2u)]
+  [TestCase(6u)]
+  public void Load_RejectsUnsupportedVersionBeforeReadingVersionSpecificFields(uint version) {
+    using (var stream = File.Create(commonPath))
+    using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false)) {
+      writer.Write(0x4B524746u);
+      writer.Write(0u);
+      writer.Write(version);
+    }
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() => Ovl.Load(commonPath)));
+    Assert.That(error!.Message, Does.Contain($"Unsupported OVL version {version}"));
+  }
+
+  [Test]
+  public void Load_RejectsImplausibleBlockCountBeforeMaterializingEntries() {
+    using (var stream = File.Create(commonPath))
+    using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false)) {
+      writer.Write(0x4B524746u);
+      writer.Write(0u);
+      writer.Write(4u);
+      writer.Write(0u);
+      writer.Write(0u);
+      writer.Write(0u);
+      writer.Write(0u);
+      writer.Write(1_000_000_000u);
+      writer.Write(0u);
+    }
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() => Ovl.Load(commonPath)));
+    Assert.That(error!.Message, Does.Contain("block count"));
+  }
+
+  [Test]
+  public void Load_PreflightsBlockCountAgainstRemainingMetadata() {
+    using (var stream = File.Create(commonPath))
+    using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false)) {
+      writer.Write(0x4B524746u);
+      writer.Write(0u);
+      writer.Write(4u);
+      writer.Write(0u);
+      writer.Write(0u);
+      writer.Write(0u);
+      writer.Write(0u);
+      writer.Write(1u);
+      writer.Write(0u);
+    }
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() => Ovl.Load(commonPath)));
+    Assert.That(error!.Message, Does.Contain("block type 0 metadata"));
+  }
+
   private static void WriteSymbol(byte[] data, uint nameAddress, uint dataAddress) {
     WriteUInt32(data, 0, nameAddress);
     WriteUInt32(data, 4, dataAddress);

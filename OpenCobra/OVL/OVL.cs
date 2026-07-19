@@ -57,6 +57,9 @@ internal class FileTypeBlock {
 /// <summary>Represents an OVL archive, providing methods to load and extract resource entries.</summary>
 public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposable {
   public const string UnnamedOvl = "Untitled OVL";
+  // Keep archive-controlled FileBlock materialization bounded even if a malicious file pads enough
+  // bytes to satisfy the structural size-table preflight below.
+  private const int MaxBlocksPerArchive = 65_536;
 
   public readonly string Name = name;
   public Version Version => version;
@@ -309,7 +312,10 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
     var magic = ReadUInt32(reader, "header magic");
     if (magic != 0x4b524746) throw new InvalidDataException("Invalid OVL magic.");
     ReadUInt32(reader, "header reserved field");
-    var version = (Version) ReadUInt32(reader, "header version");
+    var rawVersion = ReadUInt32(reader, "header version");
+    var version = (Version) rawVersion;
+    if (version != Version.One && version != Version.Four && version != Version.Five)
+      throw new InvalidDataException($"Unsupported OVL version {rawVersion}.");
     var headerRefs = ReadUInt32(reader, "header reference count");
 
     Debug.WriteLine($"[OVL] Loading {Path.GetFileName(filePath)} (v{version})");
@@ -494,6 +500,7 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
     string filePath, BinaryReader reader, Version version, uint subVersionFlag
   ) {
     var blocks = new FileTypeBlock[9];
+    var totalBlockCount = 0;
     foreach (var i in Enumerable.Range(0, blocks.Length)) {
       blocks[i] = new FileTypeBlock { Count = ReadUInt32(reader, $"block type {i} count") };
       if (version > Version.One) {
@@ -502,7 +509,11 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
           blocks[i].UnknownV5Extra = ReadUInt32(reader, $"block type {i} v5 field");
       }
 
-      blocks[i].Blocks = [.. Enumerable.Range(0, ToCount(blocks[i].Count, $"block type {i} count"))
+      var blockCount = PreflightBlockCount(
+        reader, blocks[i].Count, totalBlockCount, blocks.Length - i - 1,
+        version, subVersionFlag, i);
+      totalBlockCount += blockCount;
+      blocks[i].Blocks = [.. Enumerable.Range(0, blockCount)
         .Select(_ => new FileBlock() { Path = filePath})];
 
       // ReSharper disable once ForeachCanBePartlyConvertedToQueryUsingAnotherGetEnumerator
@@ -517,6 +528,27 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
         Debug.WriteLine($"[OVL] Type {i} count {blocks[i].Count} totalSize {blocks[i].Size}");
     }
     return blocks;
+  }
+
+  private static int PreflightBlockCount(
+    BinaryReader reader, uint rawCount, int totalBlockCount, int remainingTypeCount,
+    Version version, uint subVersionFlag, int typeIndex
+  ) {
+    var count = ToCount(rawCount, $"block type {typeIndex} count");
+    if (count > MaxBlocksPerArchive - totalBlockCount)
+      throw new InvalidDataException(
+        $"OVL block count exceeds the supported maximum of {MaxBlocksPerArchive}.");
+
+    var bytesPerTypeHeader = version switch {
+      Version.One => sizeof(uint),
+      Version.Five when (subVersionFlag & 1) != 0 => sizeof(uint) * 3,
+      _ => sizeof(uint) * 2,
+    };
+    var pendingSizeCount = version == Version.One ? totalBlockCount + count : count;
+    var requiredBytes = Convert.ToInt64(pendingSizeCount) * sizeof(uint) +
+      Convert.ToInt64(remainingTypeCount) * bytesPerTypeHeader;
+    EnsureRemaining(reader, requiredBytes, $"block type {typeIndex} metadata");
+    return count;
   }
 
   private static void ReadPostBlockUnknowns(BinaryReader reader, Version version) {

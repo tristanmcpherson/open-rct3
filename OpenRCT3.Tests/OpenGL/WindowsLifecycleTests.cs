@@ -253,7 +253,10 @@ public class WindowsLifecycleTests {
   [Test]
   [Apartment(ApartmentState.STA)]
   public void FinalDisposal_AfterContextWasReleased_DetachesGameAndIsIdempotent() {
+    using var resumeSignal = new ManualResetEvent(true);
     var game = (Game)RuntimeHelpers.GetUninitializedObject(typeof(Game));
+    SetGameField(game, "lifecycle", new GameRunLifecycle());
+    SetGameField(game, "resumeSignal", resumeSignal);
     var surface = new GLSurface();
     SetGameInstance(game);
 

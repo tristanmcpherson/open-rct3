@@ -29,7 +29,8 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
   private GL? gl;
   private Renderer? renderer;
   private readonly WindowsSurfaceResourceCycle resources = new();
-  private bool finalResourcesDisposed;
+  private Game? finalGame;
+  private bool finalDisposalStarted;
 
   /// <inheritdoc/>
   /// <remarks>
@@ -80,6 +81,7 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
 
   protected override void OnHandleCreated(EventArgs e) {
     if (DesignMode) return;
+    if (resources.HasPending) resources.EndHandle(Context);
     var handleResources = resources.BeginHandle();
     handleResources.OwnContext(Context.ReleaseHandle);
 
@@ -90,11 +92,13 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     SetWindowLongPtr(Handle, WindowLongs.GWL_STYLE, (IntPtr)styles);
 
     // Try to create an appropriate OpenGL context
-    var hdc = GetDC(Handle);
+    var hwnd = Handle;
+    var hdc = GetDC(hwnd);
     if (hdc == nint.Zero)
       throw new InvalidOperationException("Could not acquire the surface device context.");
     handleResources.OwnDeviceContext(() => {
-      _ = ReleaseDC(Handle, hdc);
+      if (ReleaseDC(hwnd, hdc) == 0)
+        throw new InvalidOperationException("Could not release the surface device context.");
       Context.Hdc = nint.Zero;
     });
     Context.Hdc = hdc;
@@ -108,9 +112,7 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     Context.MakeCurrent();
 
     // TODO: Refactor to extract the rest of this method into the GDK
-    Game.IoC.RegisterInstance<IGraphicsSurface>(this);
-    Game.IoC.RegisterInstance(gl);
-    Game.IoC.RegisterInstance<IGLContext>(Context);
+    WindowsSurfaceRegistrations.ReplaceGraphics(Game.IoC, this, ownedGl, Context);
 
     // Initialize the GUI controller first, renderer implementations depend on it
     var mainWindow = Parent as GameWindow ?? throw new InvalidOperationException();
@@ -118,7 +120,7 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     handleResources.OwnInput(input.Dispose);
     var controller = new Controller(input);
     handleResources.OwnController(controller.Dispose);
-    Game.IoC.RegisterInstance(controller, IfAlreadyRegistered.Replace);
+    WindowsSurfaceRegistrations.ReplaceController(Game.IoC, controller);
 
     // Initialize the scene renderer
     var ownedRenderer = new Renderer {
@@ -127,17 +129,16 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     renderer = ownedRenderer;
     handleResources.OwnRenderer(ownedRenderer.Dispose);
     ownedRenderer.Initialize();
-    Game.IoC.RegisterInstance<IRenderer>(ownedRenderer);
+    WindowsSurfaceRegistrations.ReplaceRenderer(Game.IoC, ownedRenderer);
 
-    Game? ownedGame = null;
-    handleResources.OwnGameState(() => ownedGame = Game.DetachInstance());
-    handleResources.OwnGame(() => ownedGame?.Dispose());
+    Game.Instance?.BindRenderer(ownedRenderer);
     SurfaceCreated?.Invoke(this, ownedRenderer);
     base.OnHandleCreated(e);
     Invalidate();
   }
 
   protected override void OnHandleDestroyed(EventArgs e) {
+    if (renderer != null) Game.Instance?.UnbindRenderer(renderer);
     try {
       resources.EndHandle(Context);
       logger.Trace("Surface resources disposed");
@@ -149,20 +150,50 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
   }
 
   protected override void Dispose(bool disposing) {
+    if (!disposing) {
+      base.Dispose(false);
+      return;
+    }
+
     var errors = new List<Exception>();
+    if (!finalDisposalStarted) {
+      finalDisposalStarted = true;
+      finalGame = Game.DetachInstance();
+    }
+
+    if (finalGame != null) {
+      try {
+        Context.MakeCurrent();
+        if (!Context.IsCurrent)
+          throw new InvalidOperationException("The renderer's OpenGL context is not current.");
+        var game = finalGame;
+        finalGame = null;
+        game.Dispose();
+      } catch (Exception error) {
+        errors.Add(error);
+      }
+    }
+    if (finalGame != null) throw new AggregateException(errors);
+
     try {
-      base.Dispose(disposing);
+      resources.EndHandle(Context);
+      renderer = null;
+      gl = null;
+    } catch (Exception error) {
+      errors.Add(error);
+    }
+    if (resources.HasPending) throw new AggregateException(errors);
+
+    try {
+      base.Dispose(true);
     } catch (Exception error) {
       errors.Add(error);
     }
 
-    if (disposing && !finalResourcesDisposed) {
-      finalResourcesDisposed = true;
-      try {
-        Context.Dispose();
-      } catch (Exception error) {
-        errors.Add(error);
-      }
+    try {
+      Context.Dispose();
+    } catch (Exception error) {
+      errors.Add(error);
     }
     if (errors.Count > 0) throw new AggregateException(errors);
   }
@@ -208,4 +239,28 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
       Context.SwapBuffers();
     }
   }
+}
+
+internal static class WindowsSurfaceRegistrations {
+  private readonly static Setup ownerManaged = Setup.With(preventDisposal: true);
+
+  public static void ReplaceGraphics(
+    DryIoc.Container container,
+    IGraphicsSurface surface,
+    GL gl,
+    IGLContext context
+  ) {
+    container.RegisterInstance<IGraphicsSurface>(
+      surface, IfAlreadyRegistered.Replace, ownerManaged);
+    container.RegisterInstance(gl, IfAlreadyRegistered.Replace, ownerManaged);
+    container.RegisterInstance<IGLContext>(
+      context, IfAlreadyRegistered.Replace, ownerManaged);
+  }
+
+  public static void ReplaceController(DryIoc.Container container, Controller controller) =>
+    container.RegisterInstance(controller, IfAlreadyRegistered.Replace, ownerManaged);
+
+  public static void ReplaceRenderer(DryIoc.Container container, IRenderer renderer) =>
+    container.RegisterInstance<IRenderer>(
+      renderer, IfAlreadyRegistered.Replace, ownerManaged);
 }

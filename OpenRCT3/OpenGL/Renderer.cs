@@ -82,7 +82,7 @@ public class Renderer : ThreadAffine, IRenderer {
   });
 
   public void Render(Scene scene) => Invoke(() => {
-    if (!Game.IsRunning) return;
+    if (State != State.Ready || !Game.IsRunning) return;
     context.MakeCurrent();
     Debug.Assert(context.IsCurrent);
 
@@ -354,19 +354,21 @@ internal sealed class WindowsSurfaceResourceOwner {
   private readonly OrderedResourceOwners resources = new();
 
   public bool HasPending => resources.HasPending;
-  public void OwnContext(Action release) => resources.Own(40, release);
-  public void OwnDeviceContext(Action release) => resources.Own(50, release);
+  public void OwnContext(Action release) =>
+    resources.Own(40, release, retryOnFailure: true);
+  public void OwnDeviceContext(Action release) =>
+    resources.Own(50, release, retryOnFailure: true);
   public void OwnGl(Action release) => resources.Own(60, release);
   public void OwnInput(Action release) => resources.Own(30, release);
   public void OwnController(Action release) => resources.Own(20, release, true);
   public void OwnRenderer(Action release) => resources.Own(10, release, true);
-  public void OwnGameState(Action release) => resources.Own(-10, release);
-  public void OwnGame(Action release) => resources.Own(0, release, true);
   public void Dispose(IGLContext context) => resources.Dispose(context);
 }
 
 internal sealed class WindowsSurfaceResourceCycle {
   private WindowsSurfaceResourceOwner? current;
+
+  public bool HasPending => current?.HasPending == true;
 
   public WindowsSurfaceResourceOwner BeginHandle() {
     if (current?.HasPending == true)
@@ -398,10 +400,15 @@ internal sealed class OrderedResourceOwners {
     }
   }
 
-  public void Own(int order, Action release, bool requiresCurrent = false) {
+  public void Own(
+    int order,
+    Action release,
+    bool requiresCurrent = false,
+    bool retryOnFailure = false
+  ) {
     lock (lifetimeLock) {
       ObjectDisposedException.ThrowIf(disposalStarted, this);
-      releases.Add(new(nextId++, order, release, requiresCurrent));
+      releases.Add(new(nextId++, order, release, requiresCurrent, retryOnFailure));
     }
   }
 
@@ -414,8 +421,7 @@ internal sealed class OrderedResourceOwners {
     }
 
     if (!ownedReleases.Any(resource => resource.RequiresCurrent)) {
-      Transfer(ownedReleases);
-      ResourceReleaser.Run(ownedReleases.Select(resource => resource.Release));
+      ReleaseOwned(ownedReleases);
       return;
     }
 
@@ -424,19 +430,34 @@ internal sealed class OrderedResourceOwners {
       if (!context.IsCurrent)
         throw new InvalidOperationException("The renderer's OpenGL context is not current.");
     } catch (Exception contextError) {
-      var errors = new List<Exception> { contextError };
-      var safeReleases = ownedReleases
-        .Where(resource => !resource.RequiresCurrent)
-        .ToArray();
-      Transfer(safeReleases);
-      ResourceReleaser.Collect(
-        safeReleases.Select(resource => resource.Release),
-        errors);
-      throw new AggregateException(errors);
+      throw new AggregateException(contextError);
     }
 
-    Transfer(ownedReleases);
-    ResourceReleaser.Run(ownedReleases.Select(resource => resource.Release));
+    ReleaseOwned(ownedReleases);
+  }
+
+  private void ReleaseOwned(IEnumerable<OwnedRelease> ownedReleases) {
+    var errors = new List<Exception>();
+    foreach (var resource in ownedReleases) {
+      if (resource.RetryOnFailure) {
+        try {
+          resource.Release();
+          Transfer([resource]);
+        } catch (Exception error) {
+          errors.Add(error);
+          break;
+        }
+        continue;
+      }
+
+      Transfer([resource]);
+      try {
+        resource.Release();
+      } catch (Exception error) {
+        errors.Add(error);
+      }
+    }
+    if (errors.Count > 0) throw new AggregateException(errors);
   }
 
   private void Transfer(IEnumerable<OwnedRelease> ownedReleases) {
@@ -448,6 +469,7 @@ internal sealed class OrderedResourceOwners {
     long Id,
     int Order,
     Action Release,
-    bool RequiresCurrent
+    bool RequiresCurrent,
+    bool RetryOnFailure
   );
 }

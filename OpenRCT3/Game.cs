@@ -45,8 +45,7 @@ public class Game : IGame {
   private readonly ManualResetEvent resumeSignal = new(true);
   private readonly Stopwatch stopwatch = new();
   private DateTime lastLagWarning = DateTime.Now;
-  private readonly Renderer renderer = Game.IoC.Resolve<IRenderer>() as Renderer ??
-    throw new InvalidOperationException();
+  private IRenderer? renderer = ResolveRenderer(Game.IoC);
   private Scene? ownedScene;
   private Simulation.World? ownedWorld;
   private bool disposed;
@@ -60,6 +59,17 @@ public class Game : IGame {
     Instance = null;
     return instance;
   }
+
+  internal static IRenderer ResolveRenderer(IResolverContext resolver) =>
+    resolver.Resolve<IRenderer>();
+
+  internal IRenderer? BoundRenderer => Volatile.Read(ref renderer);
+
+  internal void BindRenderer(IRenderer replacement) =>
+    Volatile.Write(ref renderer, replacement);
+
+  internal void UnbindRenderer(IRenderer ownedRenderer) =>
+    Interlocked.CompareExchange(ref renderer, null, ownedRenderer);
 
   /// <summary>
   /// Default frame rate of the game loop, in frames per second.
@@ -224,7 +234,7 @@ public class Game : IGame {
       // Rendering can happen at arbitrary points between updates, and frames can
       // be dropped if the machine is slow.
       Scene.Update(delta: elapsed);
-      renderer.Render(Scene);
+      Volatile.Read(ref renderer)?.Render(Scene);
 
       // Reduce CPU usage by sleeping when ahead of schedule
       var remaining = TargetFrameTime - lag;

@@ -15,6 +15,7 @@ using Silk.NET.OpenGL;
 using Silk.NET.WGL;
 using Silk.NET.WGL.Extensions.ARB;
 using Silk.NET.WGL.Extensions.EXT;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using static OpenRCT3.Platforms.Windows.Win32;
@@ -43,16 +44,11 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
     get;
     set {
       var hdc = value;
-      field = value;
 
       // Recreate the context when the HDC changes
-      var didRecreate = false;
-      var previousContext = lifetime.TakeContext();
-      if (previousContext != nint.Zero) {
-        var deletedPreviousContext = wgl.DeleteContext(previousContext);
-        Debug.Assert(deletedPreviousContext);
-        didRecreate = true;
-      }
+      var didRecreate = lifetime.ContextHandle != nint.Zero;
+      if (didRecreate) ReleaseHandle();
+      field = value;
       if (hdc == nint.Zero) return;
 
       // Try to create an appropriate pixel format
@@ -74,7 +70,8 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
       var tempContext = wgl.CreateContext(hdc);
       if (tempContext == nint.Zero) throw new Exception(CreateContextError);
       lifetime.SetContext(tempContext);
-      wgl.MakeCurrent(hdc, tempContext);
+      if (!wgl.MakeCurrent(hdc, tempContext))
+        throw new Exception("Could not make the staging GL context current.");
 
       // Create a customized OpenGL context
       if (wgl.TryGetExtension<ArbCreateContext>(out var ext) == false)
@@ -95,19 +92,19 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
         0 // NULL terminator
       ]);
       // Cleanup temporary context
-      var releasedTemporaryContext = wgl.MakeCurrent(hdc, nint.Zero);
-      Debug.Assert(releasedTemporaryContext);
-      var temporaryContext = lifetime.TakeContext();
-      var deletedTemporaryContext = wgl.DeleteContext(temporaryContext);
-      Debug.Assert(deletedTemporaryContext);
+      try {
+        ReleaseHandle();
+      } catch {
+        lifetime.RetainContext(context);
+        throw;
+      }
 
       if (context == nint.Zero) context = wgl.CreateContext(hdc);
       if (context == nint.Zero) throw new Exception(CreateContextError);
       lifetime.SetContext(context);
 
       // Make the new context current
-      var madeCurrent = wgl.MakeCurrent(hdc, context);
-      Debug.Assert(madeCurrent);
+      MakeCurrent();
 
       if (didRecreate) Recreated?.Invoke(this, EventArgs.Empty);
     }
@@ -132,15 +129,27 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
 
   public void Dispose() {
     GC.SuppressFinalize(this);
-    var handles = lifetime.Release();
+    var errors = new List<Exception>();
     try {
-      ReleaseContext(handles.Context);
-    } finally {
-      if (handles.Library != nint.Zero) FreeLibrary(handles.Library);
+      ReleaseHandle();
+    } catch (Exception error) {
+      errors.Add(error);
     }
+    if (lifetime.ContextHandle == nint.Zero) {
+      try {
+        if (!lifetime.TryReleaseLibrary(FreeLibrary))
+          throw new InvalidOperationException("Could not release the OpenGL library.");
+      } catch (Exception error) {
+        errors.Add(error);
+      }
+    }
+    if (errors.Count > 0) throw new AggregateException(errors);
   }
 
-  internal void ReleaseHandle() => ReleaseContext(lifetime.TakeContext());
+  internal void ReleaseHandle() {
+    if (!lifetime.TryReleaseContext(ReleaseContext))
+      throw new InvalidOperationException("Could not release the OpenGL context.");
+  }
 
   public void SwapInterval(int interval) {
     if (!wgl.TryGetExtension<ExtSwapControl>(out var ext) || ext == null) {
@@ -191,10 +200,12 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
 
   public override string ToString() => base.ToString() ?? nameof(GLContext);
 
-  private void ReleaseContext(nint handle) {
-    if (handle == nint.Zero) return;
-    if (wgl.GetCurrentContext() == handle) wgl.MakeCurrent(Hdc, nint.Zero);
-    wgl.DeleteContext(handle);
+  private bool ReleaseContext(nint handle) {
+    if (wgl.GetCurrentContext() != handle) {
+      if (Hdc == nint.Zero || !wgl.MakeCurrent(Hdc, handle)) return false;
+    }
+    if (!wgl.MakeCurrent(nint.Zero, nint.Zero)) return false;
+    return wgl.DeleteContext(handle);
   }
 
   [LibraryImport(OPENGL32, EntryPoint = "wglGetProcAddress", StringMarshalling = StringMarshalling.Custom, StringMarshallingCustomType = typeof(System.Runtime.InteropServices.Marshalling.AnsiStringMarshaller))]

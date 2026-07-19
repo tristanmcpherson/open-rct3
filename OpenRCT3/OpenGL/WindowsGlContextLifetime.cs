@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace OpenRCT3.OpenGL;
 
 internal sealed class WindowsGlContextLifetime(nint libraryHandle) {
@@ -31,29 +33,47 @@ internal sealed class WindowsGlContextLifetime(nint libraryHandle) {
   public void SetContext(nint handle) {
     lock (lifetimeLock) {
       ObjectDisposedException.ThrowIf(disposed, this);
+      if (context != nint.Zero)
+        throw new InvalidOperationException("An OpenGL context is already owned.");
       context = handle;
     }
   }
 
-  public nint TakeContext() {
+  public void RetainContext(nint handle) {
+    if (handle == nint.Zero) return;
     lock (lifetimeLock) {
-      if (disposed) return nint.Zero;
-      var handle = context;
-      context = nint.Zero;
-      return handle;
+      ObjectDisposedException.ThrowIf(disposed, this);
+      if (context == nint.Zero) {
+        context = handle;
+        return;
+      }
+      pendingContexts.Enqueue(handle);
     }
   }
 
-  public Handles Release() {
+  public bool TryReleaseContext(Func<nint, bool> release) {
     lock (lifetimeLock) {
-      if (disposed) return default;
+      if (disposed || context == nint.Zero) return true;
+      while (context != nint.Zero) {
+        if (!release(context)) return false;
+        context = pendingContexts.Count == 0
+          ? nint.Zero
+          : pendingContexts.Dequeue();
+      }
+      return true;
+    }
+  }
+
+  public bool TryReleaseLibrary(Func<nint, bool> release) {
+    lock (lifetimeLock) {
+      if (disposed) return true;
+      if (context != nint.Zero) return false;
+      if (library != nint.Zero && !release(library)) return false;
       disposed = true;
-      var handles = new Handles(library, context);
       library = nint.Zero;
-      context = nint.Zero;
-      return handles;
+      return true;
     }
   }
 
-  public readonly record struct Handles(nint Library, nint Context);
+  private readonly Queue<nint> pendingContexts = [];
 }

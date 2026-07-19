@@ -399,11 +399,15 @@ internal static class TextureDecoding {
     if (read != Marshal.SizeOf<Tex>())
       throw new InvalidDataException($"'{name}' texture header is truncated");
 
-    // Hop 1: gate FlicPtr's on-disk value as a real (fixed-up) pointer rather than unpatched
-    // placeholder bytes, by requiring texAddress+52 (the field's own location) to be listed in the
-    // relocation-fixup table.
-    if (!ovl.TryGetRelocationSource(texAddress + 52, out var flicSlot))
-      return null;
+    // Hop 1: gate FlicPtr's on-disk value as a real (fixed-up) pointer rather than trusting
+    // arbitrary unpatched bytes. A missing relocation is intentionally textureless only when the
+    // raw slot is zero; a non-zero slot without relocation evidence is malformed or an unsupported
+    // external reference and must fail closed.
+    if (!ovl.TryGetRelocationSource(texAddress + 52, out var flicSlot)) {
+      if (tex.FlicPtr == 0) return null;
+      throw new InvalidDataException(
+        $"'{name}' has non-zero FLIC pointer {tex.FlicPtr:X} without relocation evidence");
+    }
     // Hop 2: FlicPtr is a double pointer - flicSlot is itself a relocatable location, and the value
     // stored there is the FLIC loader's own (equally relocation-gated) data address.
     if (!ovl.TryGetRelocationSource(flicSlot, out var flicAddr))

@@ -17,6 +17,17 @@ namespace OpenCobra.Tests.Integration;
 
 [TestFixture]
 public class TextureDecodeVerification {
+  private static readonly string[] MainTexturelessRuntimeTargets = [
+    "DrawSolidColour",
+    "DrawSolidColourOpaque",
+    "GUIRendererBitmap",
+    "GUIRendererColour",
+    "GUIRendererZMask",
+    "TerrainDebug",
+    "TerrainDetailAndLightmap",
+    "TerrainGrid2StageDummy",
+  ];
+
   private static string? Rct3Path() => Environment.GetEnvironmentVariable("RCT3_PATH");
 
   [SetUp]
@@ -41,10 +52,19 @@ public class TextureDecodeVerification {
 
     TestContext.Out.WriteLine(
       $"Main.common.ovl: {texEntries.Count} Texture entries, {decodedTexNames.Count} genuine entries decoded");
+    Assert.That(textureless.Select(entry => entry.Name),
+      Is.EquivalentTo(MainTexturelessRuntimeTargets),
+      "The undecoded Main TEX entries changed; investigate instead of accepting another 76/84 split");
     foreach (var entry in textureless) {
       Assert.That(ovl.TryGetDataPointer(entry, out var texAddress), Is.True);
+      var bytes = ovl.ReadResource(entry);
+      Assert.That(bytes, Is.Not.Null.And.Length.GreaterThanOrEqualTo(56));
+      var rawFlicPtr = BitConverter.ToUInt32(bytes, 52);
       var hasFlicRelocation = ovl.TryGetRelocationSource(texAddress + 52, out _);
-      TestContext.Out.WriteLine($"Textureless: {entry.Name}; FlicPtr relocation={hasFlicRelocation}");
+      TestContext.Out.WriteLine(
+        $"Textureless: {entry.Name}; raw FlicPtr={rawFlicPtr:X}; relocation={hasFlicRelocation}");
+      Assert.That(rawFlicPtr, Is.Zero,
+        $"Textureless runtime target '{entry}' must have a zero raw FLIC pointer");
       Assert.That(hasFlicRelocation, Is.False,
         $"Undecoded texture '{entry}' has a backing FLIC relocation and needs investigation");
     }

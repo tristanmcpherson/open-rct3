@@ -68,6 +68,16 @@ public class TextureDecodingTests {
   }
 
   [Test]
+  public void ReadTexture_RejectsNonzeroFlicPointerWithoutRelocation() {
+    using var ovl = new Ovl("unrelocated");
+    var bytes = new byte[Marshal.SizeOf<Tex>()];
+    WriteUInt32(bytes, 52, 0xDEADBEEF);
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      TextureDecoding.ReadTexture("unrelocated", ovl, 0, bytes, null)));
+  }
+
+  [Test]
   public void ReadTexture_RejectsUnresolvedSecondPointerHop() {
     using var ovl = new Ovl("unresolved");
     Relocations(ovl)[52] = 1234;

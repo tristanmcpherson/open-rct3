@@ -19,32 +19,45 @@ using System.Security.Cryptography;
 
 namespace OpenCobra.GDK.Materials;
 
-public class Texture(string name, int width, int height, Image<Rgba32> texture, Recolorable recolorable = 0) : IResource, IDisposable {
+public class Texture : IResource, IDisposable {
   public static readonly string UniformName = "u_Texture";
   private readonly object lifetimeLock = new();
+  private readonly Rgba32[] uploadPixels;
   private bool disposed;
-  private bool disposalRequested;
-  private int retainCount;
+  private bool ownerReleased;
+  private int leaseCount;
   private uint handle;
 
   [Category("Design")]
-  public string Name { get; private set; } = name;
+  public string Name { get; private set; }
   [Category("Appearance")]
-  public int Width { get; } = width;
+  public int Width { get; }
   [Category("Appearance")]
-  public int Height { get; } = height;
+  public int Height { get; }
   [Category("Appearance")]
-  public Recolorable Recolorable { get; } = recolorable;
+  public Recolorable Recolorable { get; }
   [Category("Appearance")]
-  public Image<Rgba32> Pixels { get; } = texture;
+  public Image<Rgba32> Pixels { get; }
 
   [Browsable(false)]
-  public TextureCacheKey CacheKey { get; } = TextureCacheKey.Create(
-    name,
-    width,
-    height,
-    recolorable,
-    texture);
+  public TextureCacheKey CacheKey { get; }
+
+  public Texture(
+    string name,
+    int width,
+    int height,
+    Image<Rgba32> texture,
+    Recolorable recolorable = 0
+  ) {
+    Name = name;
+    Width = width;
+    Height = height;
+    Recolorable = recolorable;
+    Pixels = texture;
+    uploadPixels = new Rgba32[texture.Width * texture.Height];
+    texture.CopyPixelDataTo(uploadPixels);
+    CacheKey = TextureCacheKey.Create(name, width, height, recolorable, uploadPixels);
+  }
 
   /// <summary>
   /// Whether this texture is recolorable.
@@ -67,38 +80,30 @@ public class Texture(string name, int width, int height, Image<Rgba32> texture, 
     }
   }
 
-  public void Upload() => EnsureUploaded(() => {
-    var gl = IGame.IoC.Resolve<GL>();
-    var uploadedHandle = gl.GenTexture();
+  public void Upload() {
+    ObjectDisposedException.ThrowIf(State == State.Disposed, this);
+    if (State == State.Ready) return;
+    Upload(new SilkTextureGpuApi(IGame.IoC.Resolve<GL>()));
+  }
+
+  /// <summary>
+  /// Uploads the immutable pixel snapshot through a renderer-provided GPU API.
+  /// </summary>
+  public void Upload(IGpuApi gpu) => EnsureUploaded(pixels => {
+    var uploadedHandle = gpu.CreateTexture();
+    if (uploadedHandle == 0)
+      throw new InvalidOperationException("A texture upload must allocate a non-zero GPU handle.");
     try {
-      gl.BindTexture(TextureTarget.Texture2D, uploadedHandle);
-
       // FIXME: SAFELY upload texture pixels to GPU!
-      var success = Pixels.DangerousTryGetSinglePixelMemory(out var pixelMemory);
-      Debug.Assert(success, "Failed to get pixel memory from albedo texture");
-      ReadOnlySpan<Rgba32> pixels = pixelMemory.Span;
-      gl.TexImage2D(
-        TextureTarget.Texture2D,
-        0,
-        InternalFormat.Rgba,
-        Convert.ToUInt32(Width),
-        Convert.ToUInt32(Height),
-        0,
-        PixelFormat.Rgba,
-        PixelType.UnsignedByte,
-        pixels
-      );
-
-      gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
-      gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
-      gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
-      gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
+      gpu.UploadTexture(uploadedHandle, Width, Height, pixels);
       return uploadedHandle;
-    } catch {
-      gl.DeleteTexture(uploadedHandle);
+    } catch (Exception uploadError) {
+      try {
+        gpu.DeleteTexture(uploadedHandle);
+      } catch (Exception cleanupError) {
+        throw new AggregateException(uploadError, cleanupError);
+      }
       throw;
-    } finally {
-      gl.BindTexture(TextureTarget.Texture2D, 0);
     }
   });
 
@@ -107,11 +112,18 @@ public class Texture(string name, int width, int height, Image<Rgba32> texture, 
   /// Render backends can use this seam to share one upload across equivalent texture instances.
   /// </summary>
   public void EnsureUploaded(Func<uint> upload) {
+    EnsureUploaded(_ => upload());
+  }
+
+  /// <summary>
+  /// Attaches a handle created from the immutable pixel snapshot exactly once.
+  /// </summary>
+  public void EnsureUploaded(TextureUpload upload) {
     lock (lifetimeLock) {
       ObjectDisposedException.ThrowIf(disposed, this);
       if (handle != 0) return;
 
-      var uploadedHandle = upload();
+      var uploadedHandle = upload(uploadPixels);
       if (uploadedHandle == 0)
         throw new InvalidOperationException("A texture upload must return a non-zero GPU handle.");
       handle = uploadedHandle;
@@ -127,26 +139,31 @@ public class Texture(string name, int width, int height, Image<Rgba32> texture, 
 
   public void Dispose() {
     lock (lifetimeLock) {
-      if (disposalRequested) return;
-      disposalRequested = true;
-      if (retainCount > 0) return;
+      if (ownerReleased) return;
+      ownerReleased = true;
+      if (leaseCount > 0) return;
       CompleteDispose();
     }
   }
 
-  internal void Retain() {
+  /// <summary>
+  /// Acquires a non-owning lease that keeps this texture alive until the lease is disposed.
+  /// The creator remains the owner and releases ownership through <see cref="Dispose"/>.
+  /// </summary>
+  public IDisposable AcquireLease() {
     lock (lifetimeLock) {
-      ObjectDisposedException.ThrowIf(disposalRequested || disposed, this);
-      retainCount++;
+      ObjectDisposedException.ThrowIf(ownerReleased || disposed, this);
+      leaseCount++;
+      return new TextureLease(this);
     }
   }
 
-  internal void Release() {
+  private void ReleaseLease() {
     lock (lifetimeLock) {
-      if (retainCount <= 0)
+      if (leaseCount <= 0)
         throw new InvalidOperationException("Texture ownership was released more than once.");
-      retainCount--;
-      if (retainCount == 0 && disposalRequested) CompleteDispose();
+      leaseCount--;
+      if (leaseCount == 0 && ownerReleased) CompleteDispose();
     }
   }
 
@@ -155,6 +172,58 @@ public class Texture(string name, int width, int height, Image<Rgba32> texture, 
     GC.SuppressFinalize(this);
     Pixels.Dispose();
     disposed = true;
+  }
+
+  public delegate uint TextureUpload(ReadOnlySpan<Rgba32> pixels);
+
+  public interface IGpuApi {
+    uint CreateTexture();
+    void UploadTexture(uint handle, int width, int height, ReadOnlySpan<Rgba32> pixels);
+    void DeleteTexture(uint handle);
+  }
+
+  private sealed class TextureLease(Texture texture) : IDisposable {
+    private Texture? resource = texture;
+
+    public void Dispose() {
+      var owned = Interlocked.Exchange(ref resource, null);
+      owned?.ReleaseLease();
+    }
+  }
+
+  private sealed class SilkTextureGpuApi(GL gl) : IGpuApi {
+    public uint CreateTexture() => gl.GenTexture();
+
+    public void UploadTexture(
+      uint handle,
+      int width,
+      int height,
+      ReadOnlySpan<Rgba32> pixels
+    ) {
+      try {
+        gl.BindTexture(TextureTarget.Texture2D, handle);
+        gl.TexImage2D(
+          TextureTarget.Texture2D,
+          0,
+          InternalFormat.Rgba,
+          Convert.ToUInt32(width),
+          Convert.ToUInt32(height),
+          0,
+          PixelFormat.Rgba,
+          PixelType.UnsignedByte,
+          pixels
+        );
+
+        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
+        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
+      } finally {
+        gl.BindTexture(TextureTarget.Texture2D, 0);
+      }
+    }
+
+    public void DeleteTexture(uint handle) => gl.DeleteTexture(handle);
   }
 }
 
@@ -170,11 +239,9 @@ public readonly record struct TextureCacheKey(
     int width,
     int height,
     Recolorable recolorable,
-    Image<Rgba32> image
+    ReadOnlySpan<Rgba32> pixels
   ) {
-    var pixels = new Rgba32[image.Width * image.Height];
-    image.CopyPixelDataTo(pixels);
-    var bytes = MemoryMarshal.AsBytes(pixels.AsSpan());
+    var bytes = MemoryMarshal.AsBytes(pixels);
     var hash = Convert.ToHexString(SHA256.HashData(bytes));
     return new(name, width, height, recolorable, hash);
   }
@@ -182,7 +249,12 @@ public readonly record struct TextureCacheKey(
 
 public class AnimatedTexture(string name, FlexiTextureList textures) : IEnumerable<Texture> {
   private readonly Texture[] _textures = [.. textures.Frames.Select(
-    frame => new Texture(name, textures.Width, textures.Height, frame.Texture, frame.Recolorable)
+    frame => new Texture(
+      name,
+      frame.Texture.Width,
+      frame.Texture.Height,
+      frame.Texture,
+      frame.Recolorable)
   )];
 
   [Category("Design")]

@@ -154,12 +154,26 @@ public class OpenGLLayer : CAOpenGLLayer, IGraphicsSurface {
   }
 
   protected override void Dispose(bool disposing) {
-    if (disposing) {
-      Game.Instance?.Dispose();
-      renderer?.Dispose();
-      gl?.Dispose();
+    try {
+      if (disposing) {
+        var releases = new Action[] {
+          () => Game.Instance?.Dispose(),
+          glContext.Dispose,
+          () => gl?.Dispose(),
+        };
+        if (renderer != null)
+          renderer.Dispose(releases[0], releases[1], releases[2]);
+        else if (initialized)
+          RendererTeardown.Run(glContext, releases);
+      }
+    } finally {
+      if (disposing) {
+        renderer = null;
+        gl = null;
+        initialized = false;
+      }
+      base.Dispose(disposing);
     }
-    base.Dispose(disposing);
   }
 
   [DllImport("/System/Library/Frameworks/OpenGL.framework/OpenGL")]

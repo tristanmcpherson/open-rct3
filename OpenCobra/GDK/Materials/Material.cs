@@ -17,6 +17,10 @@ public abstract class Material : IResource, IDisposable {
   private Texture? normalMap;
   private Texture? specularMap;
   private Texture? emissiveMap;
+  private IDisposable? albedoLease;
+  private IDisposable? normalLease;
+  private IDisposable? specularLease;
+  private IDisposable? emissiveLease;
 
   [Category("GPU")]
   public ShaderSource Shaders { get; protected set; }
@@ -27,22 +31,22 @@ public abstract class Material : IResource, IDisposable {
   [Category("Appearance")]
   public Texture? AlbedoTexture {
     get => albedoTexture;
-    set => SetTexture(ref albedoTexture, value);
+    set => SetTexture(ref albedoTexture, ref albedoLease, value);
   }
   [Category("Appearance")]
   public Texture? NormalMap {
     get => normalMap;
-    set => SetTexture(ref normalMap, value);
+    set => SetTexture(ref normalMap, ref normalLease, value);
   }
   [Category("Appearance")]
   public Texture? SpecularMap {
     get => specularMap;
-    set => SetTexture(ref specularMap, value);
+    set => SetTexture(ref specularMap, ref specularLease, value);
   }
   [Category("Appearance")]
   public Texture? EmissiveMap {
     get => emissiveMap;
-    set => SetTexture(ref emissiveMap, value);
+    set => SetTexture(ref emissiveMap, ref emissiveLease, value);
   }
 
   public IEnumerable<Texture> Textures {
@@ -66,23 +70,23 @@ public abstract class Material : IResource, IDisposable {
 
   public void Dispose() {
     if (disposed) return;
+    disposed = true;
     GC.SuppressFinalize(this);
 
     // FIXME: Dispose of shader sources
-    Texture?[] textures = [albedoTexture, normalMap, specularMap, emissiveMap];
-    foreach (var texture in textures.Where(t => t != null).Cast<Texture>()) texture.Dispose();
-    foreach (var texture in textures.Where(t => t != null).Cast<Texture>()) texture.Release();
-
-    disposed = true;
+    IDisposable?[] leases = [albedoLease, normalLease, specularLease, emissiveLease];
+    foreach (var lease in leases.Where(lease => lease != null).Cast<IDisposable>())
+      lease.Dispose();
   }
 
-  private void SetTexture(ref Texture? field, Texture? value) {
+  private void SetTexture(ref Texture? field, ref IDisposable? lease, Texture? value) {
     ObjectDisposedException.ThrowIf(disposed, this);
     if (ReferenceEquals(field, value)) return;
 
-    value?.Retain();
-    field?.Release();
+    var replacementLease = value?.AcquireLease();
+    lease?.Dispose();
     field = value;
+    lease = replacementLease;
   }
 }
 

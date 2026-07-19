@@ -113,25 +113,39 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
   }
 
   protected override void OnHandleDestroyed(EventArgs e) {
-    base.OnHandleDestroyed(e);
-    if (DesignMode) return;
+    try {
+      if (DesignMode || !IsValid) return;
 
-    if (!IsValid) return;
+      var releases = new Action[] {
+        () => {
+          Game.Instance?.Dispose();
+          logger.Trace("Game instance disposed");
+        },
+        () => {
+          Context.Dispose();
+          if (Context.Hdc != nint.Zero) {
+            _ = ReleaseDC(Handle, Context.Hdc);
+            Context.Hdc = nint.Zero;
+          }
+          logger.Trace("Context disposed");
+        },
+        () => {
+          gl?.Dispose();
+          logger.Trace("Surface disposed");
+        },
+      };
 
-    Game.Instance?.Dispose();
-    logger.Trace("Game instance disposed");
-    renderer?.Dispose();
-    renderer = null;
-    logger.Trace("Renderer disposed");
-    Context.Dispose();
-    if (Context.Hdc != nint.Zero) {
-      _ = ReleaseDC(Handle, Context.Hdc);
-      Context.Hdc = nint.Zero;
+      if (renderer != null) {
+        renderer.Dispose(releases[0], releases[1], releases[2]);
+        logger.Trace("Renderer disposed");
+      } else {
+        RendererTeardown.Run(Context, releases);
+      }
+    } finally {
+      renderer = null;
+      gl = null;
+      base.OnHandleDestroyed(e);
     }
-    logger.Trace("Context disposed");
-    gl?.Dispose();
-    gl = null;
-    logger.Trace("Surface disposed");
   }
 
   protected override void OnResize(EventArgs e) {

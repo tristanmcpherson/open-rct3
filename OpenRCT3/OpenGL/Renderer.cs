@@ -54,15 +54,31 @@ public class Renderer : ThreadAffine, IRenderer {
     State = State.Ready;
   });
 
-  public void Dispose() => Invoke(() => {
-    if (State == State.Disposed) return;
+  public void Dispose() => Dispose(null, null, null);
+
+  internal void Dispose(
+    Action? disposeScene,
+    Action? disposeContext,
+    Action? disposeGl
+  ) => Invoke(() => {
+    if (State == State.Disposed && disposeScene == null
+        && disposeContext == null && disposeGl == null) return;
     GC.SuppressFinalize(this);
 
-    shaders.Dispose();
-    textures.Dispose();
-    foreach (var texture in uploadedTextures) texture.ResetUpload();
-    uploadedTextures.Clear();
-    State = State.Disposed;
+    var releases = new List<Action>();
+    if (disposeScene != null) releases.Add(disposeScene);
+    if (State != State.Disposed) {
+      releases.Add(() => State = State.Disposed);
+      releases.Add(shaders.Dispose);
+      releases.Add(textures.Dispose);
+      releases.Add(() => {
+        foreach (var texture in uploadedTextures) texture.ResetUpload();
+        uploadedTextures.Clear();
+      });
+    }
+    if (disposeContext != null) releases.Add(disposeContext);
+    if (disposeGl != null) releases.Add(disposeGl);
+    RendererTeardown.Run(context, releases);
   });
 
   public void Render(Scene scene) => Invoke(() => {
@@ -278,8 +294,36 @@ internal sealed class ResourceCache<TKey, TResource>(Action<TResource> release) 
 
   public void Dispose() {
     if (disposed) return;
-    foreach (var resource in resources.Values) release(resource);
+    var ownedResources = resources.Values.ToArray();
     resources.Clear();
     disposed = true;
+
+    var errors = new List<Exception>();
+    foreach (var resource in ownedResources) {
+      try {
+        release(resource);
+      } catch (Exception error) {
+        errors.Add(error);
+      }
+    }
+    if (errors.Count > 0) throw new AggregateException(errors);
+  }
+}
+
+internal static class RendererTeardown {
+  public static void Run(IGLContext context, IEnumerable<Action> releases) {
+    context.MakeCurrent();
+    if (!context.IsCurrent)
+      throw new InvalidOperationException("The renderer's OpenGL context is not current.");
+
+    var errors = new List<Exception>();
+    foreach (var release in releases) {
+      try {
+        release();
+      } catch (Exception error) {
+        errors.Add(error);
+      }
+    }
+    if (errors.Count > 0) throw new AggregateException(errors);
   }
 }

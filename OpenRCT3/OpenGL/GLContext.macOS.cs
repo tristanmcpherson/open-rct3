@@ -61,7 +61,8 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
   [System.ComponentModel.Browsable(false)]
   public IGLContextSource? Source => null;
 
-  public bool IsCurrent => _currentContext != nint.Zero;
+  public bool IsCurrent => _currentContext != nint.Zero
+    && CGLGetCurrentContext() == _currentContext;
 
   public void Dispose() {
     if (openglLib != nint.Zero) dlclose(openglLib);

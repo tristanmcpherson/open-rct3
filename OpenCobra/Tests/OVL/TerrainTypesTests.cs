@@ -1,6 +1,9 @@
 using System.Buffers.Binary;
+using System.Text;
 using NUnit.Framework;
+using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
+using OvlVersion = OpenCobra.OVL.Version;
 
 namespace OpenCobra.Tests.OVL;
 
@@ -30,7 +33,7 @@ public class TerrainTypesTests {
       Assert.That(terrain.TextureRef, Is.EqualTo("Terrain_00"));
       Assert.That(terrain.Texture.QualifiedName, Is.EqualTo("Terrain_00:tex"));
       Assert.That(terrain.Version, Is.EqualTo(1));
-      Assert.That(terrain.Addon, Is.EqualTo(TerrainAddon.Soaked));
+      Assert.That(terrain.Addon, Is.EqualTo(Addon.Soaked));
       Assert.That(terrain.Number, Is.EqualTo(42));
       Assert.That(terrain.Type, Is.EqualTo(TerrainTypeKind.GroundBlended));
       Assert.That(terrain.Parameters.Color01, Is.EqualTo(0x11223344));
@@ -63,7 +66,7 @@ public class TerrainTypesTests {
       TerrainTypes.Decode("bad-version", bytes, ResolveReference)));
   }
 
-  [TestCase(2u)]
+  [TestCase(3u)]
   [TestCase(uint.MaxValue)]
   public void Decode_RejectsInvalidAddon(uint addon) {
     var bytes = ValidRecord();
@@ -83,21 +86,47 @@ public class TerrainTypesTests {
       TerrainTypes.Decode("bad-type", bytes, ResolveReference)));
   }
 
-  [TestCase(TerrainAddon.BaseGame, TerrainTypeKind.GroundUnblended)]
-  [TestCase(TerrainAddon.BaseGame, TerrainTypeKind.Cliff)]
-  [TestCase(TerrainAddon.BaseGame, TerrainTypeKind.GroundBlended)]
-  [TestCase(TerrainAddon.Soaked, TerrainTypeKind.GroundUnblended)]
-  [TestCase(TerrainAddon.Soaked, TerrainTypeKind.Cliff)]
-  [TestCase(TerrainAddon.Soaked, TerrainTypeKind.GroundBlended)]
-  public void Decode_AcceptsKnownEnumBoundaries(TerrainAddon addon, TerrainTypeKind type) {
+  [TestCaseSource(nameof(KnownAddons))]
+  public void Decode_AcceptsKnownAddon(Addon addon) {
     var bytes = ValidRecord();
     WriteUInt32(bytes, 8, Convert.ToUInt32(addon));
-    WriteUInt32(bytes, 16, Convert.ToUInt32(type));
 
-    var terrain = TerrainTypes.Decode("known-enums", bytes, ResolveReference);
+    var terrain = TerrainTypes.Decode("known-addon", bytes, ResolveReference);
 
     Assert.That(terrain.Addon, Is.EqualTo(addon));
+  }
+
+  [TestCase(TerrainTypeKind.GroundUnblended)]
+  [TestCase(TerrainTypeKind.Cliff)]
+  [TestCase(TerrainTypeKind.GroundBlended)]
+  public void Decode_AcceptsKnownTerrainType(TerrainTypeKind type) {
+    var bytes = ValidRecord();
+    WriteUInt32(bytes, 16, Convert.ToUInt32(type));
+
+    var terrain = TerrainTypes.Decode("known-type", bytes, ResolveReference);
+
     Assert.That(terrain.Type, Is.EqualTo(type));
+  }
+
+  [TestCase(OvlVersion.Four)]
+  [TestCase(OvlVersion.Five)]
+  public void ReadRawDataOffset_RejectsMissingStringBlock(OvlVersion version) {
+    using var stream = OvlHeader(version, typeZeroBlockCount: 0);
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    Assert.Throws<InvalidDataException>(new Action(() => TerrainTypes.ReadRawDataOffset(reader)));
+  }
+
+  [TestCase(OvlVersion.Four)]
+  [TestCase(OvlVersion.Five)]
+  public void ReadRawDataOffset_AcceptsPresentStringBlock(OvlVersion version) {
+    using var stream = OvlHeader(version, typeZeroBlockCount: 1);
+    var expectedOffset = stream.Length;
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    var offset = TerrainTypes.ReadRawDataOffset(reader);
+
+    Assert.That(offset, Is.EqualTo(expectedOffset));
   }
 
   [TestCase(40)]
@@ -156,11 +185,45 @@ public class TerrainTypesTests {
   private static byte[] ValidRecord() {
     var bytes = new byte[TerrainTypes.RecordSize];
     WriteUInt32(bytes, 0, 1);
-    WriteUInt32(bytes, 8, Convert.ToUInt32(TerrainAddon.Soaked));
+    WriteUInt32(bytes, 8, Convert.ToUInt32(Addon.Soaked));
     WriteUInt32(bytes, 16, Convert.ToUInt32(TerrainTypeKind.GroundBlended));
     WriteSingle(bytes, 40, 0.1f);
     WriteSingle(bytes, 44, 0.1f);
     return bytes;
+  }
+
+  private static IEnumerable<Addon> KnownAddons => Enum.GetValues<Addon>();
+
+  private static MemoryStream OvlHeader(OvlVersion version, uint typeZeroBlockCount) {
+    var stream = new MemoryStream();
+    using (var writer = new BinaryWriter(stream, Encoding.ASCII, leaveOpen: true)) {
+      writer.Write(0x4b524746u);
+      writer.Write(0u);
+      writer.Write(Convert.ToUInt32(version));
+      writer.Write(0u);
+      if (version == OvlVersion.Four) {
+        writer.Write(0u);
+      } else if (version == OvlVersion.Five) {
+        writer.Write(0u);
+        writer.Write(0u);
+      }
+
+      writer.Write(0u);
+      writer.Write(0u);
+      foreach (var typeIndex in Enumerable.Range(0, 9)) {
+        var blockCount = typeIndex == 0 ? typeZeroBlockCount : 0u;
+        writer.Write(blockCount);
+        writer.Write(0u);
+        foreach (var _ in Enumerable.Range(0, Convert.ToInt32(blockCount))) writer.Write(0u);
+      }
+
+      if (version == OvlVersion.Four || version == OvlVersion.Five) {
+        writer.Write(0u);
+        writer.Write(0u);
+      }
+    }
+    stream.Position = 0;
+    return stream;
   }
 
   private static void WriteUInt32(byte[] bytes, int offset, uint value) =>

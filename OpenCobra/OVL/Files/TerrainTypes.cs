@@ -16,12 +16,6 @@ public enum TerrainTypeKind : uint {
   GroundBlended = 2
 }
 
-/// <summary>The content pack associated with an RCT3 terrain type.</summary>
-public enum TerrainAddon : uint {
-  BaseGame = 0,
-  Soaked = 1
-}
-
 /// <summary>A typed OVL resource name referenced by a terrain definition.</summary>
 public sealed record TerrainResourceReference(string Name, FileType Type) {
   public string QualifiedName => $"{Name}:{Type.ToTagString()}";
@@ -50,7 +44,7 @@ public sealed record TerrainType(
   TerrainResourceReference Icon,
   TerrainResourceReference Texture,
   uint Version,
-  TerrainAddon Addon,
+  Addon Addon,
   uint Number,
   TerrainTypeKind Type,
   TerrainParameters Parameters,
@@ -127,7 +121,7 @@ public static class TerrainTypes {
       throw new InvalidDataException($"Terrain resource '{name}' has unsupported version {version}.");
 
     var addonValue = ReadUInt32(data, 8);
-    if (!Enum.IsDefined(typeof(TerrainAddon), addonValue))
+    if (!Enum.IsDefined(typeof(Addon), addonValue))
       throw new InvalidDataException($"Terrain resource '{name}' has invalid addon value {addonValue}.");
 
     var typeValue = ReadUInt32(data, 16);
@@ -165,7 +159,7 @@ public static class TerrainTypes {
       icon,
       texture,
       version,
-      (TerrainAddon)addonValue,
+      (Addon)addonValue,
       ReadUInt32(data, 12),
       (TerrainTypeKind)typeValue,
       parameters,
@@ -204,6 +198,9 @@ public static class TerrainTypes {
       throw new InvalidDataException($"Terrain resource '{name}' has a non-finite value at byte {offset}.");
     return value;
   }
+
+  internal static long ReadRawDataOffset(BinaryReader reader) =>
+    OvlTerrainReferenceResolver.ReadRawDataOffset(reader);
 
   private sealed class OvlTerrainReferenceResolver(
     Ovl ovl,
@@ -274,7 +271,7 @@ public static class TerrainTypes {
       return path[..^uniqueSuffix.Length] + ".common.ovl";
     }
 
-    private static long ReadRawDataOffset(BinaryReader reader) {
+    internal static long ReadRawDataOffset(BinaryReader reader) {
       Require(reader, 16);
       if (reader.ReadUInt32() != 0x4b524746)
         throw new InvalidDataException("Invalid OVL magic while resolving the common string table.");
@@ -338,11 +335,9 @@ public static class TerrainTypes {
         Skip(reader, checked(Convert.ToInt64(reader.ReadUInt32()) * 4));
       }
 
-      if (version == 1) {
-        if (typeZeroBlockCount == 0)
-          throw new InvalidDataException("Version 1 OVL has no common string-table block.");
-        Skip(reader, 4);
-      }
+      if (typeZeroBlockCount == 0)
+        throw new InvalidDataException($"Version {version} OVL has no common string-table block.");
+      if (version == 1) Skip(reader, 4);
       return reader.BaseStream.Position;
     }
 

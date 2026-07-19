@@ -353,38 +353,68 @@ internal sealed class MacSurfaceResourceOwner {
 internal sealed class WindowsSurfaceResourceOwner {
   private readonly OrderedResourceOwners resources = new();
 
+  public bool HasPending => resources.HasPending;
   public void OwnContext(Action release) => resources.Own(40, release);
   public void OwnDeviceContext(Action release) => resources.Own(50, release);
   public void OwnGl(Action release) => resources.Own(60, release);
   public void OwnInput(Action release) => resources.Own(30, release);
   public void OwnController(Action release) => resources.Own(20, release, true);
   public void OwnRenderer(Action release) => resources.Own(10, release, true);
+  public void OwnGameState(Action release) => resources.Own(-10, release);
   public void OwnGame(Action release) => resources.Own(0, release, true);
   public void Dispose(IGLContext context) => resources.Dispose(context);
+}
+
+internal sealed class WindowsSurfaceResourceCycle {
+  private WindowsSurfaceResourceOwner? current;
+
+  public WindowsSurfaceResourceOwner BeginHandle() {
+    if (current?.HasPending == true)
+      throw new InvalidOperationException("The previous surface handle still owns resources.");
+    current = new WindowsSurfaceResourceOwner();
+    return current;
+  }
+
+  public void EndHandle(IGLContext context) {
+    var resources = current;
+    if (resources == null) return;
+    try {
+      resources.Dispose(context);
+    } finally {
+      if (!resources.HasPending) current = null;
+    }
+  }
 }
 
 internal sealed class OrderedResourceOwners {
   private readonly object lifetimeLock = new();
   private readonly List<OwnedRelease> releases = [];
-  private bool disposed;
+  private long nextId;
+  private bool disposalStarted;
+
+  public bool HasPending {
+    get {
+      lock (lifetimeLock) return releases.Count > 0;
+    }
+  }
 
   public void Own(int order, Action release, bool requiresCurrent = false) {
     lock (lifetimeLock) {
-      ObjectDisposedException.ThrowIf(disposed, this);
-      releases.Add(new(order, release, requiresCurrent));
+      ObjectDisposedException.ThrowIf(disposalStarted, this);
+      releases.Add(new(nextId++, order, release, requiresCurrent));
     }
   }
 
   public void Dispose(IGLContext context) {
     OwnedRelease[] ownedReleases;
     lock (lifetimeLock) {
-      if (disposed) return;
+      disposalStarted = true;
+      if (releases.Count == 0) return;
       ownedReleases = [.. releases.OrderBy(resource => resource.Order)];
-      releases.Clear();
-      disposed = true;
     }
 
     if (!ownedReleases.Any(resource => resource.RequiresCurrent)) {
+      Transfer(ownedReleases);
       ResourceReleaser.Run(ownedReleases.Select(resource => resource.Release));
       return;
     }
@@ -395,18 +425,27 @@ internal sealed class OrderedResourceOwners {
         throw new InvalidOperationException("The renderer's OpenGL context is not current.");
     } catch (Exception contextError) {
       var errors = new List<Exception> { contextError };
+      var safeReleases = ownedReleases
+        .Where(resource => !resource.RequiresCurrent)
+        .ToArray();
+      Transfer(safeReleases);
       ResourceReleaser.Collect(
-        ownedReleases
-          .Where(resource => !resource.RequiresCurrent)
-          .Select(resource => resource.Release),
+        safeReleases.Select(resource => resource.Release),
         errors);
       throw new AggregateException(errors);
     }
 
+    Transfer(ownedReleases);
     ResourceReleaser.Run(ownedReleases.Select(resource => resource.Release));
   }
 
+  private void Transfer(IEnumerable<OwnedRelease> ownedReleases) {
+    var ids = ownedReleases.Select(resource => resource.Id).ToHashSet();
+    lock (lifetimeLock) releases.RemoveAll(resource => ids.Contains(resource.Id));
+  }
+
   private readonly record struct OwnedRelease(
+    long Id,
     int Order,
     Action Release,
     bool RequiresCurrent

@@ -15,6 +15,7 @@ using OpenRCT3.OpenGL;
 using Silk.NET.Core.Contexts;
 using Silk.NET.Input;
 using Silk.NET.OpenGL;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Windows.Forms;
 using static OpenRCT3.Platforms.Windows.Win32;
@@ -27,7 +28,8 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
   private readonly SurfaceSettings settings;
   private GL? gl;
   private Renderer? renderer;
-  private readonly WindowsSurfaceResourceOwner resources = new();
+  private readonly WindowsSurfaceResourceCycle resources = new();
+  private bool finalResourcesDisposed;
 
   /// <inheritdoc/>
   /// <remarks>
@@ -46,7 +48,6 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
 
     this.settings = settings?.Clone() ?? new SurfaceSettings();
     Context = new GLContext(settings!);
-    resources.OwnContext(Context.Dispose);
   }
 
   [Browsable(false)]
@@ -79,6 +80,8 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
 
   protected override void OnHandleCreated(EventArgs e) {
     if (DesignMode) return;
+    var handleResources = resources.BeginHandle();
+    handleResources.OwnContext(Context.ReleaseHandle);
 
     // Apply necessary window clipping styles for OpenGL rendering
     // See https://learn.microsoft.com/en-us/windows/win32/winmsg/window-styles
@@ -90,7 +93,7 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     var hdc = GetDC(Handle);
     if (hdc == nint.Zero)
       throw new InvalidOperationException("Could not acquire the surface device context.");
-    resources.OwnDeviceContext(() => {
+    handleResources.OwnDeviceContext(() => {
       _ = ReleaseDC(Handle, hdc);
       Context.Hdc = nint.Zero;
     });
@@ -99,7 +102,7 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     // Load Silk.NET OpenGL with the current context
     var ownedGl = GL.GetApi(Context.GetProcAddress);
     gl = ownedGl;
-    resources.OwnGl(ownedGl.Dispose);
+    handleResources.OwnGl(ownedGl.Dispose);
     Debug.Assert(ownedGl is not null);
     logger.Info("Created OpenGL context: {ctxSettings}", settings);
     Context.MakeCurrent();
@@ -112,21 +115,23 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     // Initialize the GUI controller first, renderer implementations depend on it
     var mainWindow = Parent as GameWindow ?? throw new InvalidOperationException();
     var input = mainWindow.CreateInput();
-    resources.OwnInput(input.Dispose);
+    handleResources.OwnInput(input.Dispose);
     var controller = new Controller(input);
-    resources.OwnController(controller.Dispose);
-    Game.IoC.RegisterInstance(controller, IfAlreadyRegistered.Throw);
+    handleResources.OwnController(controller.Dispose);
+    Game.IoC.RegisterInstance(controller, IfAlreadyRegistered.Replace);
 
     // Initialize the scene renderer
     var ownedRenderer = new Renderer {
       FramebufferSize = new(ClientSize.Width, ClientSize.Height)
     };
     renderer = ownedRenderer;
-    resources.OwnRenderer(ownedRenderer.Dispose);
+    handleResources.OwnRenderer(ownedRenderer.Dispose);
     ownedRenderer.Initialize();
     Game.IoC.RegisterInstance<IRenderer>(ownedRenderer);
 
-    resources.OwnGame(() => Game.Instance?.Dispose());
+    Game? ownedGame = null;
+    handleResources.OwnGameState(() => ownedGame = Game.DetachInstance());
+    handleResources.OwnGame(() => ownedGame?.Dispose());
     SurfaceCreated?.Invoke(this, ownedRenderer);
     base.OnHandleCreated(e);
     Invalidate();
@@ -134,13 +139,32 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
 
   protected override void OnHandleDestroyed(EventArgs e) {
     try {
-      resources.Dispose(Context);
+      resources.EndHandle(Context);
       logger.Trace("Surface resources disposed");
     } finally {
       renderer = null;
       gl = null;
       base.OnHandleDestroyed(e);
     }
+  }
+
+  protected override void Dispose(bool disposing) {
+    var errors = new List<Exception>();
+    try {
+      base.Dispose(disposing);
+    } catch (Exception error) {
+      errors.Add(error);
+    }
+
+    if (disposing && !finalResourcesDisposed) {
+      finalResourcesDisposed = true;
+      try {
+        Context.Dispose();
+      } catch (Exception error) {
+        errors.Add(error);
+      }
+    }
+    if (errors.Count > 0) throw new AggregateException(errors);
   }
 
   protected override void OnResize(EventArgs e) {

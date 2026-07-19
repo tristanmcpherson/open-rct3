@@ -54,6 +54,13 @@ public class Game : IGame {
   public static Container IoC => IGame.IoC;
   public static Game? Instance { get; private set; }
   public static bool IsRunning => Instance?.isRunning ?? false;
+
+  internal static Game? DetachInstance() {
+    var instance = Instance;
+    Instance = null;
+    return instance;
+  }
+
   /// <summary>
   /// Default frame rate of the game loop, in frames per second.
   /// </summary>

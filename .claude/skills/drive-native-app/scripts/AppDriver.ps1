@@ -36,6 +36,7 @@ param(
   [switch]$Json,
   [string]$ExecutablePath,
   [switch]$TestFailAfterSpawn,
+  [switch]$TestFailCleanup,
   [int]$Lines = 60
 )
 
@@ -102,6 +103,12 @@ namespace Native {
     [DllImport("user32.dll")] public static extern IntPtr PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern IntPtr SetProcessDpiAwarenessContext(IntPtr value);
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageName(
+      IntPtr process, uint flags, StringBuilder path, ref uint size);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
 
@@ -118,6 +125,22 @@ namespace Native {
         return true;
       }, IntPtr.Zero);
       return results;
+    }
+
+    public static string GetProcessImagePath(uint processId) {
+      const uint QueryLimitedInformation = 0x1000;
+      IntPtr process = OpenProcess(QueryLimitedInformation, false, processId);
+      if (process == IntPtr.Zero)
+        throw new InvalidOperationException("Could not open the tracked process for path validation.");
+      try {
+        uint size = 32768;
+        var path = new StringBuilder((int)size);
+        if (!QueryFullProcessImageName(process, 0, path, ref size))
+          throw new InvalidOperationException("Could not query the tracked process image path.");
+        return path.ToString();
+      } finally {
+        CloseHandle(process);
+      }
     }
 
     // Plain SetForegroundWindow silently no-ops when called from a background process -
@@ -183,7 +206,8 @@ function Get-TrackedProcess {
   }
   if ($null -eq $metadata) { return $proc }
 
-  $actualPath = [System.IO.Path]::GetFullPath($proc.Path)
+  $actualPath = [System.IO.Path]::GetFullPath(
+    [Native.Win32]::GetProcessImagePath([uint32]$procId))
   $expectedPath = [System.IO.Path]::GetFullPath([string]$metadata.ExecutablePath)
   if (-not $actualPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Tracked PID $procId executable mismatch: expected '$expectedPath', got '$actualPath'."
@@ -289,9 +313,10 @@ switch ($Action) {
   }
 
   'Launch' {
-    if ((-not [string]::IsNullOrWhiteSpace($ExecutablePath) -or $TestFailAfterSpawn) -and
+    if ((-not [string]::IsNullOrWhiteSpace($ExecutablePath) -or $TestFailAfterSpawn -or
+        $TestFailCleanup) -and
         $env:OPENRCT3_DRIVER_SELF_TEST -ne '1') {
-      throw 'ExecutablePath and TestFailAfterSpawn are available only to the isolated driver self-test.'
+      throw 'ExecutablePath and test fault switches are available only to the isolated driver self-test.'
     }
 
     if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
@@ -336,14 +361,18 @@ switch ($Action) {
       if ($Json) { $launchInfo | ConvertTo-Json -Compress } else { $launchInfo | Format-List }
     } catch {
       $launchError = $_
-      if ($null -ne $proc -and -not $proc.HasExited) {
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-        $proc.WaitForExit(5000) | Out-Null
+      if ($null -ne $proc -and -not $proc.HasExited -and -not $TestFailCleanup) {
+        try {
+          $proc.Kill()
+          $proc.WaitForExit(5000) | Out-Null
+        } catch {
+          # The candidate's validated Process handle remains the only allowed cleanup target.
+        }
       }
-      Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
       if ($null -ne $proc -and -not $proc.HasExited) {
         throw "Launch failed and candidate process $($proc.Id) could not be terminated. Original failure: $($launchError.Exception.Message)"
       }
+      Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
       throw $launchError
     }
   }
@@ -359,7 +388,8 @@ switch ($Action) {
     $info = [PSCustomObject]@{
       WindowHandle = [long]$hWnd
       ProcessId = $procId
-      ExecutablePath = [System.IO.Path]::GetFullPath($proc.Path)
+      ExecutablePath = [System.IO.Path]::GetFullPath(
+        [Native.Win32]::GetProcessImagePath([uint32]$procId))
       StartTimeUtc = $proc.StartTime.ToUniversalTime().ToString('o')
       IsMinimized = [Native.Win32]::IsIconic($hWnd)
       IsForeground = ([Native.Win32]::GetForegroundWindow() -eq $hWnd)
@@ -434,7 +464,7 @@ switch ($Action) {
   'Close' {
     $trackedProcess = Get-TrackedProcess
     if ($StrictPid -and $Force) {
-      Stop-Process -Id $trackedProcess.Id -Force
+      $trackedProcess.Kill()
       $trackedProcess.WaitForExit(5000) | Out-Null
       if (-not $trackedProcess.HasExited) {
         throw "Strict PID process $($trackedProcess.Id) is still running after forced Close."

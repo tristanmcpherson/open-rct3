@@ -1,13 +1,17 @@
 function New-NativeSmokeEvidenceRecord {
-  param([Parameter(Mandatory = $true)][string]$RepoPath)
+  param(
+    [Parameter(Mandatory = $true)][string]$RepoPath,
+    [Parameter(Mandatory = $true)][string]$RunNonce
+  )
 
   $unavailable = {
     param([string]$Reason)
     return [PSCustomObject]@{ available = $false; reason = $Reason }
   }
   return [PSCustomObject]@{
-    schemaVersion = 1
+    schemaVersion = 2
     check = 'native-map-smoke'
+    runNonce = $RunNonce
     outcome = 'failed'
     reason = $null
     repoPath = [System.IO.Path]::GetFullPath($RepoPath)
@@ -28,8 +32,8 @@ function New-NativeSmokeEvidenceRecord {
       processExited = $null
     }
     artifacts = [PSCustomObject]@{
-      transcriptPath = $null
-      applicationLogPath = $null
+      transcript = & $unavailable 'verification transcript not written'
+      applicationLog = & $unavailable 'application log not written'
     }
   }
 }
@@ -43,10 +47,11 @@ function Assert-Sha256Value {
   if ($Value -notmatch '^[0-9A-Fa-f]{64}$') { throw "$Name is not a SHA-256 value." }
 }
 
-function Assert-AvailablePathHashIdentity {
+function Assert-AvailableFileIdentity {
   param(
     [Parameter(Mandatory = $true)][PSCustomObject]$Identity,
-    [Parameter(Mandatory = $true)][string]$Name
+    [Parameter(Mandatory = $true)][string]$Name,
+    [string]$HashProperty = 'sha256'
   )
 
   if ($Identity.available -ne $true) { throw "$Name is unavailable." }
@@ -54,20 +59,72 @@ function Assert-AvailablePathHashIdentity {
       -not [System.IO.Path]::IsPathRooted([string]$Identity.path)) {
     throw "$Name path is not absolute."
   }
-  Assert-Sha256Value -Value ([string]$Identity.sha256) -Name "$Name hash"
+  if (-not (Test-Path -LiteralPath $Identity.path -PathType Leaf)) {
+    throw "$Name file does not exist: $($Identity.path)"
+  }
+  $claimedHash = [string]$Identity.$HashProperty
+  Assert-Sha256Value -Value $claimedHash -Name "$Name $HashProperty"
+  $actualHash = (Get-FileHash -LiteralPath $Identity.path -Algorithm SHA256).Hash
+  if ($actualHash -ne $claimedHash) {
+    throw "$Name $HashProperty does not match the file content."
+  }
+}
+
+function Assert-OptionalFileIdentity {
+  param(
+    [Parameter(Mandatory = $true)][PSCustomObject]$Identity,
+    [Parameter(Mandatory = $true)][string]$Name,
+    [string]$HashProperty = 'sha256'
+  )
+
+  if ($Identity.available -eq $true) {
+    Assert-AvailableFileIdentity -Identity $Identity -Name $Name -HashProperty $HashProperty
+    return
+  }
+  if ($Identity.available -ne $false -or
+      [string]::IsNullOrWhiteSpace([string]$Identity.reason)) {
+    throw "$Name must be available or include an unavailable reason."
+  }
 }
 
 function Assert-NativeSmokeEvidenceRecord {
   param([Parameter(Mandatory = $true)][PSCustomObject]$Evidence)
 
-  if ($Evidence.schemaVersion -ne 1) { throw 'Native evidence schemaVersion must be 1.' }
+  if ($Evidence.schemaVersion -ne 2) { throw 'Native evidence schemaVersion must be 2.' }
   if ($Evidence.check -ne 'native-map-smoke') { throw 'Native evidence check name is invalid.' }
+  if ([string]$Evidence.runNonce -notmatch '^[0-9a-f]{32}$') {
+    throw 'Native evidence runNonce must be a lowercase 128-bit hex nonce.'
+  }
   if (@('passed', 'failed', 'skipped') -notcontains $Evidence.outcome) {
     throw "Native evidence outcome '$($Evidence.outcome)' is invalid."
   }
-  if (-not [System.IO.Path]::IsPathRooted([string]$Evidence.repoPath)) {
-    throw 'Native evidence repoPath must be absolute.'
+  if (-not [System.IO.Path]::IsPathRooted([string]$Evidence.repoPath) -or
+      -not (Test-Path -LiteralPath $Evidence.repoPath -PathType Container)) {
+    throw 'Native evidence repoPath must identify an existing directory.'
   }
+
+  Assert-OptionalFileIdentity -Identity $Evidence.executable -Name 'Executable identity' `
+    -HashProperty 'preLaunchSha256'
+  if ($Evidence.executable.available -eq $true) {
+    if ($Evidence.executable.postLaunchSha256.available -eq $true) {
+      Assert-Sha256Value -Value ([string]$Evidence.executable.postLaunchSha256.value) `
+        -Name 'Executable identity postLaunchSha256'
+      $actualExecutableHash = (Get-FileHash -LiteralPath $Evidence.executable.path `
+        -Algorithm SHA256).Hash
+      if ($actualExecutableHash -ne $Evidence.executable.postLaunchSha256.value -or
+          $Evidence.executable.preLaunchSha256 -ne $Evidence.executable.postLaunchSha256.value) {
+        throw 'Executable identity changed between pre-launch and post-launch hashing.'
+      }
+    } elseif ($Evidence.executable.postLaunchSha256.available -ne $false -or
+        [string]::IsNullOrWhiteSpace([string]$Evidence.executable.postLaunchSha256.reason)) {
+      throw 'Executable post-launch hash must be available or include an unavailable reason.'
+    }
+  }
+  Assert-OptionalFileIdentity -Identity $Evidence.requestedMap -Name 'Requested map identity'
+  Assert-OptionalFileIdentity -Identity $Evidence.loadedMap -Name 'Loaded map identity'
+  Assert-OptionalFileIdentity -Identity $Evidence.artifacts.transcript -Name 'Verification transcript'
+  Assert-OptionalFileIdentity -Identity $Evidence.artifacts.applicationLog -Name 'Application log'
+
   if (@('none', 'screenshot') -notcontains $Evidence.capture.mode) {
     throw "Native evidence capture mode '$($Evidence.capture.mode)' is invalid."
   }
@@ -79,7 +136,7 @@ function Assert-NativeSmokeEvidenceRecord {
       throw 'Screenshot capture mode requires at least one artifact.'
     }
     foreach ($artifact in @($Evidence.capture.artifacts)) {
-      Assert-AvailablePathHashIdentity -Identity $artifact -Name 'Screenshot artifact'
+      Assert-AvailableFileIdentity -Identity $artifact -Name 'Screenshot artifact'
     }
   }
 
@@ -94,9 +151,15 @@ function Assert-NativeSmokeEvidenceRecord {
 
   if ($Evidence.outcome -ne 'passed') { return }
 
-  Assert-AvailablePathHashIdentity -Identity $Evidence.executable -Name 'Executable identity'
-  Assert-AvailablePathHashIdentity -Identity $Evidence.requestedMap -Name 'Requested map identity'
-  Assert-AvailablePathHashIdentity -Identity $Evidence.loadedMap -Name 'Loaded map identity'
+  Assert-AvailableFileIdentity -Identity $Evidence.executable -Name 'Executable identity' `
+    -HashProperty 'preLaunchSha256'
+  if ($Evidence.executable.postLaunchSha256.available -ne $true) {
+    throw 'Passed native evidence requires a post-launch executable hash.'
+  }
+  Assert-AvailableFileIdentity -Identity $Evidence.requestedMap -Name 'Requested map identity'
+  Assert-AvailableFileIdentity -Identity $Evidence.loadedMap -Name 'Loaded map identity'
+  Assert-AvailableFileIdentity -Identity $Evidence.artifacts.transcript -Name 'Verification transcript'
+  Assert-AvailableFileIdentity -Identity $Evidence.artifacts.applicationLog -Name 'Application log'
   if (-not (Get-NormalizedSmokePath $Evidence.requestedMap.path).Equals(
       (Get-NormalizedSmokePath $Evidence.loadedMap.path),
       [StringComparison]::OrdinalIgnoreCase)) {
@@ -136,6 +199,15 @@ function Assert-NativeSmokeEvidenceRecord {
   if ($Evidence.cleanup.attempted -ne $true -or $Evidence.cleanup.processExited -ne $true -or
       @('graceful', 'already-exited') -notcontains $Evidence.cleanup.closeResult) {
     throw 'Passed native evidence requires successful candidate cleanup.'
+  }
+
+  $transcript = Get-Content -Raw -LiteralPath $Evidence.artifacts.transcript.path
+  if ($transcript -notmatch "(?m)^run-id=$([regex]::Escape($Evidence.runNonce))\r?$") {
+    throw 'Verification transcript is not bound to the evidence runNonce.'
+  }
+  $applicationLog = Get-Content -Raw -LiteralPath $Evidence.artifacts.applicationLog.path
+  if ($applicationLog -notmatch "(?m)^run=$([regex]::Escape($Evidence.runNonce))\|") {
+    throw 'Application log is not bound to the evidence runNonce.'
   }
 }
 

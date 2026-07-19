@@ -32,10 +32,20 @@ function Write-SyntheticTrx {
     [Parameter(Mandatory = $true)][string]$Directory,
     [Parameter(Mandatory = $true)][string]$Outcome,
     [string]$RejectedTest = 'Harness.Tests.RejectedCase',
-    [switch]$CorruptPassedCounter
+    [string]$FileName = 'synthetic.trx',
+    [string]$StoragePath = $null,
+    [switch]$CorruptPassedCounter,
+    [switch]$DuplicateDefinitionId,
+    [switch]$DuplicateResultTestId,
+    [switch]$DuplicateResultExecutionId
   )
 
   New-Item -ItemType Directory -Path $Directory -Force | Out-Null
+  if ([string]::IsNullOrWhiteSpace($StoragePath)) {
+    $StoragePath = Join-Path $Directory 'Harness.Tests.dll'
+  }
+  $StoragePath = [System.IO.Path]::GetFullPath($StoragePath)
+  $escapedStoragePath = [System.Security.SecurityElement]::Escape($StoragePath)
   $counterNames = @(
     'failed', 'error', 'timeout', 'aborted', 'inconclusive', 'passedButRunAborted',
     'notRunnable', 'notExecuted', 'disconnected', 'warning', 'completed', 'inProgress', 'pending')
@@ -50,30 +60,39 @@ function Write-SyntheticTrx {
   if ($counterNameByOutcome.ContainsKey($Outcome)) {
     $counterValues[$counterNameByOutcome[$Outcome]] = 1
   }
+  if ($Outcome -eq 'NotExecuted') { $counterValues.notExecuted = 1 }
   $rejectedExecuted = if ($Outcome -eq 'NotExecuted') { 0 } else { 1 }
-  $passedCounter = if ($CorruptPassedCounter) { 0 } else { 1 }
+  $expectedPassed = if ($Outcome -eq 'Passed') { 2 } else { 1 }
+  $passedCounter = if ($CorruptPassedCounter) { $expectedPassed - 1 } else { $expectedPassed }
   $counterAttributes = ($counterNames | ForEach-Object {
     "$_=`"$($counterValues[$_])`""
   }) -join ' '
   $rejectedParts = $RejectedTest.Split('.')
   $rejectedMethod = $rejectedParts[-1]
   $rejectedClass = $RejectedTest.Substring(0, $RejectedTest.Length - $rejectedMethod.Length - 1)
+  $rejectedDefinitionId = if ($DuplicateDefinitionId) { 'pass-id' } else { 'rejected-id' }
+  $rejectedResultTestId = if ($DuplicateResultTestId) { 'pass-id' } else { 'rejected-id' }
+  $rejectedExecutionId = if ($DuplicateResultExecutionId) {
+    'pass-execution-id'
+  } else {
+    'rejected-execution-id'
+  }
   @"
 <?xml version="1.0" encoding="utf-8"?>
 <TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
   <Results>
-    <UnitTestResult testId="pass-id" testName="PassedCase" outcome="Passed" />
-    <UnitTestResult testId="rejected-id" testName="$rejectedMethod" outcome="$Outcome" />
+    <UnitTestResult executionId="pass-execution-id" testId="pass-id" testName="PassedCase" outcome="Passed" />
+    <UnitTestResult executionId="$rejectedExecutionId" testId="$rejectedResultTestId" testName="$rejectedMethod" outcome="$Outcome" />
   </Results>
   <TestDefinitions>
-    <UnitTest id="pass-id"><TestMethod className="Harness.Tests" name="PassedCase" /></UnitTest>
-    <UnitTest id="rejected-id"><TestMethod className="$rejectedClass" name="$rejectedMethod" /></UnitTest>
+    <UnitTest id="pass-id" storage="$escapedStoragePath"><TestMethod className="Harness.Tests" name="PassedCase" /></UnitTest>
+    <UnitTest id="$rejectedDefinitionId" storage="$escapedStoragePath"><TestMethod className="$rejectedClass" name="$rejectedMethod" /></UnitTest>
   </TestDefinitions>
   <ResultSummary>
     <Counters total="2" executed="$($rejectedExecuted + 1)" passed="$passedCounter" $counterAttributes />
   </ResultSummary>
 </TestRun>
-"@ | Set-Content -LiteralPath (Join-Path $Directory 'synthetic.trx') -Encoding UTF8
+"@ | Set-Content -LiteralPath (Join-Path $Directory $FileName) -Encoding UTF8
 }
 
 function New-PassedEvidence {
@@ -83,12 +102,31 @@ function New-PassedEvidence {
     [Parameter(Mandatory = $true)][string]$Map
   )
 
-  $hash = 'A' * 64
-  $evidence = New-NativeSmokeEvidenceRecord -RepoPath $Repo
+  $nonce = '0123456789abcdef0123456789abcdef'
+  $artifactDirectory = Split-Path $Executable -Parent
+  New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+  "native executable content $nonce" | Set-Content -LiteralPath $Executable -Encoding UTF8
+  "map content $nonce" | Set-Content -LiteralPath $Map -Encoding UTF8
+  $transcriptPath = Join-Path $artifactDirectory 'native-smoke.txt'
+  $applicationLogPath = Join-Path $artifactDirectory 'app.log'
+  @("run-id=$nonce", 'outcome=passed') |
+    Set-Content -LiteralPath $transcriptPath -Encoding UTF8
+  "run=$nonce|2026-01-01|INFO|Harness|real-content" |
+    Set-Content -LiteralPath $applicationLogPath -Encoding UTF8
+  $executableHash = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash
+  $mapFileHash = (Get-FileHash -LiteralPath $Map -Algorithm SHA256).Hash
+  $evidence = New-NativeSmokeEvidenceRecord -RepoPath $Repo -RunNonce $nonce
   $evidence.outcome = 'passed'
-  $evidence.executable = [PSCustomObject]@{ available = $true; path = $Executable; sha256 = $hash }
-  $evidence.requestedMap = [PSCustomObject]@{ available = $true; path = $Map; sha256 = $hash }
-  $evidence.loadedMap = [PSCustomObject]@{ available = $true; path = $Map; sha256 = $hash }
+  $evidence.executable = [PSCustomObject]@{
+    available = $true
+    path = $Executable
+    preLaunchSha256 = $executableHash
+    postLaunchSha256 = [PSCustomObject]@{ available = $true; value = $executableHash }
+  }
+  $evidence.requestedMap =
+    [PSCustomObject]@{ available = $true; path = $Map; sha256 = $mapFileHash }
+  $evidence.loadedMap =
+    [PSCustomObject]@{ available = $true; path = $Map; sha256 = $mapFileHash }
   $evidence.process = [PSCustomObject]@{
     available = $true
     pid = 42
@@ -102,6 +140,16 @@ function New-PassedEvidence {
   $evidence.cleanup.attempted = $true
   $evidence.cleanup.closeResult = 'graceful'
   $evidence.cleanup.processExited = $true
+  $evidence.artifacts.transcript = [PSCustomObject]@{
+    available = $true
+    path = $transcriptPath
+    sha256 = (Get-FileHash -LiteralPath $transcriptPath -Algorithm SHA256).Hash
+  }
+  $evidence.artifacts.applicationLog = [PSCustomObject]@{
+    available = $true
+    path = $applicationLogPath
+    sha256 = (Get-FileHash -LiteralPath $applicationLogPath -Algorithm SHA256).Hash
+  }
   return $evidence
 }
 
@@ -215,9 +263,20 @@ Add-Content -LiteralPath $logPath -Value "${currentPrefix}FATAL|OpenRCT3.Program
 $state = Get-NativeSmokeLogState `
   -LogPath $logPath -RunId $runId -ExpectedMapPath $mapPath -ExpectedMapSha256 $mapHash
 Assert-Throws { Assert-NativeSmokeCompletion -State $state } `
-  'correlated fatal event fails' 'ERROR or FATAL'
+  'shutdown-time correlated fatal event fails the final log refresh' 'ERROR or FATAL'
 
 Assert-NativeSmokeFileLoggingConfiguration -ConfigPath (Join-Path $repo 'OpenRCT3\nlog.config')
+
+$terrainSource = Get-Content -Raw -LiteralPath (Join-Path $repo 'OpenRCT3\Simulation\Terrain.cs')
+foreach ($requiredReadBoundary in @(
+    'File.ReadAllBytes(loadedMapPath)',
+    'new MemoryStream(loadedMapBytes, writable: false)',
+    'DatTerrainReader.Read(loadedMap)',
+    'SHA256.HashData(loadedMapBytes)')) {
+  if ($terrainSource.IndexOf($requiredReadBoundary, [StringComparison]::Ordinal) -lt 0) {
+    throw "Terrain smoke identity is not derived from the immutable parsed bytes: $requiredReadBoundary"
+  }
+}
 
 $openRct3Assembly = Get-ChildItem -Path (Join-Path $repo 'OpenRCT3\bin\Debug') `
   -Filter 'OpenRCT3.dll' -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1 `
@@ -268,9 +327,16 @@ Assert-Throws {
 
 $approvedSkip = 'Dumper.Tests.TruncatedLabelTests.TestVeryLongPath_PreservesFilename'
 $approvedTrx = Join-Path $results 'trx-approved-skip'
-Write-SyntheticTrx -Directory $approvedTrx -Outcome NotExecuted -RejectedTest $approvedSkip
+$approvedStorage = Join-Path $approvedTrx 'Harness.Tests.dll'
+Write-SyntheticTrx `
+  -Directory $approvedTrx `
+  -Outcome NotExecuted `
+  -RejectedTest $approvedSkip `
+  -StoragePath $approvedStorage
 $approvedSummary = Get-TrxSummary `
-  -ResultsDirectory $approvedTrx -ApprovedSkippedTests @($approvedSkip)
+  -ResultsDirectory $approvedTrx `
+  -ApprovedSkippedTests @($approvedSkip) `
+  -ExpectedTestAssemblies @($approvedStorage)
 if ($approvedSummary.Passed -ne 1 -or $approvedSummary.Skipped -ne 1) {
   throw 'Approved TRX skip was not reported honestly.'
 }
@@ -290,12 +356,67 @@ Write-SyntheticTrx -Directory $countMismatch -Outcome Passed -CorruptPassedCount
 Assert-Throws { Get-TrxSummary -ResultsDirectory $countMismatch } `
   'TRX rejects passed counter mismatch' 'passed count mismatch'
 
+$duplicateDefinition = Join-Path $results 'trx-duplicate-definition-id'
+Write-SyntheticTrx -Directory $duplicateDefinition -Outcome Passed -DuplicateDefinitionId
+Assert-Throws { Get-TrxSummary -ResultsDirectory $duplicateDefinition } `
+  'TRX rejects duplicate definition IDs' 'duplicate test definition id'
+$duplicateResultTestId = Join-Path $results 'trx-duplicate-result-test-id'
+Write-SyntheticTrx -Directory $duplicateResultTestId -Outcome Passed -DuplicateResultTestId
+Assert-Throws { Get-TrxSummary -ResultsDirectory $duplicateResultTestId } `
+  'TRX rejects duplicate result testIds' 'duplicate result testId'
+$duplicateExecutionId = Join-Path $results 'trx-duplicate-result-execution-id'
+Write-SyntheticTrx `
+  -Directory $duplicateExecutionId `
+  -Outcome Passed `
+  -DuplicateResultExecutionId
+Assert-Throws { Get-TrxSummary -ResultsDirectory $duplicateExecutionId } `
+  'TRX rejects duplicate result executionIds' 'duplicate result executionId'
+
+$assemblyBoundary = Join-Path $results 'trx-assembly-boundary'
+$expectedOpenCobra = Join-Path $assemblyBoundary 'OpenCobra.Tests.dll'
+$expectedOpenRct3 = Join-Path $assemblyBoundary 'OpenRCT3.Tests.dll'
+$expectedDumper = Join-Path $assemblyBoundary 'Dumper.Tests.dll'
+Write-SyntheticTrx `
+  -Directory $assemblyBoundary -FileName 'dumper.trx' -Outcome Passed -StoragePath $expectedDumper
+Write-SyntheticTrx `
+  -Directory $assemblyBoundary -FileName 'openrct3-a.trx' -Outcome Passed -StoragePath $expectedOpenRct3
+Write-SyntheticTrx `
+  -Directory $assemblyBoundary -FileName 'openrct3-b.trx' -Outcome Passed -StoragePath $expectedOpenRct3
+Assert-Throws {
+  Get-TrxSummary `
+    -ResultsDirectory $assemblyBoundary `
+    -ExpectedTestAssemblies @($expectedOpenCobra, $expectedOpenRct3, $expectedDumper)
+} 'TRX rejects duplicate OpenRCT3 storage with missing OpenCobra storage' `
+  'Duplicate TRX storage identity'
+
+$missingAssembly = Join-Path $results 'trx-missing-assembly'
+Write-SyntheticTrx `
+  -Directory $missingAssembly -FileName 'dumper.trx' -Outcome Passed -StoragePath $expectedDumper
+Write-SyntheticTrx `
+  -Directory $missingAssembly -FileName 'openrct3.trx' -Outcome Passed -StoragePath $expectedOpenRct3
+Assert-Throws {
+  Get-TrxSummary `
+    -ResultsDirectory $missingAssembly `
+    -ExpectedTestAssemblies @($expectedOpenCobra, $expectedOpenRct3, $expectedDumper)
+} 'TRX rejects a missing expected assembly storage' 'has no TRX result'
+
+$unexpectedAssembly = Join-Path $results 'trx-unexpected-assembly'
+$foreignAssembly = Join-Path $unexpectedAssembly 'Foreign.Tests.dll'
+Write-SyntheticTrx `
+  -Directory $unexpectedAssembly -Outcome Passed -StoragePath $foreignAssembly
+Assert-Throws {
+  Get-TrxSummary `
+    -ResultsDirectory $unexpectedAssembly `
+    -ExpectedTestAssemblies @($expectedOpenCobra)
+} 'TRX rejects an unexpected assembly storage' 'Unexpected TRX storage identity'
+
 $manifestPath = Join-Path $results 'native-smoke.json'
 $executablePath = Join-Path $results 'OpenRCT3.exe'
 $passedEvidence = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
 Write-NativeSmokeEvidenceManifest -Evidence $passedEvidence -Path $manifestPath
 $roundTrip = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-if ($roundTrip.outcome -ne 'passed' -or $roundTrip.loadedMap.sha256 -ne $mapHash) {
+if ($roundTrip.outcome -ne 'passed' -or
+    $roundTrip.loadedMap.sha256 -ne $roundTrip.requestedMap.sha256) {
   throw 'Native evidence manifest did not preserve its required content.'
 }
 $missingLoadedMap = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
@@ -305,17 +426,66 @@ Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $missingLoadedMap } `
 $wrongLoadedMap = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
 $wrongLoadedMap.loadedMap.sha256 = $wrongMapHash
 Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $wrongLoadedMap } `
-  'manifest rejects wrong loaded map hash' 'map hashes do not match'
+  'manifest rejects a loaded-map hash not bound to real content' 'does not match the file content'
 $wrongExecutable = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
 $wrongExecutable.process.executablePath = Join-Path $results 'foreign.exe'
 Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $wrongExecutable } `
   'manifest rejects foreign process binding' 'executable binding'
+
+$missingExecutable = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+Remove-Item -LiteralPath $missingExecutable.executable.path -Force
+Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $missingExecutable } `
+  'manifest rejects nonexistent executable evidence' 'file does not exist'
+$missingMap = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+Remove-Item -LiteralPath $missingMap.requestedMap.path -Force
+Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $missingMap } `
+  'manifest rejects nonexistent map evidence' 'file does not exist'
+$tamperedMap = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+Add-Content -LiteralPath $tamperedMap.requestedMap.path -Value 'tampered after hashing'
+Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $tamperedMap } `
+  'manifest rejects map content changed after hashing' 'does not match the file content'
+$postLaunchMismatch = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+$postLaunchMismatch.executable.postLaunchSha256.value = $wrongMapHash
+Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $postLaunchMismatch } `
+  'manifest rejects executable changed after launch' 'changed between pre-launch and post-launch'
+
+$badNonce = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+$badNonce.runNonce = 'caller-supplied'
+Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $badNonce } `
+  'manifest rejects invalid run nonce' 'runNonce'
+$missingTranscript = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+Remove-Item -LiteralPath $missingTranscript.artifacts.transcript.path -Force
+Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $missingTranscript } `
+  'manifest rejects nonexistent transcript evidence' 'file does not exist'
+$unboundTranscript = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+'no run binding' | Set-Content -LiteralPath $unboundTranscript.artifacts.transcript.path -Encoding UTF8
+$unboundTranscript.artifacts.transcript.sha256 =
+  (Get-FileHash -LiteralPath $unboundTranscript.artifacts.transcript.path -Algorithm SHA256).Hash
+Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $unboundTranscript } `
+  'manifest rejects transcript without run nonce' 'transcript is not bound'
+$unboundApplicationLog = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+'run=foreign|INFO|Harness|wrong run' |
+  Set-Content -LiteralPath $unboundApplicationLog.artifacts.applicationLog.path -Encoding UTF8
+$unboundApplicationLog.artifacts.applicationLog.sha256 =
+  (Get-FileHash -LiteralPath $unboundApplicationLog.artifacts.applicationLog.path `
+    -Algorithm SHA256).Hash
+Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $unboundApplicationLog } `
+  'manifest rejects application log without run nonce' 'Application log is not bound'
+
 $missingCaptureHash = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+$capturePath = Join-Path $results 'screen.png'
+'real screenshot bytes' | Set-Content -LiteralPath $capturePath -Encoding UTF8
 $missingCaptureHash.capture.mode = 'screenshot'
 $missingCaptureHash.capture.artifacts = @(
-  [PSCustomObject]@{ available = $true; path = (Join-Path $results 'screen.png'); sha256 = 'bad' })
+  [PSCustomObject]@{ available = $true; path = $capturePath; sha256 = 'bad' })
 Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $missingCaptureHash } `
   'manifest rejects unhashed screenshot' 'SHA-256'
+$missingCapture = New-PassedEvidence -Repo $repo -Executable $executablePath -Map $mapPath
+$missingCapture.capture.mode = 'screenshot'
+$missingCapture.capture.artifacts = @(
+  [PSCustomObject]@{ available = $true; path = (Join-Path $results 'missing.png'); sha256 = $mapHash })
+Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $missingCapture } `
+  'manifest rejects nonexistent screenshot' 'file does not exist'
 
 Assert-NativeSmokeProcessExited -ProcessId ([int]::MaxValue)
 Assert-Throws { Assert-NativeSmokeProcessExited -ProcessId $PID } `

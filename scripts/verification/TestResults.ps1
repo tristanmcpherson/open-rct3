@@ -3,7 +3,8 @@ function Get-TrxSummary {
     [Parameter(Mandatory = $true)]
     [string]$ResultsDirectory,
     [int]$MinimumRuns = 1,
-    [string[]]$ApprovedSkippedTests = @()
+    [string[]]$ApprovedSkippedTests = @(),
+    [string[]]$ExpectedTestAssemblies = @()
   )
 
   $trxFiles = @(Get-ChildItem -LiteralPath $ResultsDirectory -Filter '*.trx' -Recurse)
@@ -14,6 +15,20 @@ function Get-TrxSummary {
   $approvedSkips = [System.Collections.Generic.HashSet[string]]::new(
     [StringComparer]::Ordinal)
   foreach ($approvedSkip in $ApprovedSkippedTests) { $approvedSkips.Add($approvedSkip) | Out-Null }
+  $expectedAssemblies = [System.Collections.Generic.HashSet[string]]::new(
+    [StringComparer]::OrdinalIgnoreCase)
+  foreach ($expectedAssembly in $ExpectedTestAssemblies) {
+    if ([string]::IsNullOrWhiteSpace($expectedAssembly) -or
+        -not [System.IO.Path]::IsPathRooted($expectedAssembly)) {
+      throw "Expected test assembly identity must be an absolute path: '$expectedAssembly'."
+    }
+    $normalizedExpectedAssembly = [System.IO.Path]::GetFullPath($expectedAssembly)
+    if (-not $expectedAssemblies.Add($normalizedExpectedAssembly)) {
+      throw "Duplicate expected test assembly identity: $normalizedExpectedAssembly"
+    }
+  }
+  $observedAssemblies = [System.Collections.Generic.Dictionary[string, string]]::new(
+    [StringComparer]::OrdinalIgnoreCase)
   $observedApprovedSkips = @{}
   $totals = @{
     Total = 0
@@ -53,13 +68,44 @@ function Get-TrxSummary {
     }
 
     $definitions = @{}
+    $definitionIds = [System.Collections.Generic.HashSet[string]]::new(
+      [StringComparer]::Ordinal)
+    $runStorageIdentities = [System.Collections.Generic.HashSet[string]]::new(
+      [StringComparer]::OrdinalIgnoreCase)
     $definitionNodes = @($trx.SelectNodes("//*[local-name()='TestDefinitions']/*[local-name()='UnitTest']"))
     foreach ($definition in $definitionNodes) {
+      $definitionId = $definition.GetAttribute('id')
+      if ([string]::IsNullOrWhiteSpace($definitionId)) {
+        throw "TRX test definition has no id in $($trxFile.Name)."
+      }
+      if (-not $definitionIds.Add($definitionId)) {
+        throw "TRX $($trxFile.Name) contains duplicate test definition id '$definitionId'."
+      }
+      $storage = $definition.GetAttribute('storage')
+      if ([string]::IsNullOrWhiteSpace($storage) -or
+          -not [System.IO.Path]::IsPathRooted($storage)) {
+        throw "TRX test definition '$definitionId' has no absolute storage identity."
+      }
+      $runStorageIdentities.Add([System.IO.Path]::GetFullPath($storage)) | Out-Null
       $testMethod = $definition.SelectSingleNode("./*[local-name()='TestMethod']")
       if ($null -eq $testMethod) { throw "TRX test definition is missing TestMethod in $($trxFile.Name)." }
-      $definitions[$definition.GetAttribute('id')] =
+      $definitions[$definitionId] =
         "$($testMethod.GetAttribute('className')).$($testMethod.GetAttribute('name'))"
     }
+    if ($runStorageIdentities.Count -ne 1) {
+      throw "TRX $($trxFile.Name) must contain exactly one test assembly storage identity; " +
+        "found $($runStorageIdentities.Count)."
+    }
+    $runStorageIdentity = @($runStorageIdentities)[0]
+    if ($observedAssemblies.ContainsKey($runStorageIdentity)) {
+      throw "Duplicate TRX storage identity '$runStorageIdentity' in $($trxFile.Name) and " +
+        "$($observedAssemblies[$runStorageIdentity])."
+    }
+    if ($expectedAssemblies.Count -gt 0 -and
+        -not $expectedAssemblies.Contains($runStorageIdentity)) {
+      throw "Unexpected TRX storage identity '$runStorageIdentity' in $($trxFile.Name)."
+    }
+    $observedAssemblies.Add($runStorageIdentity, $trxFile.Name)
 
     $results = @($trx.SelectNodes("//*[local-name()='Results']/*[local-name()='UnitTestResult']"))
     if ($results.Count -ne $runTotal) {
@@ -68,8 +114,25 @@ function Get-TrxSummary {
 
     $runPassed = 0
     $runApprovedSkipped = 0
+    $resultTestIds = [System.Collections.Generic.HashSet[string]]::new(
+      [StringComparer]::Ordinal)
+    $resultExecutionIds = [System.Collections.Generic.HashSet[string]]::new(
+      [StringComparer]::Ordinal)
     foreach ($result in $results) {
       $testId = $result.GetAttribute('testId')
+      if ([string]::IsNullOrWhiteSpace($testId)) {
+        throw "TRX result '$($result.GetAttribute('testName'))' has no testId."
+      }
+      if (-not $resultTestIds.Add($testId)) {
+        throw "TRX $($trxFile.Name) contains duplicate result testId '$testId'."
+      }
+      $executionId = $result.GetAttribute('executionId')
+      if ([string]::IsNullOrWhiteSpace($executionId)) {
+        throw "TRX result '$($result.GetAttribute('testName'))' has no executionId."
+      }
+      if (-not $resultExecutionIds.Add($executionId)) {
+        throw "TRX $($trxFile.Name) contains duplicate result executionId '$executionId'."
+      }
       if (-not $definitions.ContainsKey($testId)) {
         throw "TRX result '$($result.GetAttribute('testName'))' has no matching definition."
       }
@@ -113,6 +176,11 @@ function Get-TrxSummary {
       throw "Approved skipped test was not reported as NotExecuted: $approvedSkip"
     }
   }
+  foreach ($expectedAssembly in $expectedAssemblies) {
+    if (-not $observedAssemblies.ContainsKey($expectedAssembly)) {
+      throw "Expected test assembly has no TRX result: $expectedAssembly"
+    }
+  }
   if ($totals.Executed -eq 0) { throw 'Test discovery succeeded, but no tests executed.' }
   if ($totals.Passed -ne ($totals.Total - $totals.ApprovedSkipped)) {
     throw 'Passed tests plus approved skips do not equal the total test count.'
@@ -126,6 +194,7 @@ function Get-TrxSummary {
     Failed = 0
     Skipped = $totals.ApprovedSkipped
     ApprovedSkippedTests = @($ApprovedSkippedTests)
+    TestAssemblies = @($observedAssemblies.Keys)
     ResultsDirectory = (Resolve-Path -LiteralPath $ResultsDirectory).Path
   }
 }

@@ -13,6 +13,8 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $results = Join-Path $repo 'TestResults\native-smoke'
 $manifestPath = Join-Path $results 'native-smoke.json'
 $evidencePath = Join-Path $results 'native-smoke.txt'
+$logPath = $null
+$runId = [Guid]::NewGuid().ToString('N')
 if (Test-Path -LiteralPath $results) {
   Remove-Item -LiteralPath $results -Recurse -Force
 }
@@ -21,16 +23,51 @@ New-Item -ItemType Directory -Path $results -Force | Out-Null
 . (Join-Path $PSScriptRoot 'NativeSmokeAssertions.ps1')
 . (Join-Path $PSScriptRoot 'NativeSmokeEvidence.ps1')
 
-$manifest = New-NativeSmokeEvidenceRecord -RepoPath $repo
-$manifest.artifacts.transcriptPath = $evidencePath
+$manifest = New-NativeSmokeEvidenceRecord -RepoPath $repo -RunNonce $runId
+
+function Get-NativeFileIdentity {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+  return [PSCustomObject]@{
+    available = $true
+    path = $resolvedPath
+    sha256 = (Get-FileHash -LiteralPath $resolvedPath -Algorithm SHA256).Hash
+  }
+}
+
+function Update-NativeArtifactIdentities {
+  if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
+    $manifest.artifacts.transcript = Get-NativeFileIdentity -Path $evidencePath
+  }
+  if (-not [string]::IsNullOrWhiteSpace($logPath) -and
+      (Test-Path -LiteralPath $logPath -PathType Leaf)) {
+    $manifest.artifacts.applicationLog = Get-NativeFileIdentity -Path $logPath
+  }
+}
 
 function Write-NativeSmokeSkip {
   param([Parameter(Mandatory = $true)][string]$Reason)
 
   $manifest.outcome = 'skipped'
   $manifest.reason = $Reason
+  @("run-id=$runId", 'outcome=skipped', "reason=$Reason") |
+    Set-Content -LiteralPath $evidencePath -Encoding UTF8
+  Update-NativeArtifactIdentities
   Write-NativeSmokeEvidenceManifest -Evidence $manifest -Path $manifestPath
   Write-Output "SKIP: $Reason; manifest=$manifestPath"
+}
+
+function Stop-NativeSmokeWithInputFailure {
+  param([Parameter(Mandatory = $true)][string]$Reason)
+
+  $manifest.outcome = 'failed'
+  $manifest.reason = $Reason
+  @("run-id=$runId", 'outcome=failed', "reason=$Reason") |
+    Set-Content -LiteralPath $evidencePath -Encoding UTF8
+  Update-NativeArtifactIdentities
+  Write-NativeSmokeEvidenceManifest -Evidence $manifest -Path $manifestPath
+  throw $Reason
 }
 
 function Invoke-NativeDriver {
@@ -91,9 +128,7 @@ if (-not (Test-Path -LiteralPath $mapPath -PathType Leaf)) {
     Write-NativeSmokeSkip 'installed RCT3 assets do not contain the default blank landscape'
     exit 0
   }
-  $manifest.reason = "OPENRCT3_MAP_PATH does not identify a map file: $mapPath"
-  Write-NativeSmokeEvidenceManifest -Evidence $manifest -Path $manifestPath
-  throw $manifest.reason
+  Stop-NativeSmokeWithInputFailure "OPENRCT3_MAP_PATH does not identify a map file: $mapPath"
 }
 $mapPath = (Resolve-Path -LiteralPath $mapPath).Path
 $mapHash = (Get-FileHash -LiteralPath $mapPath -Algorithm SHA256).Hash
@@ -110,15 +145,13 @@ $configDirectory = Join-Path $isolatedAppData 'OpenRCT3'
 $configPath = Join-Path $configDirectory 'config.json'
 $logPath = Join-Path $isolatedAppData 'OpenRCT3\logs\app.log'
 $pidFile = Join-Path $isolatedTemp 'openrct3-driver.pid'
-$runId = [Guid]::NewGuid().ToString('N')
 $timeoutSeconds = 30
 if (-not [string]::IsNullOrWhiteSpace($env:OPENRCT3_NATIVE_TIMEOUT_SECONDS)) {
   $parsedTimeout = 0
   if (-not [int]::TryParse($env:OPENRCT3_NATIVE_TIMEOUT_SECONDS, [ref]$parsedTimeout) -or
       $parsedTimeout -lt 5 -or $parsedTimeout -gt 120) {
-    $manifest.reason = 'OPENRCT3_NATIVE_TIMEOUT_SECONDS must be an integer from 5 through 120.'
-    Write-NativeSmokeEvidenceManifest -Evidence $manifest -Path $manifestPath
-    throw $manifest.reason
+    Stop-NativeSmokeWithInputFailure `
+      'OPENRCT3_NATIVE_TIMEOUT_SECONDS must be an integer from 5 through 120.'
   }
   $timeoutSeconds = $parsedTimeout
 }
@@ -174,7 +207,11 @@ try {
   $manifest.executable = [PSCustomObject]@{
     available = $true
     path = $exe.FullName
-    sha256 = $executableHash
+    preLaunchSha256 = $executableHash
+    postLaunchSha256 = [PSCustomObject]@{
+      available = $false
+      reason = 'launch has not completed'
+    }
   }
   Add-Content -LiteralPath $evidencePath -Value @(
     "executable=$($exe.FullName)",
@@ -201,6 +238,16 @@ try {
   if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
     $candidateMetadata = Read-NativeDriverPidMetadata -PidFile $pidFile
     $candidatePid = [int]$candidateMetadata.ProcessId
+  }
+  $postLaunchExecutableHash = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash
+  $manifest.executable.postLaunchSha256 = [PSCustomObject]@{
+    available = $true
+    value = $postLaunchExecutableHash
+  }
+  Add-Content -LiteralPath $evidencePath -Value `
+    "post-launch-executable-sha256=$postLaunchExecutableHash"
+  if ($postLaunchExecutableHash -ne $executableHash) {
+    throw 'The native executable changed after launch.'
   }
   if ($launch.ExitCode -ne 0) { throw "Native launch failed with exit code $($launch.ExitCode)." }
   if ($null -eq $candidateMetadata) { throw 'Native launch produced no strict PID metadata.' }
@@ -273,9 +320,6 @@ try {
     height = [int]$infoObject.ClientHeight
   }
 
-  Add-Content -LiteralPath $evidencePath -Value 'run-correlated-log-markers:'
-  $state.Lines | Add-Content -LiteralPath $evidencePath
-  $manifest.artifacts.applicationLogPath = $logPath
   $smokeChecksPassed = $true
 } catch {
   $primaryError = $_
@@ -310,11 +354,9 @@ try {
           $manifest.cleanup.closeResult = 'forced'
         } else {
           $manifest.cleanup.closeResult = 'failed'
-          try {
-            Stop-Process -Id $candidatePid -Force -ErrorAction Stop
-          } catch {
-            $cleanupErrors.Add("Could not force-stop candidate process ${candidatePid}: $($_.Exception.Message)")
-          }
+          $cleanupErrors.Add(
+            "Strict identity cleanup refused or could not terminate candidate process $candidatePid; " +
+            'no unvalidated PID fallback was attempted.')
         }
       }
     }
@@ -323,6 +365,25 @@ try {
     if ($manifest.cleanup.processExited -ne $true) {
       $cleanupErrors.Add("Native smoke candidate process $candidatePid is still running after cleanup.")
     }
+  }
+
+  if ($manifest.cleanup.processExited -eq $true -and
+      -not [string]::IsNullOrWhiteSpace($logPath) -and
+      (Test-Path -LiteralPath $logPath -PathType Leaf)) {
+    try {
+      $state = Get-NativeSmokeLogState `
+        -LogPath $logPath `
+        -RunId $runId `
+        -ExpectedMapPath $mapPath `
+        -ExpectedMapSha256 $mapHash
+      Add-Content -LiteralPath $evidencePath -Value 'final-run-correlated-log-markers:'
+      $state.Lines | Add-Content -LiteralPath $evidencePath
+      Assert-NativeSmokeCompletion -State $state
+    } catch {
+      $cleanupErrors.Add("Final post-shutdown log validation failed: $($_.Exception.Message)")
+    }
+  } elseif ($smokeChecksPassed) {
+    $cleanupErrors.Add('Native smoke could not validate the final correlated log after shutdown.')
   }
 
   if ($null -ne $originalNlogBytes -and $null -ne $nlogPath) {
@@ -351,15 +412,25 @@ if ($cleanupErrors.Count -eq 0 -and $null -eq $primaryError -and $smokeChecksPas
   $manifest.reason = $reasons -join ' '
 }
 
+Add-Content -LiteralPath $evidencePath -Value @(
+  "outcome=$($manifest.outcome)",
+  "reason=$($manifest.reason)"
+)
+Update-NativeArtifactIdentities
+
 try {
   Write-NativeSmokeEvidenceManifest -Evidence $manifest -Path $manifestPath
 } catch {
   $manifest.outcome = 'failed'
   $manifest.reason = "Native evidence validation failed: $($_.Exception.Message)"
+  Add-Content -LiteralPath $evidencePath -Value @(
+    'outcome=failed',
+    "reason=$($manifest.reason)"
+  )
+  Update-NativeArtifactIdentities
   Write-NativeSmokeEvidenceManifest -Evidence $manifest -Path $manifestPath
   throw $manifest.reason
 }
 
 if ($manifest.outcome -ne 'passed') { throw $manifest.reason }
-Write-Output "Native map smoke passed; run=$runId; manifest=$manifestPath; artifacts=$results" |
-  Tee-Object -FilePath $evidencePath -Append
+Write-Output "Native map smoke passed; run=$runId; manifest=$manifestPath; artifacts=$results"

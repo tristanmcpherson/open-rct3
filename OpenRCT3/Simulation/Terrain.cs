@@ -147,11 +147,19 @@ public class Terrain {
       ? selectedMapPath
       : Path.Combine(installPath, selectedMapPath);
 
-    var data = DatTerrainReader.Read(resolvedMapPath);
-    if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(SmokeRunIdEnvironmentVariable))) {
-      var loadedMapPath = Path.GetFullPath(resolvedMapPath);
-      using var loadedMap = File.OpenRead(loadedMapPath);
-      var loadedMapSha256 = Convert.ToHexString(SHA256.HashData(loadedMap));
+    var smokeRunId = Environment.GetEnvironmentVariable(SmokeRunIdEnvironmentVariable);
+    var loadedMapPath = Path.GetFullPath(resolvedMapPath);
+    var loadedMapBytes = string.IsNullOrWhiteSpace(smokeRunId)
+      ? null
+      : File.ReadAllBytes(loadedMapPath);
+    using var loadedMap = loadedMapBytes == null
+      ? null
+      : new MemoryStream(loadedMapBytes, writable: false);
+    var data = loadedMap == null
+      ? DatTerrainReader.Read(loadedMapPath)
+      : DatTerrainReader.Read(loadedMap);
+    if (loadedMapBytes != null) {
+      var loadedMapSha256 = Convert.ToHexString(SHA256.HashData(loadedMapBytes));
       var loadedMapIdentity = JsonSerializer.Serialize(new {
         path = loadedMapPath,
         sha256 = loadedMapSha256

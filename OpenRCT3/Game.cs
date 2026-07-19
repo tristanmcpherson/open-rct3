@@ -212,11 +212,11 @@ public class Game : IGame {
 
       // Process any pending window events, e.g. input events
 #if WINDOWS
-      Application.DoEvents();
+      if (!ProcessEventsAndCheckRunning(Application.DoEvents, static () => IsRunning)) break;
 #elif OSX
       // FIXME: Pump macOS windowing events
       // See https://duckduckgo.com/?q=osx+how+to+pump+windowing+events+in+a+game+loop&ia=web
-      NSApplication.EnsureUIThread();
+      if (!ProcessEventsAndCheckRunning(NSApplication.EnsureUIThread, static () => IsRunning)) break;
 #endif
 
       // Simulation ticks are fixed steps to aid physics/AI determinism
@@ -248,6 +248,14 @@ public class Game : IGame {
     logger.Info("Game exited");
   }
 
+  internal static bool ProcessEventsAndCheckRunning(
+    Action processEvents,
+    Func<bool> isRunning
+  ) {
+    processEvents();
+    return isRunning();
+  }
+
   public void Pause() {
     isPaused = true;
     resumeSignal.Reset();
@@ -265,6 +273,7 @@ public class Game : IGame {
   public bool Quit() {
     // TODO: Check for unsaved changes and prevent closure
     isRunning = false;
+    resumeSignal.Set();
 
     if (!isRunning) logger.Info("Exiting game...");
     return !isRunning;

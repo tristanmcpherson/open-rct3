@@ -1,7 +1,62 @@
 namespace OpenRCT3.Tests;
 
+using System.Reflection;
+using System.Runtime.CompilerServices;
+
 [TestFixture]
 public class GameLifecycleTests {
+  [Test]
+  public void Quit_WakesPausedGameLoop() {
+    using var resumeSignal = new ManualResetEvent(false);
+    var game = (Game)RuntimeHelpers.GetUninitializedObject(typeof(Game));
+    SetField(game, "isRunning", true);
+    SetField(game, "isPaused", true);
+    SetField(game, "resumeSignal", resumeSignal);
+    var waiting = Task.Run(() => resumeSignal.WaitOne(TimeSpan.FromSeconds(2)));
+
+    var stopped = game.Quit();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(stopped, Is.True);
+      Assert.That(waiting.Result, Is.True);
+    }
+  }
+
+  [Test]
+  public void ProcessEventsAndCheckRunning_QuitDuringEventsStopsFrameTail() {
+    var running = true;
+    var order = new List<string>();
+
+    var shouldContinue = Game.ProcessEventsAndCheckRunning(
+      () => {
+        order.Add("events");
+        running = false;
+      },
+      () => {
+        order.Add("running");
+        return running;
+      });
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(shouldContinue, Is.False);
+      Assert.That(order, Is.EqualTo(new[] { "events", "running" }));
+    }
+  }
+
+  [Test]
+  public void ProcessEventsAndCheckRunning_RunningAfterEventsContinuesFrame() {
+    var eventsProcessed = 0;
+
+    var shouldContinue = Game.ProcessEventsAndCheckRunning(
+      () => eventsProcessed++,
+      () => true);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(shouldContinue, Is.True);
+      Assert.That(eventsProcessed, Is.EqualTo(1));
+    }
+  }
+
   [Test]
   public void DisposeOwnedResources_AttemptsSceneAndWorldAndAlwaysClearsState() {
     var released = new List<string>();
@@ -22,5 +77,11 @@ public class GameLifecycleTests {
       Assert.That(error.InnerExceptions, Has.Count.EqualTo(2));
       Assert.That(released, Is.EqualTo(new[] { "scene", "world", "state" }));
     }
+  }
+
+  private static void SetField(Game game, string fieldName, object value) {
+    var field = typeof(Game).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+    Assert.That(field, Is.Not.Null, $"Could not access Game.{fieldName}.");
+    field!.SetValue(game, value);
   }
 }

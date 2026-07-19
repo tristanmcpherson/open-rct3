@@ -15,6 +15,119 @@ namespace OpenRCT3.Tests.OpenGL;
 
 [TestFixture]
 public class WindowsLifecycleTests {
+  [Test]
+  public void CloseCoordinator_WaitsForGameLoopBeforeAllowingFinalClose() {
+    var coordinator = new GameLoopCloseCoordinator();
+    var gameLoop = new TaskCompletionSource();
+    var marshaled = new List<Action>();
+    var order = new List<string>();
+    var quitCount = 0;
+    coordinator.Track(gameLoop.Task);
+
+    bool RequestClose() => coordinator.ShouldCancelClose(
+      () => {
+        quitCount++;
+        order.Add("quit");
+        return true;
+      },
+      marshaled.Add,
+      () => order.Add("surface-dispose"),
+      () => order.Add("final-close"));
+
+    var firstCloseCancelled = RequestClose();
+    var repeatedCloseCancelled = RequestClose();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(firstCloseCancelled, Is.True);
+      Assert.That(repeatedCloseCancelled, Is.True);
+      Assert.That(quitCount, Is.EqualTo(1));
+      Assert.That(marshaled, Is.Empty);
+      Assert.That(order, Is.EqualTo(new[] { "quit" }));
+    }
+
+    gameLoop.SetResult();
+    Assert.That(marshaled, Has.Count.EqualTo(1));
+    marshaled.Single().Invoke();
+
+    var finalCloseCancelled = RequestClose();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(finalCloseCancelled, Is.False);
+      Assert.That(quitCount, Is.EqualTo(1));
+      Assert.That(order, Is.EqualTo(new[] {
+        "quit", "surface-dispose", "final-close",
+      }));
+    }
+  }
+
+  [Test]
+  public void CloseCoordinator_RejectedQuitCanBeRetried() {
+    var coordinator = new GameLoopCloseCoordinator();
+    var quitAllowed = false;
+    var marshaled = new List<Action>();
+    var finalCloseCount = 0;
+
+    var rejectedCloseCancelled = coordinator.ShouldCancelClose(
+      () => quitAllowed,
+      marshaled.Add,
+      () => { },
+      () => finalCloseCount++);
+    quitAllowed = true;
+    var acceptedCloseCancelled = coordinator.ShouldCancelClose(
+      () => quitAllowed,
+      marshaled.Add,
+      () => { },
+      () => finalCloseCount++);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(rejectedCloseCancelled, Is.True);
+      Assert.That(acceptedCloseCancelled, Is.True);
+      Assert.That(marshaled, Has.Count.EqualTo(1));
+      Assert.That(finalCloseCount, Is.Zero);
+    }
+
+    marshaled.Single().Invoke();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(finalCloseCount, Is.EqualTo(1));
+      Assert.That(coordinator.ShouldCancelClose(
+        () => throw new InvalidOperationException("Quit should not repeat."),
+        marshaled.Add,
+        () => { },
+        () => finalCloseCount++), Is.False);
+    }
+  }
+
+  [Test]
+  public void CloseCoordinator_SurfaceFailureCanRetryBeforeFinalClose() {
+    var coordinator = new GameLoopCloseCoordinator();
+    var marshaled = new List<Action>();
+    var disposeAttempts = 0;
+    var closeCount = 0;
+
+    bool RequestClose() => coordinator.ShouldCancelClose(
+      () => true,
+      marshaled.Add,
+      () => {
+        disposeAttempts++;
+        if (disposeAttempts == 1)
+          throw new InvalidOperationException("Injected surface disposal failure.");
+      },
+      () => closeCount++);
+
+    Assert.That(RequestClose(), Is.True);
+    var firstAttempt = marshaled.Single();
+    marshaled.Clear();
+    Assert.Throws<InvalidOperationException>(new Action(firstAttempt));
+
+    Assert.That(RequestClose(), Is.True);
+    marshaled.Single().Invoke();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(disposeAttempts, Is.EqualTo(2));
+      Assert.That(closeCount, Is.EqualTo(1));
+      Assert.That(RequestClose(), Is.False);
+    }
+  }
+
   [TestCase("GetDC")]
   [TestCase("PixelFormat")]
   [TestCase("Context")]

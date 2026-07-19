@@ -33,6 +33,10 @@ public class StaticShapesTests {
       Assert.That(mesh.Sides, Is.EqualTo(3));
       Assert.That(mesh.Vertices, Has.Count.EqualTo(3));
       Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 0, 1, 2 }));
+      Assert.That(mesh.IndexLayout, Is.EqualTo(StaticShapeIndexLayout.TriangleList));
+      Assert.That(mesh.StoredIndexCount, Is.EqualTo(3));
+      Assert.That(mesh.YIndices, Is.Null);
+      Assert.That(mesh.ZIndices, Is.Null);
       Assert.That(mesh.TriangleCount, Is.EqualTo(1));
     }
 
@@ -49,6 +53,56 @@ public class StaticShapesTests {
     }
   }
 
+  [Test]
+  public void Decode_PlacementNoSort_UsesStoredTriangleCountAndThreeIndicesPerTriangle() {
+    var fixture = new StaticShapeFixture();
+    fixture.UsePlacementTriangleList([0, 1, 2, 2, 1, 0]);
+
+    var mesh = fixture.Decode().Meshes[0];
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(mesh.StoredIndexCount, Is.EqualTo(2));
+      Assert.That(mesh.IndexLayout, Is.EqualTo(StaticShapeIndexLayout.PlacementTriangleList));
+      Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 0, 1, 2, 2, 1, 0 }));
+      Assert.That(mesh.TriangleCount, Is.EqualTo(2));
+      Assert.That(mesh.YIndices, Is.Null);
+      Assert.That(mesh.ZIndices, Is.Null);
+    }
+  }
+
+  [Test]
+  public void Decode_PlacementSorted_ReadsThreeEquivalentAxisStreams() {
+    var fixture = new StaticShapeFixture();
+    fixture.UsePlacementAxisStreams(
+      [0, 1, 2, 2, 1, 0],
+      [2, 1, 0, 0, 1, 2],
+      [0, 1, 2, 2, 1, 0]);
+
+    var mesh = fixture.Decode().Meshes[0];
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(mesh.StoredIndexCount, Is.EqualTo(6));
+      Assert.That(mesh.IndexLayout, Is.EqualTo(StaticShapeIndexLayout.PlacementAxisStreams));
+      Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 0, 1, 2, 2, 1, 0 }));
+      Assert.That(mesh.YIndices, Is.EqualTo(new uint[] { 2, 1, 0, 0, 1, 2 }));
+      Assert.That(mesh.ZIndices, Is.EqualTo(new uint[] { 0, 1, 2, 2, 1, 0 }));
+      Assert.That(mesh.TriangleCount, Is.EqualTo(2));
+    }
+  }
+
+  [Test]
+  public void Decode_EnforcesWholeDecodeByteAndObjectBudgets() {
+    var byteFixture = new StaticShapeFixture();
+    var objectFixture = new StaticShapeFixture();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.Throws<InvalidDataException>(new Action(() =>
+        byteFixture.Decode(new StaticShapeDecodeLimits(130, 100))));
+      Assert.Throws<InvalidDataException>(new Action(() =>
+        objectFixture.Decode(new StaticShapeDecodeLimits(1024, 5))));
+    }
+  }
+
   [TestCase(MalformedShape.TruncatedHeader)]
   [TestCase(MalformedShape.OversizedMeshCount)]
   [TestCase(MalformedShape.MissingMeshRelocation)]
@@ -59,6 +113,15 @@ public class StaticShapesTests {
   [TestCase(MalformedShape.UnknownResourceReference)]
   [TestCase(MalformedShape.UnterminatedEffectName)]
   [TestCase(MalformedShape.NonFiniteVertex)]
+  [TestCase(MalformedShape.TruncatedPlacementIndices)]
+  [TestCase(MalformedShape.PlacementIndexCountOverflow)]
+  [TestCase(MalformedShape.OversizedEffectCount)]
+  [TestCase(MalformedShape.EffectNameTooLong)]
+  [TestCase(MalformedShape.DuplicateMeshFan)]
+  [TestCase(MalformedShape.WrongSymbolReferenceType)]
+  [TestCase(MalformedShape.WrongSymbolReferenceOwner)]
+  [TestCase(MalformedShape.ConflictingRawAndSymbolReference)]
+  [TestCase(MalformedShape.WrongDirectReferenceType)]
   public void Decode_RejectsMalformedOrUnboundedData(MalformedShape malformed) {
     var fixture = new StaticShapeFixture();
     fixture.MakeMalformed(malformed);
@@ -76,6 +139,7 @@ public class StaticShapesTests {
     var vertexCount = 0;
     var indexCount = 0;
     var referenceCount = 0;
+    string? townHallMesh4Ftx = null;
 
     foreach (var commonResource in commonResources) {
       var uniqueResource = commonResource[..^".common.ovl".Length] + ".unique.ovl";
@@ -94,6 +158,11 @@ public class StaticShapesTests {
         indexCount += shapes.Sum(shape => shape.Meshes.Sum(mesh => mesh.Indices.Count));
         referenceCount += shapes.Sum(shape => shape.Meshes.Sum(mesh =>
           Convert.ToInt32(mesh.FtxRef != null) + Convert.ToInt32(mesh.TxsRef != null)));
+        var townHall = shapes.SingleOrDefault(shape => shape.Name == "RS-TownHall");
+        if (townHall != null) {
+          Assert.That(townHall.Meshes, Has.Count.GreaterThan(4));
+          townHallMesh4Ftx = townHall.Meshes[4].FtxRef;
+        }
       } finally {
         Directory.Delete(tempDir, recursive: true);
       }
@@ -105,6 +174,7 @@ public class StaticShapesTests {
     using (Assert.EnterMultipleScope()) {
       Assert.That(shapeCount, Is.GreaterThan(0), "No static shapes were found in the custom OVL fixtures.");
       Assert.That(referenceCount, Is.GreaterThan(0), "No SHS resource references were resolved.");
+      Assert.That(townHallMesh4Ftx, Is.EqualTo("RS-Base:ftx"));
     }
   }
 
@@ -125,7 +195,16 @@ public class StaticShapesTests {
     AggregateCountMismatch,
     UnknownResourceReference,
     UnterminatedEffectName,
-    NonFiniteVertex
+    NonFiniteVertex,
+    TruncatedPlacementIndices,
+    PlacementIndexCountOverflow,
+    OversizedEffectCount,
+    EffectNameTooLong,
+    DuplicateMeshFan,
+    WrongSymbolReferenceType,
+    WrongSymbolReferenceOwner,
+    ConflictingRawAndSymbolReference,
+    WrongDirectReferenceType
   }
 
   private sealed class StaticShapeFixture {
@@ -189,11 +268,35 @@ public class StaticShapesTests {
       source.AddBlock(TxsAddress, 4);
       source.MutableResourceKeys[FtxAddress] = "water:ftx";
       source.MutableResourceKeys[TxsAddress] = "opaque:txs";
-      source.MutableResourceReferences[MeshAddress + 4] = "water:ftx";
-      source.MutableResourceReferences[MeshAddress + 8] = "opaque:txs";
+      source.MutableResourceReferences[MeshAddress + 4] =
+        new StaticShapeResourceReference("water:ftx", ShapeAddress);
+      source.MutableResourceReferences[MeshAddress + 8] =
+        new StaticShapeResourceReference("opaque:txs", ShapeAddress);
     }
 
     public StaticShape Decode() => StaticShapes.Decode("synthetic", ShapeAddress, source);
+    public StaticShape Decode(StaticShapeDecodeLimits limits) =>
+      StaticShapes.Decode("synthetic", ShapeAddress, source, limits);
+
+    public void UsePlacementTriangleList(uint[] indices) {
+      Assert.That(indices.Length, Is.Positive);
+      Assert.That(indices.Length % 3, Is.Zero);
+      WriteUInt32(source.Blocks[MeshAddress], 12, 1);
+      WriteUInt32(source.Blocks[MeshAddress], 28, Convert.ToUInt32(indices.Length / 3));
+      WriteUInt32(source.Blocks[ShapeAddress], 28, Convert.ToUInt32(indices.Length / 3));
+      source.ReplaceBlock(IndicesAddress, EncodeIndices(indices));
+    }
+
+    public void UsePlacementAxisStreams(uint[] x, uint[] y, uint[] z) {
+      Assert.That(x.Length, Is.Positive);
+      Assert.That(x.Length % 3, Is.Zero);
+      Assert.That(y, Has.Length.EqualTo(x.Length));
+      Assert.That(z, Has.Length.EqualTo(x.Length));
+      WriteUInt32(source.Blocks[MeshAddress], 12, 1);
+      WriteUInt32(source.Blocks[MeshAddress], 28, Convert.ToUInt32(x.Length));
+      WriteUInt32(source.Blocks[ShapeAddress], 28, Convert.ToUInt32(x.Length));
+      source.ReplaceBlock(IndicesAddress, EncodeIndices([.. x, .. y, .. z]));
+    }
 
     public void MakeMalformed(MalformedShape malformed) {
       switch (malformed) {
@@ -231,7 +334,58 @@ public class StaticShapesTests {
         case MalformedShape.NonFiniteVertex:
           WriteSingle(source.Blocks[VerticesAddress], 0, float.NaN);
           break;
+        case MalformedShape.TruncatedPlacementIndices:
+          UsePlacementTriangleList([0, 1, 2, 2, 1, 0]);
+          source.ReplaceBlock(IndicesAddress, source.Blocks[IndicesAddress][..^1]);
+          break;
+        case MalformedShape.PlacementIndexCountOverflow:
+          WriteUInt32(source.Blocks[MeshAddress], 12, 1);
+          WriteUInt32(source.Blocks[MeshAddress], 28, uint.MaxValue);
+          WriteUInt32(source.Blocks[ShapeAddress], 28, uint.MaxValue);
+          break;
+        case MalformedShape.OversizedEffectCount:
+          WriteUInt32(source.Blocks[ShapeAddress], 44, 65_537);
+          break;
+        case MalformedShape.EffectNameTooLong:
+          source.ReplaceBlock(NameAddress, new byte[4 * 1024]);
+          break;
+        case MalformedShape.DuplicateMeshFan:
+          MakeDuplicateMeshFan(10_000);
+          break;
+        case MalformedShape.WrongSymbolReferenceType:
+          source.MutableResourceReferences[MeshAddress + 4] =
+            new StaticShapeResourceReference("opaque:txs", ShapeAddress);
+          break;
+        case MalformedShape.WrongSymbolReferenceOwner:
+          source.MutableResourceReferences[MeshAddress + 4] =
+            new StaticShapeResourceReference("water:ftx", ShapeAddress + 1);
+          break;
+        case MalformedShape.ConflictingRawAndSymbolReference:
+          WriteUInt32(source.Blocks[MeshAddress], 4, FtxAddress);
+          break;
+        case MalformedShape.WrongDirectReferenceType:
+          source.MutableResourceReferences.Remove(MeshAddress + 4);
+          WritePointer(source.Blocks[MeshAddress], MeshAddress, 4, FtxAddress);
+          source.MutableResourceKeys[FtxAddress] = "water:txs";
+          break;
       }
+    }
+
+    private void MakeDuplicateMeshFan(int count) {
+      var pointers = new byte[count * 4];
+      for (var i = 0; i < count; i++)
+        WritePointer(pointers, MeshPointersAddress, i * 4, MeshAddress);
+      source.ReplaceBlock(MeshPointersAddress, pointers);
+      WriteUInt32(source.Blocks[ShapeAddress], 24, Convert.ToUInt32(count * 3));
+      WriteUInt32(source.Blocks[ShapeAddress], 28, Convert.ToUInt32(count * 3));
+      WriteUInt32(source.Blocks[ShapeAddress], 32, Convert.ToUInt32(count));
+      WriteUInt32(source.Blocks[ShapeAddress], 36, Convert.ToUInt32(count));
+    }
+
+    private static byte[] EncodeIndices(uint[] indices) {
+      var bytes = new byte[indices.Length * sizeof(uint)];
+      for (var i = 0; i < indices.Length; i++) WriteUInt32(bytes, i * sizeof(uint), indices[i]);
+      return bytes;
     }
 
     private void WritePointer(byte[] bytes, uint blockAddress, int offset, uint value) {
@@ -283,9 +437,10 @@ public class StaticShapesTests {
     public Dictionary<uint, byte[]> Blocks { get; } = [];
     public Dictionary<uint, uint> Relocations { get; } = [];
     public Dictionary<uint, string> MutableResourceKeys { get; } = [];
-    public Dictionary<uint, string> MutableResourceReferences { get; } = [];
+    public Dictionary<uint, StaticShapeResourceReference> MutableResourceReferences { get; } = [];
     public IReadOnlyDictionary<uint, string> ResourceKeys => MutableResourceKeys;
-    public IReadOnlyDictionary<uint, string> ResourceReferences => MutableResourceReferences;
+    public IReadOnlyDictionary<uint, StaticShapeResourceReference> ResourceReferences =>
+      MutableResourceReferences;
 
     public byte[] AddBlock(uint address, int length) {
       var bytes = new byte[length];
@@ -311,11 +466,12 @@ public class StaticShapesTests {
     public bool TryGetRelocationSource(uint address, out uint value) =>
       Relocations.TryGetValue(address, out value);
 
-    public bool TryReadNullTerminatedString(uint address, out string value) {
+    public bool TryReadNullTerminatedString(uint address, int maximumLength, out string value) {
       foreach (var block in Blocks) {
         if (address < block.Key || address >= block.Key + block.Value.Length) continue;
         var offset = Convert.ToInt32(address - block.Key);
-        var end = Array.IndexOf(block.Value, Convert.ToByte(0), offset);
+        var available = Math.Min(maximumLength, block.Value.Length - offset);
+        var end = Array.IndexOf(block.Value, Convert.ToByte(0), offset, available);
         if (end < 0) break;
         value = Encoding.ASCII.GetString(block.Value, offset, end - offset);
         return true;

@@ -71,7 +71,12 @@ public static class TerrainTypes {
   private const int DescriptionReferenceOffset = 24;
   private const int IconReferenceOffset = 28;
 
-  internal readonly record struct StringTableBlock(long Offset, uint Size);
+  internal readonly record struct StringTableBlock(uint Address, long Offset, uint Size);
+
+  internal sealed record ArchiveLayout(
+    IReadOnlyList<StringTableBlock> StringBlocks,
+    uint DataSize
+  );
 
   /// <summary>Extracts every terrain definition, failing if any record or reference is malformed.</summary>
   public static IReadOnlyList<TerrainType> Extract(Ovl ovl) {
@@ -207,11 +212,24 @@ public static class TerrainTypes {
   internal static bool TryReadStringTableStart(BinaryReader reader, out string value) =>
     OvlTerrainReferenceResolver.TryReadStringTableStart(reader, out value);
 
+  internal static bool TryReadString(BinaryReader reader, uint address, out string value) =>
+    OvlTerrainReferenceResolver.TryReadString(reader, address, out value);
+
   private sealed class OvlTerrainReferenceResolver(
     Ovl ovl,
     IReadOnlyDictionary<uint, uint> terrainAddressesByTextureSlot
   ) {
+    // Shipped TER archives exercised by the installed-data scan are far below these ceilings.
+    // Keep generous format headroom while preventing file-controlled counts from driving
+    // unbounded loops or allocations before their byte ranges are validated.
+    private const int MaximumExternalReferences = 65_536;
+    private const int MaximumLoaderHeaders = 4_096;
+    private const int MaximumBlocksPerType = 65_536;
+    private const int MaximumTotalBlocks = 65_536;
+
     private IReadOnlyDictionary<uint, TerrainResourceReference>? textureReferences;
+    private ArchiveLayout? commonArchiveLayout;
+    private string? commonArchivePath;
 
     public TerrainResourceReference Resolve(uint fieldAddress, FileType expectedType) =>
       expectedType == FileType.Texture
@@ -222,45 +240,70 @@ public static class TerrainTypes {
       if (!ovl.TryGetRelocationSource(fieldAddress, out var targetAddress))
         throw new InvalidDataException(
           $"Terrain {expectedType.ToTagString()} field at 0x{fieldAddress:X} is not a relocation source.");
-      var resolved = targetAddress == 0
-        ? TryResolveStringTableStart(out var name)
-        : ovl.TryResolveString(targetAddress, out name);
-      if (!resolved || string.IsNullOrWhiteSpace(name))
+      if (!TryResolveString(targetAddress, out var name) || string.IsNullOrWhiteSpace(name))
         throw new InvalidDataException(
           $"Terrain {expectedType.ToTagString()} field at 0x{fieldAddress:X} has an invalid target.");
-      if (targetAddress != 0 &&
-          (!ovl.TryReadBytes(targetAddress, checked(name.Length + 1), out var encoded) || encoded[^1] != 0))
-        throw new InvalidDataException(
-          $"Terrain {expectedType.ToTagString()} field at 0x{fieldAddress:X} is not null-terminated.");
       return new TerrainResourceReference(name, expectedType);
     }
 
-    private bool TryResolveStringTableStart(out string value) {
-      // A relocated pointer value of zero can legitimately name the first byte of the common
-      // string table (Terrain_00 does this), even though Ovl.TryResolveString treats zero as null.
-      // Read only the documented archive header to locate that byte; resource data remains decoded
-      // through Ovl's bounded APIs.
+    private bool TryResolveString(uint address, out string value) {
+      // Terrain names and symbol names are shared through the common archive's type-0 string blocks.
+      // Parse those declared ranges directly so address zero remains valid while wrong-block and
+      // unterminated values fail closed.
+      commonArchivePath ??= FindCommonArchivePath();
+      if (commonArchivePath == null) {
+        value = "";
+        return false;
+      }
+
+      using var stream = File.OpenRead(commonArchivePath);
+      using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+      commonArchiveLayout ??= ReadArchiveLayout(reader);
+      return TryReadString(reader, commonArchiveLayout, address, out value);
+    }
+
+    private string? FindCommonArchivePath() {
       var commonPaths = ovl.Keys
         .Select(file => ToCommonPath(file.Path))
         .Where(File.Exists)
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToList();
-      if (commonPaths.Count != 1) {
+      return commonPaths.Count == 1 ? commonPaths[0] : null;
+    }
+
+    internal static bool TryReadStringTableStart(BinaryReader reader, out string value) =>
+      TryReadString(reader, 0, out value);
+
+    internal static bool TryReadString(BinaryReader reader, uint address, out string value) {
+      var layout = ReadArchiveLayout(reader);
+      return TryReadString(reader, layout, address, out value);
+    }
+
+    private static bool TryReadString(
+      BinaryReader reader,
+      ArchiveLayout layout,
+      uint address,
+      out string value
+    ) {
+      const int maximumNameLength = 4096;
+      StringTableBlock? containingBlock = null;
+      foreach (var block in layout.StringBlocks) {
+        if (block.Size != 0 && address >= block.Address && address - block.Address < block.Size) {
+          containingBlock = block;
+          break;
+        }
+      }
+      if (containingBlock == null) {
         value = "";
         return false;
       }
 
-      using var stream = File.OpenRead(commonPaths[0]);
-      using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
-      return TryReadStringTableStart(reader, out value);
-    }
-
-    internal static bool TryReadStringTableStart(BinaryReader reader, out string value) {
-      const int maximumNameLength = 4096;
-      var stringBlock = ReadStringTableBlock(reader);
-      reader.BaseStream.Position = stringBlock.Offset;
+      var stringBlock = containingBlock.Value;
+      var offsetInBlock = address - stringBlock.Address;
+      reader.BaseStream.Position = checked(stringBlock.Offset + offsetInBlock);
       var bytes = new List<byte>();
-      var bytesToScan = Convert.ToInt32(Math.Min(stringBlock.Size, (uint)maximumNameLength));
+      var remainingInBlock = stringBlock.Size - offsetInBlock;
+      var bytesToScan = Convert.ToInt32(Math.Min(remainingInBlock, (uint)maximumNameLength));
       foreach (var _ in Enumerable.Range(0, bytesToScan)) {
         var next = reader.BaseStream.ReadByte();
         if (next == 0) {
@@ -282,6 +325,16 @@ public static class TerrainTypes {
     }
 
     internal static StringTableBlock ReadStringTableBlock(BinaryReader reader) {
+      var layout = ReadArchiveLayout(reader);
+      if (layout.StringBlocks.Count == 0)
+        throw new InvalidDataException("OVL has no common string-table block.");
+      var firstBlock = layout.StringBlocks[0];
+      if (firstBlock.Size == 0)
+        throw new InvalidDataException("OVL has an empty common string-table block.");
+      return firstBlock;
+    }
+
+    internal static ArchiveLayout ReadArchiveLayout(BinaryReader reader) {
       Require(reader, 16);
       if (reader.ReadUInt32() != 0x4b524746)
         throw new InvalidDataException("Invalid OVL magic while resolving the common string table.");
@@ -308,7 +361,9 @@ public static class TerrainTypes {
         referenceCount = reader.ReadUInt32();
       }
 
-      foreach (var _ in Enumerable.Range(0, CheckedCount(referenceCount))) {
+      var boundedReferenceCount = BoundedCount(
+        reader, referenceCount, 2, MaximumExternalReferences, "external reference");
+      foreach (var _ in Enumerable.Range(0, boundedReferenceCount)) {
         Require(reader, 2);
         Skip(reader, reader.ReadUInt16());
       }
@@ -316,27 +371,37 @@ public static class TerrainTypes {
       Require(reader, 8);
       reader.ReadUInt32();
       var loaderCount = reader.ReadUInt32();
-      foreach (var _ in Enumerable.Range(0, CheckedCount(loaderCount))) {
+      var boundedLoaderCount = BoundedCount(
+        reader, loaderCount, 10, MaximumLoaderHeaders, "loader header");
+      foreach (var _ in Enumerable.Range(0, boundedLoaderCount)) {
         SkipLengthPrefixedString(reader);
         SkipLengthPrefixedString(reader);
         Skip(reader, 4);
         SkipLengthPrefixedString(reader);
       }
-      if (version == 5) Skip(reader, checked(CheckedCount(loaderCount) * 8L));
+      if (version == 5) Skip(reader, checked(boundedLoaderCount * 8L));
 
-      var typeZeroBlockCount = 0u;
-      var firstTypeZeroBlockSize = 0u;
+      var blockCounts = new int[9];
+      var blockSizes = Enumerable.Range(0, 9).Select(_ => new List<uint>()).ToArray();
+      var totalBlockCount = 0;
       foreach (var typeIndex in Enumerable.Range(0, 9)) {
         Require(reader, 4);
         var blockCount = reader.ReadUInt32();
-        if (typeIndex == 0) typeZeroBlockCount = blockCount;
         if (version > 1) {
           Skip(reader, 4);
-          if (version == 5 && (subVersionFlag & 1) != 0) Skip(reader, 4);
-          foreach (var blockIndex in Enumerable.Range(0, CheckedCount(blockCount))) {
+          if (version == 5 && subVersionFlag != 0) Skip(reader, 4);
+        }
+        var boundedBlockCount = BoundedCount(
+          reader, blockCount, 4, MaximumBlocksPerType, $"type-{typeIndex} block");
+        if (boundedBlockCount > MaximumTotalBlocks - totalBlockCount)
+          throw new InvalidDataException("OVL aggregate block count exceeds decoder limits.");
+        totalBlockCount += boundedBlockCount;
+        blockCounts[typeIndex] = boundedBlockCount;
+        if (version > 1) {
+          blockSizes[typeIndex] = new List<uint>(boundedBlockCount);
+          foreach (var _ in Enumerable.Range(0, boundedBlockCount)) {
             Require(reader, 4);
-            var blockSize = reader.ReadUInt32();
-            if (typeIndex == 0 && blockIndex == 0) firstTypeZeroBlockSize = blockSize;
+            blockSizes[typeIndex].Add(reader.ReadUInt32());
           }
         }
       }
@@ -350,20 +415,44 @@ public static class TerrainTypes {
         Skip(reader, checked(Convert.ToInt64(reader.ReadUInt32()) * 4));
       }
 
-      if (typeZeroBlockCount == 0)
-        throw new InvalidDataException($"Version {version} OVL has no common string-table block.");
-      if (version == 1) {
-        Require(reader, 4);
-        firstTypeZeroBlockSize = reader.ReadUInt32();
+      var stringBlocks = new List<StringTableBlock>(blockCounts[0]);
+      var relativeOffset = 0u;
+      foreach (var typeIndex in Enumerable.Range(0, 9)) {
+        foreach (var blockIndex in Enumerable.Range(0, blockCounts[typeIndex])) {
+          uint blockSize;
+          if (version == 1) {
+            Require(reader, 4);
+            blockSize = reader.ReadUInt32();
+          } else {
+            blockSize = blockSizes[typeIndex][blockIndex];
+          }
+
+          var fileOffset = reader.BaseStream.Position;
+          Require(reader, blockSize);
+          if (typeIndex == 0)
+            stringBlocks.Add(new StringTableBlock(relativeOffset, fileOffset, blockSize));
+          if (blockSize > uint.MaxValue - relativeOffset)
+            throw new InvalidDataException("OVL block data exceeds the 32-bit address space.");
+          relativeOffset += blockSize;
+          Skip(reader, blockSize);
+        }
       }
-      if (firstTypeZeroBlockSize == 0)
-        throw new InvalidDataException($"Version {version} OVL has an empty common string-table block.");
-      Require(reader, firstTypeZeroBlockSize);
-      return new StringTableBlock(reader.BaseStream.Position, firstTypeZeroBlockSize);
+
+      return new ArchiveLayout(stringBlocks, relativeOffset);
     }
 
-    private static int CheckedCount(uint count) {
-      if (count > int.MaxValue) throw new InvalidDataException("OVL count exceeds decoder limits.");
+    private static int BoundedCount(
+      BinaryReader reader,
+      uint count,
+      int minimumBytesPerItem,
+      int maximumCount,
+      string description
+    ) {
+      if (count > maximumCount)
+        throw new InvalidDataException($"OVL {description} count exceeds decoder limits.");
+      var remainingBytes = reader.BaseStream.Length - reader.BaseStream.Position;
+      if (minimumBytesPerItem > 0 && count > remainingBytes / minimumBytesPerItem)
+        throw new InvalidDataException($"OVL {description} count exceeds the remaining file data.");
       return Convert.ToInt32(count);
     }
 
@@ -413,7 +502,7 @@ public static class TerrainTypes {
           continue;
 
         if (!ovl.TryGetRelocationSource(checked(sourceAddress + 4), out var symbolAddress) ||
-            !ovl.TryResolveString(symbolAddress, out var qualifiedName))
+            !TryResolveString(symbolAddress, out var qualifiedName))
           throw new InvalidDataException(
             $"Terrain tex symbol reference at 0x{sourceAddress:X} has an invalid symbol target.");
         if (!ovl.TryGetRelocationSource(checked(sourceAddress + 8), out var loaderAddress) ||

@@ -139,8 +139,83 @@ public class TerrainTypesTests {
     var block = TerrainTypes.ReadStringTableBlock(reader);
 
     using (Assert.EnterMultipleScope()) {
+      Assert.That(block.Address, Is.EqualTo(0));
       Assert.That(block.Offset, Is.EqualTo(expectedOffset));
       Assert.That(block.Size, Is.EqualTo(1));
+    }
+  }
+
+  [TestCase((uint)int.MaxValue)]
+  [TestCase(uint.MaxValue)]
+  public void ReadStringTableBlock_RejectsOversizedReferenceCount(uint count) {
+    using var stream = OvlArchive(
+      OvlVersion.Four, typeZeroBlockSize: 1, [0], referenceCount: count);
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    Assert.Throws<InvalidDataException>(new Action(() => TerrainTypes.ReadStringTableBlock(reader)));
+  }
+
+  [Test]
+  public void ReadStringTableBlock_RejectsCountBeyondRemainingBytes() {
+    using var stream = OvlArchive(
+      OvlVersion.Four, typeZeroBlockSize: 1, [0], referenceCount: 100);
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      TerrainTypes.ReadStringTableBlock(reader)));
+
+    Assert.That(exception!.Message, Does.Contain("remaining file data"));
+  }
+
+  [TestCase((uint)int.MaxValue)]
+  [TestCase(uint.MaxValue)]
+  public void ReadStringTableBlock_RejectsOversizedLoaderCount(uint count) {
+    using var stream = OvlArchive(
+      OvlVersion.Four, typeZeroBlockSize: 1, [0], loaderCount: count);
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    Assert.Throws<InvalidDataException>(new Action(() => TerrainTypes.ReadStringTableBlock(reader)));
+  }
+
+  [TestCase((uint)int.MaxValue)]
+  [TestCase(uint.MaxValue)]
+  public void ReadStringTableBlock_RejectsOversizedBlockCount(uint count) {
+    using var stream = OvlArchive(
+      OvlVersion.Four,
+      typeZeroBlockSize: 1,
+      [0],
+      typeZeroBlockCountOverride: count);
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    Assert.Throws<InvalidDataException>(new Action(() => TerrainTypes.ReadStringTableBlock(reader)));
+  }
+
+  [Test]
+  public void ReadStringTableBlock_RejectsOversizedAggregateBlockCount() {
+    using var stream = OvlArchiveWithBlockCounts(typeZeroBlockCount: 32_769, typeOneBlockCount: 32_768);
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      TerrainTypes.ReadStringTableBlock(reader)));
+
+    Assert.That(exception!.Message, Does.Contain("aggregate block count"));
+  }
+
+  [Test]
+  public void ReadStringTableBlock_AcceptsEvenNonzeroV5SubVersionAlignment() {
+    using var stream = OvlArchive(
+      OvlVersion.Five,
+      typeZeroBlockSize: 4,
+      [(byte)'t', (byte)'e', (byte)'r', 0],
+      subVersionFlag: 2);
+    var expectedOffset = stream.Length - 4;
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    var block = TerrainTypes.ReadStringTableBlock(reader);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(block.Offset, Is.EqualTo(expectedOffset));
+      Assert.That(block.Size, Is.EqualTo(4));
     }
   }
 
@@ -172,11 +247,29 @@ public class TerrainTypesTests {
       [(byte)'t', (byte)'e', (byte)'r', 0]);
     using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
 
-    var resolved = TerrainTypes.TryReadStringTableStart(reader, out var value);
+    var resolved = TerrainTypes.TryReadString(reader, address: 0, out var value);
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(resolved, Is.True);
       Assert.That(value, Is.EqualTo("ter"));
+    }
+  }
+
+  [TestCase(OvlVersion.Four)]
+  [TestCase(OvlVersion.Five)]
+  public void TryReadString_RejectsAddressInNonStringBlock(OvlVersion version) {
+    using var stream = OvlArchive(
+      version,
+      typeZeroBlockSize: 4,
+      [(byte)'t', (byte)'e', (byte)'r', 0, (byte)'b', (byte)'a', (byte)'d', 0],
+      typeOneBlockSize: 4);
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    var resolved = TerrainTypes.TryReadString(reader, address: 4, out var value);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(resolved, Is.False);
+      Assert.That(value, Is.Empty);
     }
   }
 
@@ -249,7 +342,11 @@ public class TerrainTypesTests {
     OvlVersion version,
     uint? typeZeroBlockSize,
     byte[] rawData,
-    uint typeOneBlockSize = 0
+    uint typeOneBlockSize = 0,
+    uint subVersionFlag = 0,
+    uint referenceCount = 0,
+    uint loaderCount = 0,
+    uint? typeZeroBlockCountOverride = null
   ) {
     if (version == OvlVersion.One && typeOneBlockSize != 0)
       throw new ArgumentException("The synthetic v1 fixture supports only its first type-0 block.");
@@ -262,27 +359,39 @@ public class TerrainTypesTests {
       writer.Write(0x4b524746u);
       writer.Write(0u);
       writer.Write(Convert.ToUInt32(version));
-      writer.Write(0u);
+      writer.Write(version == OvlVersion.One ? referenceCount : 0u);
       if (version == OvlVersion.Four) {
-        writer.Write(0u);
+        writer.Write(referenceCount);
       } else if (version == OvlVersion.Five) {
-        writer.Write(0u);
-        writer.Write(0u);
+        writer.Write(subVersionFlag);
+        if (subVersionFlag != 0) {
+          writer.Write(0u);
+          writer.Write(0u);
+          writer.Write(0u);
+          writer.Write((byte)0);
+          while (stream.Position % 4 != 0) writer.Write((byte)0);
+        }
+        writer.Write(referenceCount);
       }
 
       writer.Write(0u);
-      writer.Write(0u);
+      writer.Write(loaderCount);
       foreach (var typeIndex in Enumerable.Range(0, 9)) {
         var blockSize = typeIndex switch {
           0 => typeZeroBlockSize,
           1 when typeOneBlockSize != 0 => typeOneBlockSize,
           _ => null
         };
-        var blockCount = blockSize.HasValue ? 1u : 0u;
+        var blockCount = typeIndex == 0 && typeZeroBlockCountOverride.HasValue
+          ? typeZeroBlockCountOverride.Value
+          : blockSize.HasValue ? 1u : 0u;
         writer.Write(blockCount);
         if (version != OvlVersion.One) {
           writer.Write(0u);
-          if (blockSize.HasValue) writer.Write(blockSize.Value);
+          if (version == OvlVersion.Five && subVersionFlag != 0) writer.Write(0u);
+          if (!typeZeroBlockCountOverride.HasValue || typeIndex != 0) {
+            if (blockSize.HasValue) writer.Write(blockSize.Value);
+          }
         }
       }
 
@@ -293,6 +402,36 @@ public class TerrainTypesTests {
       if (version == OvlVersion.One && typeZeroBlockSize.HasValue)
         writer.Write(typeZeroBlockSize.Value);
       writer.Write(rawData);
+    }
+    stream.Position = 0;
+    return stream;
+  }
+
+  private static MemoryStream OvlArchiveWithBlockCounts(
+    int typeZeroBlockCount,
+    int typeOneBlockCount
+  ) {
+    var stream = new MemoryStream();
+    using (var writer = new BinaryWriter(stream, Encoding.ASCII, leaveOpen: true)) {
+      writer.Write(0x4b524746u);
+      writer.Write(0u);
+      writer.Write(Convert.ToUInt32(OvlVersion.Four));
+      writer.Write(0u);
+      writer.Write(0u);
+      writer.Write(0u);
+      writer.Write(0u);
+      foreach (var typeIndex in Enumerable.Range(0, 9)) {
+        var count = typeIndex switch {
+          0 => typeZeroBlockCount,
+          1 => typeOneBlockCount,
+          _ => 0
+        };
+        writer.Write(Convert.ToUInt32(count));
+        writer.Write(0u);
+        foreach (var _ in Enumerable.Range(0, count)) writer.Write(0u);
+      }
+      writer.Write(0u);
+      writer.Write(0u);
     }
     stream.Position = 0;
     return stream;

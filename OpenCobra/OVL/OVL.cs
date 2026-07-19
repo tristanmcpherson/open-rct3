@@ -92,11 +92,18 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
 
   /// <summary>Reads <paramref name="length"/> raw bytes at a relocation-resolved data address.</summary>
   public bool TryReadBytes(uint address, int length, [MaybeNullWhen(false)] out byte[] data) {
-    if (!TryResolveRelocation(address, out var block, out var offset) || offset + length > block.Length) {
+    if (length < 0 || !TryResolveRelocation(address, out var block, out var offset)) {
       data = null;
       return false;
     }
-    data = block.AsSpan(Convert.ToInt32(offset), length).ToArray();
+
+    var start = Convert.ToInt32(offset);
+    if (length > block.Length - start) {
+      data = null;
+      return false;
+    }
+
+    data = block.AsSpan(start, length).ToArray();
     return true;
   }
 
@@ -143,14 +150,24 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
 
   /// <summary>Read the resource data for a given file.</summary>
   public byte[]? ReadResource(OvlFile file) {
-    var entry = entries.GetValueOrDefault(file);
-    if (entry == null) return null;
+    if (!entries.TryGetValue(file, out var entry) || entry.Size > int.MaxValue ||
+        string.IsNullOrEmpty(file.Path)) return null;
 
-    var bytes = new byte[entry.Size];
-    using var fs = File.OpenRead(file.Path);
-    fs.Seek(Convert.ToInt32(entry.Offset), SeekOrigin.Begin);
-    fs.ReadExactly(bytes, 0, Convert.ToInt32(entry.Size));
-    return bytes;
+    try {
+      using var fs = File.OpenRead(file.Path);
+      var offset = Convert.ToInt64(entry.Offset);
+      var size = Convert.ToInt64(entry.Size);
+      if (offset > fs.Length || size > fs.Length - offset) return null;
+
+      var bytes = new byte[Convert.ToInt32(entry.Size)];
+      fs.Seek(offset, SeekOrigin.Begin);
+      fs.ReadExactly(bytes, 0, bytes.Length);
+      return bytes;
+    } catch (IOException) {
+      return null;
+    } catch (UnauthorizedAccessException) {
+      return null;
+    }
   }
 
   /// <summary>
@@ -164,14 +181,15 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
     // A null (zero) pointer never resolves - without this guard it spuriously "resolves" to
     // whatever block happens to start at RelativeOffset 0 (see TryResolveString's matching guard).
     var resolvedBlock = dataPtr == 0 ? null : FindBlock(dataPtr);
-    if (resolvedBlock?.Data == null) {
+    if (resolvedBlock?.Data == null ||
+        !TryGetBlockOffset(resolvedBlock, dataPtr, out var resolvedOffset)) {
       data = null;
       offset = 0;
       return false;
     }
 
     data = resolvedBlock.Data;
-    offset = dataPtr - resolvedBlock.RelativeOffset;
+    offset = Convert.ToUInt32(resolvedOffset);
     return true;
   }
 
@@ -190,7 +208,24 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
 
   private FileBlock? FindBlock(uint address) => allFileTypeBlocks
     .SelectMany(ftb => ftb.SelectMany(b => b.Blocks))
-    .FirstOrDefault(fb => fb.Data != null && address >= fb.RelativeOffset && address < fb.RelativeOffset + fb.Size);
+    .FirstOrDefault(fb => TryGetBlockOffset(fb, address, out _));
+
+  private static bool TryGetBlockOffset(FileBlock block, uint address, out int offset) {
+    offset = 0;
+    if (block.Data == null || address < block.RelativeOffset) return false;
+
+    var relativeOffset = address - block.RelativeOffset;
+    if (relativeOffset >= block.Size || relativeOffset >= block.Data.Length) return false;
+
+    offset = Convert.ToInt32(relativeOffset);
+    return true;
+  }
+
+  private static bool TryGetBlockSlice(FileBlock block, uint address, int length, out int offset) {
+    offset = 0;
+    if (length < 0 || !TryGetBlockOffset(block, address, out offset)) return false;
+    return length <= block.Data!.Length - offset;
+  }
 
   /// <summary>
   /// Reads the "extra data" chunks attached to a loader, e.g. Flic pixel data or a bitmap-table
@@ -235,16 +270,15 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   /// <param name="value">The resolved string, or null if unresolved</param>
   /// <returns>True if resolution succeeded.</returns>
   public bool TryResolveString(uint ptr, [MaybeNullWhen(false)] out string value) {
-    var resolvedBlock = ptr == 0 ? null : FindBlock(ptr);
-    if (resolvedBlock?.Data == null) {
+    if (!TryResolveRelocation(ptr, out var data, out var resolvedOffset)) {
       value = null;
       return false;
     }
 
-    var offset = Convert.ToInt32(ptr - resolvedBlock.RelativeOffset);
-    var end = Array.IndexOf(resolvedBlock.Data, (byte)0, offset);
-    if (end < 0) end = resolvedBlock.Data.Length;
-    value = Encoding.ASCII.GetString(resolvedBlock.Data, offset, end - offset);
+    var offset = Convert.ToInt32(resolvedOffset);
+    var end = Array.IndexOf(data, (byte)0, offset);
+    if (end < 0) end = data.Length;
+    value = Encoding.ASCII.GetString(data, offset, end - offset);
     return true;
   }
 
@@ -272,37 +306,35 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
     using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
     using var reader = new BinaryReader(stream, Encoding.UTF8, false);
 
-    var magic = reader.ReadUInt32();
-    Debug.Assert(magic == 0x4b524746, "Invalid OVL magic");
-    var reserved = reader.ReadUInt32();
-    var version = (Version) reader.ReadUInt32();
-    var headerRefs = reader.ReadUInt32();
+    var magic = ReadUInt32(reader, "header magic");
+    if (magic != 0x4b524746) throw new InvalidDataException("Invalid OVL magic.");
+    ReadUInt32(reader, "header reserved field");
+    var version = (Version) ReadUInt32(reader, "header version");
+    var headerRefs = ReadUInt32(reader, "header reference count");
 
     Debug.WriteLine($"[OVL] Loading {Path.GetFileName(filePath)} (v{version})");
 
     var subVersionFlag = 0u;
     var referenceCount = version switch {
       Version.Five => ReadV5References(reader, out subVersionFlag),
-      Version.Four => reader.ReadUInt32(),
+      Version.Four => ReadUInt32(reader, "v4 reference count"),
       _ => headerRefs
     };
 
     Debug.WriteLine($"[OVL] subVersionFlag: {subVersionFlag}, referenceCount: {referenceCount}");
 
-    for (var i = 0; i < referenceCount && reader.BaseStream.Position < reader.BaseStream.Length; i++) {
-      var len = reader.ReadUInt16();
-      if (len > 0 && reader.BaseStream.Position + len <= reader.BaseStream.Length)
-        reader.ReadBytes(len);
+    foreach (var _ in Enumerable.Range(0, ToCount(referenceCount, "reference count"))) {
+      var len = ReadUInt16(reader, "reference name length");
+      ReadBytes(reader, len, "reference name");
     }
 
-    var loaderHeaders = new List<LoaderHeader>();
-    if (reader.BaseStream.Position + 8 <= reader.BaseStream.Length) {
-      reader.ReadUInt32(); // OvlHeader2.unk
-      var fileTypeCount = reader.ReadUInt32();
-      if (fileTypeCount > 0 && fileTypeCount < 1024) {
-        loaderHeaders = ReadLoaderHeaders(reader, (int)fileTypeCount);
-        if (version == Version.Five) ReadV5SymbolCounts(reader, loaderHeaders);
-      }
+    ReadUInt32(reader, "secondary header unknown field"); // OvlHeader2.unk
+    var fileTypeCount = ReadUInt32(reader, "loader count");
+    if (fileTypeCount >= 1024)
+      throw new InvalidDataException($"OVL loader count {fileTypeCount} exceeds the supported limit.");
+    var loaderHeaders = ReadLoaderHeaders(reader, Convert.ToInt32(fileTypeCount));
+    if (version == Version.Five) {
+      ReadV5SymbolCounts(reader, loaderHeaders);
     }
     allLoaderHeaders.Add([.. loaderHeaders]);
     allVersions.Add(version);
@@ -314,13 +346,39 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
     ReadBlockData(reader, blocks, version);
     ReadRelocations(reader);
 
-    if (version >= Version.Four && reader.BaseStream.Position + 4 <= reader.BaseStream.Length) {
-      if (version == Version.Four || (subVersionFlag & 1) != 0) reader.ReadBytes(4);
-    }
+    if (version == Version.Four || version >= Version.Five && (subVersionFlag & 1) != 0)
+      ReadBytes(reader, sizeof(uint), "post-relocation field");
 
     allExtraData.Add(ReadLoaderExtraData(reader, blocks, version, loaderHeaders));
 
     return version;
+  }
+
+  private static int ToCount(uint count, string section) {
+    if (count > int.MaxValue)
+      throw new InvalidDataException($"OVL {section} exceeds the supported count.");
+    return Convert.ToInt32(count);
+  }
+
+  private static void EnsureRemaining(BinaryReader reader, long length, string section) {
+    var remaining = reader.BaseStream.Length - reader.BaseStream.Position;
+    if (length < 0 || length > remaining)
+      throw new InvalidDataException($"Truncated OVL {section}.");
+  }
+
+  private static ushort ReadUInt16(BinaryReader reader, string section) {
+    EnsureRemaining(reader, sizeof(ushort), section);
+    return reader.ReadUInt16();
+  }
+
+  private static uint ReadUInt32(BinaryReader reader, string section) {
+    EnsureRemaining(reader, sizeof(uint), section);
+    return reader.ReadUInt32();
+  }
+
+  private static byte[] ReadBytes(BinaryReader reader, int length, string section) {
+    EnsureRemaining(reader, length, section);
+    return reader.ReadBytes(length);
   }
 
   /// <summary>
@@ -348,8 +406,10 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
 
     // LoaderStruct: LoaderType(4), data(ptr, 4), HasExtraData(4), Sym(ptr, 4), SymbolsToResolve(4)
     const int loaderStructSize = 20;
-    var loaderCount = Convert.ToInt32(loaderBlock.Size) / loaderStructSize;
-    for (var i = 0; i < loaderCount; i++) {
+    if (loaderBlock.Data.Length % loaderStructSize != 0)
+      throw new InvalidDataException("OVL loader table ends with a partial loader entry.");
+    var loaderCount = loaderBlock.Data.Length / loaderStructSize;
+    foreach (var i in Enumerable.Range(0, loaderCount)) {
       var offset = i * loaderStructSize;
       var loaderType = BitConverter.ToUInt32(loaderBlock.Data, offset);
       var rawDataPtr = BitConverter.ToUInt32(loaderBlock.Data, offset + 4);
@@ -360,15 +420,15 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
       var hasExtraData = version == Version.Five ? hasExtraDataRaw & 0xFFFF : hasExtraDataRaw;
 
       // LoaderType is a direct, on-disk-position index into loaderHeaders (Part 6 Finding 1).
-      if (loaderType < loaderHeaders.Count)
-        loaderEntriesInOrder.Add(new OvlLoaderEntry(
-          loaderHeaders[Convert.ToInt32(loaderType)].Tag, dataPtr, loaderBlock.Path));
+      if (loaderType >= loaderHeaders.Count)
+        throw new InvalidDataException($"OVL loader type index {loaderType} is out of range.");
+      loaderEntriesInOrder.Add(new OvlLoaderEntry(
+        loaderHeaders[Convert.ToInt32(loaderType)].Tag, dataPtr, loaderBlock.Path));
 
-      for (var c = 0; c < hasExtraData; c++) {
-        if (reader.BaseStream.Position + 4 > reader.BaseStream.Length) break;
-        var chunkSize = reader.ReadUInt32();
-        if (reader.BaseStream.Position + chunkSize > reader.BaseStream.Length) break;
-        var chunk = reader.ReadBytes(Convert.ToInt32(chunkSize));
+      foreach (var _ in Enumerable.Range(0, ToCount(hasExtraData, "loader extra-data count"))) {
+        var chunkSize = ReadUInt32(reader, "loader extra-data size");
+        var chunk = ReadBytes(
+          reader, ToCount(chunkSize, "loader extra-data size"), "loader extra-data chunk");
 
         if (!extraData.TryGetValue(dataPtr, out var chunks))
           extraData[dataPtr] = chunks = [];
@@ -379,36 +439,39 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   }
 
   private static uint ReadV5References(BinaryReader reader, out uint subVersionFlag) {
-    subVersionFlag = reader.ReadUInt32();
-    if (subVersionFlag == 0 || reader.BaseStream.Position + 12 > reader.BaseStream.Length)
-      return reader.BaseStream.Position + 4 <= reader.BaseStream.Length ? reader.ReadUInt32() : 0;
-    reader.ReadBytes(12);
-    while (reader.BaseStream.Position < reader.BaseStream.Length && reader.ReadByte() != 0) { }
-    while (reader.BaseStream.Position < reader.BaseStream.Length && reader.BaseStream.Position % 4 != 0)
-      reader.ReadByte();
-    return reader.BaseStream.Position + 4 <= reader.BaseStream.Length ? reader.ReadUInt32() : 0;
+    subVersionFlag = ReadUInt32(reader, "v5 subversion flag");
+    if (subVersionFlag == 0) return ReadUInt32(reader, "v5 reference count");
+
+    ReadBytes(reader, 12, "v5 extended header");
+    var terminated = false;
+    var remaining = reader.BaseStream.Length - reader.BaseStream.Position;
+    if (remaining > int.MaxValue)
+      throw new InvalidDataException("OVL v5 extended-header string exceeds the supported size.");
+    foreach (var _ in Enumerable.Range(0, Convert.ToInt32(remaining))) {
+      if (reader.ReadByte() != 0) continue;
+      terminated = true;
+      break;
+    }
+    if (!terminated) throw new InvalidDataException("Truncated OVL v5 extended-header string.");
+
+    var padding = Convert.ToInt32((4 - reader.BaseStream.Position % 4) % 4);
+    ReadBytes(reader, padding, "v5 extended-header padding");
+    return ReadUInt32(reader, "v5 reference count");
   }
 
   private static List<LoaderHeader> ReadLoaderHeaders(BinaryReader reader, int fileTypeCount) {
     var loaderHeaders = new List<LoaderHeader>();
-    for (var i = 0; i < fileTypeCount; i++) {
-      if (reader.BaseStream.Position + 2 > reader.BaseStream.Length) break;
-      var loaderLen = reader.ReadUInt16();
-      if (reader.BaseStream.Position + loaderLen > reader.BaseStream.Length) break;
-      var loader = Encoding.ASCII.GetString(reader.ReadBytes(loaderLen));
+    foreach (var _ in Enumerable.Range(0, fileTypeCount)) {
+      var loaderLen = ReadUInt16(reader, "loader name length");
+      var loader = Encoding.ASCII.GetString(ReadBytes(reader, loaderLen, "loader name"));
 
-      if (reader.BaseStream.Position + 2 > reader.BaseStream.Length) break;
-      var nameLen = reader.ReadUInt16();
-      if (reader.BaseStream.Position + nameLen > reader.BaseStream.Length) break;
-      var name = Encoding.ASCII.GetString(reader.ReadBytes(nameLen));
+      var nameLen = ReadUInt16(reader, "loader display-name length");
+      var name = Encoding.ASCII.GetString(ReadBytes(reader, nameLen, "loader display name"));
 
-      if (reader.BaseStream.Position + 4 > reader.BaseStream.Length) break;
-      var loaderType = reader.ReadUInt32();
+      var loaderType = ReadUInt32(reader, "loader type");
 
-      if (reader.BaseStream.Position + 2 > reader.BaseStream.Length) break;
-      var tagLen = reader.ReadUInt16();
-      if (reader.BaseStream.Position + tagLen > reader.BaseStream.Length) break;
-      var tag = Encoding.ASCII.GetString(reader.ReadBytes(tagLen));
+      var tagLen = ReadUInt16(reader, "loader tag length");
+      var tag = Encoding.ASCII.GetString(ReadBytes(reader, tagLen, "loader tag"));
 
       loaderHeaders.Add(new LoaderHeader(loader, name, loaderType, tag, 0));
     }
@@ -416,12 +479,14 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   }
 
   private static void ReadV5SymbolCounts(BinaryReader reader, List<LoaderHeader> loaderHeaders) {
-    for (var i = 0; i < loaderHeaders.Count; i++) {
-      if (reader.BaseStream.Position + 8 > reader.BaseStream.Length) break;
-      var idx = reader.ReadUInt32();
-      var symCount = reader.ReadUInt32();
-      if (idx < loaderHeaders.Count)
-        loaderHeaders[(int)idx] = loaderHeaders[(int)idx] with { SymbolCount = symCount };
+    foreach (var _ in Enumerable.Range(0, loaderHeaders.Count)) {
+      var idx = ReadUInt32(reader, "v5 loader symbol-count index");
+      var symCount = ReadUInt32(reader, "v5 loader symbol count");
+      if (idx >= loaderHeaders.Count)
+        throw new InvalidDataException($"OVL loader symbol-count index {idx} is out of range.");
+      loaderHeaders[Convert.ToInt32(idx)] = loaderHeaders[Convert.ToInt32(idx)] with {
+        SymbolCount = symCount,
+      };
     }
   }
 
@@ -429,25 +494,22 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
     string filePath, BinaryReader reader, Version version, uint subVersionFlag
   ) {
     var blocks = new FileTypeBlock[9];
-    for (var i = 0; i < blocks.Length; i++) {
-      if (reader.BaseStream.Position + 4 > reader.BaseStream.Length) {
-        blocks[i] = new FileTypeBlock();
-        continue;
-      }
-      blocks[i] = new FileTypeBlock { Count = reader.ReadUInt32() };
-      if (version > Version.One && reader.BaseStream.Position + 4 <= reader.BaseStream.Length) {
-        reader.ReadUInt32();
-        if (version == Version.Five && (subVersionFlag & 1) != 0 && reader.BaseStream.Position + 4 <= reader.BaseStream.Length)
-          blocks[i].UnknownV5Extra = reader.ReadUInt32();
+    foreach (var i in Enumerable.Range(0, blocks.Length)) {
+      blocks[i] = new FileTypeBlock { Count = ReadUInt32(reader, $"block type {i} count") };
+      if (version > Version.One) {
+        ReadUInt32(reader, $"block type {i} unknown field");
+        if (version == Version.Five && (subVersionFlag & 1) != 0)
+          blocks[i].UnknownV5Extra = ReadUInt32(reader, $"block type {i} v5 field");
       }
 
-      blocks[i].Blocks = [.. Enumerable.Range(0, Convert.ToInt32(blocks[i].Count))
+      blocks[i].Blocks = [.. Enumerable.Range(0, ToCount(blocks[i].Count, $"block type {i} count"))
         .Select(_ => new FileBlock() { Path = filePath})];
 
       // ReSharper disable once ForeachCanBePartlyConvertedToQueryUsingAnotherGetEnumerator
       if (version > Version.One) foreach (var block in blocks[i].Blocks) {
-        if (reader.BaseStream.Position + 4 > reader.BaseStream.Length) break;
-        block.Size = reader.ReadUInt32();
+        block.Size = ReadUInt32(reader, $"block type {i} size");
+        if (block.Size > uint.MaxValue - blocks[i].Size)
+          throw new InvalidDataException($"OVL block type {i} total size exceeds 32 bits.");
         blocks[i].Size += block.Size;
       }
 
@@ -459,38 +521,43 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
 
   private static void ReadPostBlockUnknowns(BinaryReader reader, Version version) {
     switch (version) {
-      case Version.Four when reader.BaseStream.Position + 8 <= reader.BaseStream.Length:
-        reader.ReadBytes(8);
+      case Version.Four:
+        ReadBytes(reader, 8, "v4 post-block metadata");
         break;
-      case >= Version.Five when reader.BaseStream.Position + 4 <= reader.BaseStream.Length: {
-        var bytesCount = reader.ReadUInt32();
-        if (bytesCount > 0 && bytesCount <= reader.BaseStream.Length - reader.BaseStream.Position)
-          reader.ReadBytes(Convert.ToInt32(bytesCount));
+      case >= Version.Five: {
+        var bytesCount = ReadUInt32(reader, "v5 post-block byte count");
+        ReadBytes(
+          reader, ToCount(bytesCount, "v5 post-block byte count"), "v5 post-block bytes");
 
-        if (reader.BaseStream.Position + 4 > reader.BaseStream.Length) return;
-        var longCount = reader.ReadUInt32();
-        if (Convert.ToInt64(longCount * 4) <= reader.BaseStream.Length - reader.BaseStream.Position)
-          reader.ReadBytes(Convert.ToInt32(longCount * 4));
+        var longCount = ReadUInt32(reader, "v5 post-block uint count");
+        var longBytes = Convert.ToInt64(longCount) * sizeof(uint);
+        if (longBytes > int.MaxValue)
+          throw new InvalidDataException("OVL v5 post-block uint data exceeds the supported size.");
+        ReadBytes(reader, Convert.ToInt32(longBytes), "v5 post-block uint data");
         break;
       }
     }
   }
 
   private void ReadBlockData(BinaryReader reader, FileTypeBlock[] blocks, Version version) {
-    for (var i = 0; i < blocks.Length; i++) {
+    foreach (var i in Enumerable.Range(0, blocks.Length)) {
       foreach (var block in blocks[i].Blocks) {
         if (version == Version.One && block.Size == 0) {
-          if (reader.BaseStream.Position + 4 > reader.BaseStream.Length) return;
-          block.Size = reader.ReadUInt32();
+          block.Size = ReadUInt32(reader, $"v1 block type {i} size");
         }
 
         block.RelativeOffset = relocationOffset;
         block.TypeIndex = i;
+        if (block.Size > uint.MaxValue - relocationOffset)
+          throw new InvalidDataException(
+            "OVL block address range exceeds the 32-bit relocation space.");
         relocationOffset += block.Size;
 
-        if (block.Size <= 0 || reader.BaseStream.Position + block.Size > reader.BaseStream.Length) continue;
+        if (block.Size == 0) continue;
+        if (block.Size > int.MaxValue)
+          throw new InvalidDataException($"OVL block type {i} exceeds the supported size.");
         block.Offset = Convert.ToUInt64(reader.BaseStream.Position);
-        block.Data = reader.ReadBytes(Convert.ToInt32(block.Size));
+        block.Data = ReadBytes(reader, Convert.ToInt32(block.Size), $"block type {i} data");
         Debug.WriteLine($"[OVL] Seek past block {i} size {block.Size} at relOffset 0x{block.RelativeOffset:X}");
       }
     }
@@ -505,18 +572,16 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   /// reads into <see cref="relocations"/> instead of discarding it.
   /// </summary>
   private void ReadRelocations(BinaryReader reader) {
-    if (reader.BaseStream.Position + 4 > reader.BaseStream.Length) return;
-    var relCount = reader.ReadUInt32();
+    var relCount = ReadUInt32(reader, "relocation count");
     var bytesToRead = Convert.ToInt64(relCount) * 4;
-    if (bytesToRead > reader.BaseStream.Length - reader.BaseStream.Position) return;
+    EnsureRemaining(reader, bytesToRead, "relocation table");
 
-    for (var i = 0; i < relCount; i++) {
+    foreach (var _ in Enumerable.Range(0, ToCount(relCount, "relocation count"))) {
       var sourceAddress = reader.ReadUInt32();
       var block = FindBlock(sourceAddress);
-      if (block?.Data == null) continue;
-
-      var offset = Convert.ToInt32(sourceAddress - block.RelativeOffset);
-      if (offset + 4 > block.Data.Length) continue;
+      if (block?.Data == null ||
+          !TryGetBlockSlice(block, sourceAddress, sizeof(uint), out var offset))
+        continue;
 
       relocations[sourceAddress] = BitConverter.ToUInt32(block.Data, offset);
     }
@@ -580,15 +645,18 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
         if (fileType == FileType.Unknown && loaderIdx < loaderHeaders.Length)
           fileType = loaderHeaders[loaderIdx].Tag.ToFileType();
 
-        var resolvedBlock = allBlocks.FirstOrDefault(fb => dataPtr >= fb.RelativeOffset && dataPtr < fb.RelativeOffset + fb.Size);
-        if (resolvedBlock != null) {
-          var relOffset = dataPtr - resolvedBlock.RelativeOffset;
+        var resolvedBlock = allBlocks.FirstOrDefault(fb => TryGetBlockOffset(fb, dataPtr, out _));
+        if (resolvedBlock?.Data != null &&
+            TryGetBlockOffset(resolvedBlock, dataPtr, out var blockOffset)) {
+          var relOffset = Convert.ToUInt32(blockOffset);
           // Neither SymbolStruct nor SymbolStruct2 stores a resource byte size; the archive
           // format has no reliable per-entry length, so read to the end of the resolved block.
-          var effectiveSize = resolvedBlock.Size - relOffset;
+          var effectiveSize = Convert.ToUInt32(resolvedBlock.Data.Length - blockOffset);
+          var absoluteOffset = resolvedBlock.Offset + relOffset;
+          if (absoluteOffset > uint.MaxValue) continue;
           var file = new OvlFile(name, fileType, resolvedBlock.Path);
           entries[file] = new OvlEntry(
-            Convert.ToUInt32(resolvedBlock.Offset + relOffset),
+            Convert.ToUInt32(absoluteOffset),
             effectiveSize
           );
           entryDataPtrs[file] = dataPtr;
@@ -601,19 +669,15 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
 
   private static string? ReadString(List<FileBlock> blocks, uint ptr) {
     foreach (var fb in blocks.Where(fb => fb.TypeIndex == 0)) {
-      if (fb.Data == null) continue;
-      if (ptr < fb.RelativeOffset || ptr >= fb.RelativeOffset + fb.Size) continue;
+      if (fb.Data == null || !TryGetBlockOffset(fb, ptr, out var offset)) continue;
 
-      var offset = (int)(ptr - fb.RelativeOffset);
       var end = Array.IndexOf(fb.Data, (byte)0, offset);
       if (end < 0) end = fb.Data.Length;
       return Encoding.ASCII.GetString(fb.Data, offset, end - offset);
     }
     foreach (var fb in blocks) {
-      if (fb.Data == null) continue;
-      if (ptr < fb.RelativeOffset || ptr >= fb.RelativeOffset + fb.Size) continue;
+      if (fb.Data == null || !TryGetBlockOffset(fb, ptr, out var offset)) continue;
 
-      var offset = (int)(ptr - fb.RelativeOffset);
       var end = Array.IndexOf(fb.Data, Convert.ToByte(0), offset);
       if (end < 0) end = fb.Data.Length;
       return Encoding.ASCII.GetString(fb.Data, offset, end - offset);

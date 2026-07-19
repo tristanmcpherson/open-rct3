@@ -24,15 +24,11 @@ public static class WaterRegionTracer {
   ];
 
   /// <summary>
-  /// Attempts to trace the exact connected region fillable at <paramref name="proposedHeight"/>.
+  /// Attempts to trace the exact connected region fillable from the seed tile.
   /// </summary>
   /// <param name="terrain">Terrain whose OOB-inclusive tile grid bounds the walk.</param>
   /// <param name="seedX">Seed tile X index.</param>
   /// <param name="seedY">Seed tile Y index.</param>
-  /// <param name="proposedHeight">
-  /// Proposed surface height in signed terrain-height units. It is snapped upward to the nearest
-  /// 1 m increment before terrain is tested.
-  /// </param>
   /// <param name="isTileOccupied">
   /// Query returning whether a tile already belongs to a water pool. Occupied tiles are barriers and
   /// an occupied seed rejects the trace.
@@ -41,14 +37,13 @@ public static class WaterRegionTracer {
   /// The immutable, deterministically ordered region and boundary, or <c>null</c> on rejection.
   /// </param>
   /// <returns>
-  /// <c>false</c> when the seed is off-grid, occupied, above the snapped surface, or the proposed
-  /// height cannot be represented after snapping; otherwise <c>true</c>.
+  /// <c>false</c> when the seed is off-grid, occupied, above the surface derived from its lowest
+  /// corner, or that corner cannot be represented after 1 m upward snapping; otherwise <c>true</c>.
   /// </returns>
   public static bool TryTrace(
     Terrain terrain,
     int seedX,
     int seedY,
-    int proposedHeight,
     Func<int, int, bool> isTileOccupied,
     out WaterRegionTraceResult? result) {
     ArgumentNullException.ThrowIfNull(terrain);
@@ -56,8 +51,9 @@ public static class WaterRegionTracer {
     result = null;
 
     if (!terrain.HasTile(seedX, seedY)) return false;
-    if (!TrySnapHeight(proposedHeight, out var height)) return false;
     if (isTileOccupied(seedX, seedY)) return false;
+    var lowestCorner = GetLowestCornerHeight(terrain, seedX, seedY);
+    if (!TrySnapHeight(lowestCorner, out var height)) return false;
     if (!IsFillable(terrain, seedX, seedY, height)) return false;
 
     var tileCount = checked(terrain.Width * terrain.Height);
@@ -113,6 +109,13 @@ public static class WaterRegionTracer {
     return true;
   }
 
+  private static int GetLowestCornerHeight(Terrain terrain, int tileX, int tileY) {
+    var lowest = int.MaxValue;
+    foreach (var corner in terrain.GetCorners(tileX, tileY))
+      if (corner.Height < lowest) lowest = corner.Height;
+    return lowest;
+  }
+
   private static WaterRegionBoundaryEdge[] GetBoundary(
     IEnumerable<(int X, int Y)> tiles,
     IReadOnlySet<(int X, int Y)> region) {
@@ -127,15 +130,15 @@ public static class WaterRegionTracer {
     return [.. boundary];
   }
 
-  private static bool TrySnapHeight(int proposedHeight, out int height) {
-    var remainder = proposedHeight % SurfaceHeightSnap;
+  private static bool TrySnapHeight(int cornerHeight, out int height) {
+    var remainder = cornerHeight % SurfaceHeightSnap;
     if (remainder == 0) {
-      height = proposedHeight;
+      height = cornerHeight;
       return true;
     }
 
     var adjustment = remainder > 0 ? SurfaceHeightSnap - remainder : -remainder;
-    var snapped = Convert.ToInt64(proposedHeight) + adjustment;
+    var snapped = Convert.ToInt64(cornerHeight) + adjustment;
     if (snapped > int.MaxValue) {
       height = default;
       return false;

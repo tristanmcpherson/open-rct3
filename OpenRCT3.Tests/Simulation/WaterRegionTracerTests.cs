@@ -23,7 +23,6 @@ public class WaterRegionTracerTests {
       terrain,
       -1,
       0,
-      proposedHeight: 0,
       (_, _) => {
         queryCount++;
         return false;
@@ -44,16 +43,31 @@ public class WaterRegionTracerTests {
   [TestCase(99, 100)]
   [TestCase(100, 100)]
   [TestCase(101, 200)]
-  public void TryTrace_SnapsProposedHeightUpToOneMeterGrid(
-    int proposedHeight,
+  public void TryTrace_SnapsSeedLowestCornerUpToOneMeterGrid(
+    int seedLowestCorner,
     int expectedHeight) {
     var terrain = NewTerrain();
-    SetTileHeight(terrain, (10, 10), -1000);
+    SetTileHeight(terrain, (10, 10), seedLowestCorner);
 
-    var traced = TryTrace(terrain, (10, 10), proposedHeight, out var result);
+    var traced = TryTrace(terrain, (10, 10), out var result);
 
     Assert.That(traced, Is.True);
     Assert.That(result!.Height, Is.EqualTo(expectedHeight));
+    Assert.That(result.Tiles, Is.EqualTo(new[] { (10, 10) }));
+  }
+
+  [Test]
+  public void TryTrace_DerivesSurfaceFromLowestSeedCorner() {
+    var terrain = NewTerrain();
+    terrain.SetCornerHeight(10, 10, TerrainCornerSlot.SouthWest, 101);
+    terrain.SetCornerHeight(10, 10, TerrainCornerSlot.SouthEast, 150);
+    terrain.SetCornerHeight(10, 10, TerrainCornerSlot.NorthWest, 199);
+    terrain.SetCornerHeight(10, 10, TerrainCornerSlot.NorthEast, 200);
+
+    var traced = TryTrace(terrain, (10, 10), out var result);
+
+    Assert.That(traced, Is.True);
+    Assert.That(result!.Height, Is.EqualTo(200));
     Assert.That(result.Tiles, Is.EqualTo(new[] { (10, 10) }));
   }
 
@@ -67,7 +81,7 @@ public class WaterRegionTracerTests {
     ];
     foreach (var tile in basin) SetTileHeight(terrain, tile, 100);
 
-    var traced = TryTrace(terrain, (11, 12), 200, out var result);
+    var traced = TryTrace(terrain, (11, 12), out var result);
 
     Assert.That(traced, Is.True);
     Assert.That(result!.Tiles, Is.EqualTo(basin));
@@ -104,7 +118,7 @@ public class WaterRegionTracerTests {
     SetTileHeight(terrain, (11, 10), 100);
     terrain.SetCornerHeight(11, 10, TerrainCornerSlot.NorthEast, 201);
 
-    var traced = TryTrace(terrain, (10, 10), 200, out var result);
+    var traced = TryTrace(terrain, (10, 10), out var result);
 
     Assert.That(traced, Is.True);
     Assert.That(result!.Tiles, Is.EqualTo(new[] { (10, 10) }));
@@ -125,14 +139,12 @@ public class WaterRegionTracerTests {
       terrain,
       10,
       10,
-      200,
       (x, y) => occupied.Contains((x, y)),
       out var result);
     var occupiedSeedTraced = WaterRegionTracer.TryTrace(
       terrain,
       11,
       10,
-      200,
       (x, y) => occupied.Contains((x, y)),
       out var occupiedSeedResult);
 
@@ -147,10 +159,10 @@ public class WaterRegionTracerTests {
   [Test]
   public void TryTrace_ClassifiesRegionReachingMapEdgeAsOcean() {
     var terrain = NewTerrain();
-    SetTileHeight(terrain, (1, 1), -200);
+    SetTileHeight(terrain, (1, 1), -150);
     SetTileHeight(terrain, (1, 0), -200);
 
-    var traced = TryTrace(terrain, (1, 1), -150, out var result);
+    var traced = TryTrace(terrain, (1, 1), out var result);
 
     Assert.That(traced, Is.True);
     Assert.That(result!.Height, Is.EqualTo(-100));
@@ -170,7 +182,6 @@ public class WaterRegionTracerTests {
       terrain,
       1,
       1,
-      0,
       (x, y) => (x, y) == (1, 0),
       out var result);
 
@@ -188,7 +199,6 @@ public class WaterRegionTracerTests {
       terrain,
       10,
       10,
-      0,
       (_, _) => {
         queryCount++;
         return false;
@@ -208,22 +218,67 @@ public class WaterRegionTracerTests {
     SetTileHeight(terrain, (10, 10), 0);
     terrain.SetCornerHeight(10, 10, TerrainCornerSlot.NorthWest, 201);
 
-    var traced = TryTrace(terrain, (10, 10), 200, out var result);
+    var traced = TryTrace(terrain, (10, 10), out var result);
 
     Assert.That(traced, Is.False);
     Assert.That(result, Is.Null);
   }
 
+  [Test]
+  public void TryTrace_RejectsLowestCornerWhoseUpwardSnapExceedsSignedRange() {
+    var terrain = NewTerrain();
+    SetTileHeight(terrain, (10, 10), int.MaxValue);
+
+    var traced = TryTrace(terrain, (10, 10), out var result);
+
+    Assert.That(traced, Is.False);
+    Assert.That(result, Is.Null);
+  }
+
+  [Test]
+  public void TryTrace_SnapsIntMinValueWithoutOverflow() {
+    var terrain = NewTerrain();
+    SetTileHeight(terrain, (10, 10), int.MinValue);
+
+    var traced = TryTrace(terrain, (10, 10), out var result);
+
+    Assert.That(traced, Is.True);
+    Assert.That(result!.Height, Is.EqualTo(int.MinValue + 48));
+    Assert.That(result.Tiles, Is.EqualTo(new[] { (10, 10) }));
+  }
+
+  [Test]
+  public void TraceResult_WithNegativeHeight_CanBePlacedWithoutConversion() {
+    var terrain = NewTerrain();
+    var park = new Park();
+    SetTileHeight(terrain, (10, 10), -150);
+
+    var traced = WaterRegionTracer.TryTrace(
+      terrain,
+      10,
+      10,
+      (x, y) => park.WaterTiles.ContainsKey((x, y)),
+      out var result);
+
+    Assert.That(traced, Is.True);
+    var placed = park.TryPlaceWaterPool(
+      result!.Tiles,
+      result.Height,
+      terrain,
+      result.IsOcean);
+
+    Assert.That(placed, Is.True);
+    Assert.That(park.WaterPools[0].Height, Is.EqualTo(-100));
+  }
+
   private static bool TryTrace(
     Terrain terrain,
     (int X, int Y) seed,
-    int proposedHeight,
     out WaterRegionTraceResult? result)
     => WaterRegionTracer.TryTrace(
       terrain,
       seed.X,
       seed.Y,
-      proposedHeight,
       (_, _) => false,
       out result);
 

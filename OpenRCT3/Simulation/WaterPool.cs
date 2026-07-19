@@ -23,8 +23,10 @@ namespace OpenRCT3.Simulation;
 /// </para>
 /// </remarks>
 public class WaterPool {
-  /// <summary>The pool's flat water-surface height, in <see cref="Terrain.HeightStep"/> units.</summary>
-  public ushort Height { get; }
+  /// <summary>
+  /// The pool's flat, signed water-surface height in <see cref="Terrain.HeightStep"/> units.
+  /// </summary>
+  public int Height { get; }
 
   /// <summary>
   /// Whether this pool is an ocean: its traced region reached the edge of the OOB-inclusive grid (the
@@ -37,7 +39,7 @@ public class WaterPool {
   /// <summary>The set of tiles this pool covers, in the OOB-inclusive grid.</summary>
   public IReadOnlySet<(int X, int Y)> Tiles { get; }
 
-  public WaterPool(ushort height, IEnumerable<(int X, int Y)> tiles, bool isOcean = false) {
+  public WaterPool(int height, IEnumerable<(int X, int Y)> tiles, bool isOcean = false) {
     Height = height;
     IsOcean = isOcean;
     Tiles = tiles as IReadOnlySet<(int X, int Y)> ?? new HashSet<(int X, int Y)>(tiles);

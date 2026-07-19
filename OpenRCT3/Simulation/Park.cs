@@ -206,7 +206,11 @@ public class Park {
   /// <c>true</c> if the pool was placed; <c>false</c> if <paramref name="tiles"/> is empty, any tile is
   /// off-grid, or any tile already belongs to another pool.
   /// </returns>
-  public bool TryPlaceWaterPool(IEnumerable<(int X, int Y)> tiles, ushort height, Terrain terrain, bool isOcean = false) {
+  public bool TryPlaceWaterPool(
+    IEnumerable<(int X, int Y)> tiles,
+    int height,
+    Terrain terrain,
+    bool isOcean = false) {
     var tileList = tiles as ICollection<(int X, int Y)> ?? [.. tiles];
     if (tileList.Count == 0) return false;
 

@@ -137,6 +137,37 @@ public class Mesh(List<Vertex> vertices, List<uint> indices) : IResource {
   }
 
   /// <summary>
+  /// Releases handles owned by the current GPU context while preserving CPU geometry for re-upload.
+  /// </summary>
+  public void ResetUpload() {
+    if (State == State.Disposed) return;
+    if (Vao == 0 && Vbo == 0 && Ebo == 0) {
+      State = State.Uninitialized;
+      return;
+    }
+    ResetUpload(new SilkGpuApi(IGame.IoC.Resolve<GL>()));
+  }
+
+  /// <summary>
+  /// Releases context-bound handles through a renderer-provided GPU API.
+  /// Successfully released handles are cleared immediately; failures remain owned for retry.
+  /// </summary>
+  public void ResetUpload(IGpuApi gpu) {
+    if (State == State.Disposed) return;
+    if (Vao == 0 && Vbo == 0 && Ebo == 0) {
+      State = State.Uninitialized;
+      return;
+    }
+
+    var errors = new List<Exception>();
+    if (Ebo != 0 && TryRelease(() => gpu.DeleteBuffer(Ebo), errors)) Ebo = 0;
+    if (Vbo != 0 && TryRelease(() => gpu.DeleteBuffer(Vbo), errors)) Vbo = 0;
+    if (Vao != 0 && TryRelease(() => gpu.DeleteVertexArray(Vao), errors)) Vao = 0;
+    if (Vao == 0 && Vbo == 0 && Ebo == 0) State = State.Uninitialized;
+    if (errors.Count > 0) throw new AggregateException(errors);
+  }
+
+  /// <summary>
   /// Releases every owned GPU handle once, even when an individual deletion fails.
   /// </summary>
   public void Dispose(IGpuApi gpu) {
@@ -188,11 +219,13 @@ public class Mesh(List<Vertex> vertices, List<uint> indices) : IResource {
       throw new InvalidOperationException($"GPU allocation returned a zero {resource} handle.");
   }
 
-  private static void TryRelease(Action release, List<Exception> errors) {
+  private static bool TryRelease(Action release, List<Exception> errors) {
     try {
       release();
+      return true;
     } catch (Exception error) {
       errors.Add(error);
+      return false;
     }
   }
 

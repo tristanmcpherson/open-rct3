@@ -11,6 +11,7 @@ using NLog;
 using OpenCobra.GDK;
 using OpenCobra.GDK.GUI;
 using OpenCobra.GDK.Materials;
+using OpenCobra.GDK.Meshes;
 using OpenCobra.GDK.Platform;
 using OpenCobra.GDK.Shaders;
 using OpenCobra.GDK.Threading;
@@ -31,6 +32,7 @@ public class Renderer : ThreadAffine, IRenderer {
   private readonly Controller gui = Game.IoC.Resolve<Controller>();
   private readonly ResourceCache<MaterialCacheKey, ShaderProgram> shaders;
   private readonly ResourceCache<TextureCacheKey, uint> textures;
+  private readonly ContextResourceRegistry<Mesh> uploadedMeshes = new();
   private readonly HashSet<Materials.Texture> uploadedTextures = [];
   private bool? appliedVSync;
 
@@ -67,8 +69,9 @@ public class Renderer : ThreadAffine, IRenderer {
 
     var releases = new List<Action>();
     if (disposeScene != null) releases.Add(disposeScene);
-    if (State != State.Disposed) {
-      releases.Add(() => State = State.Disposed);
+    var ownsContextResources = State != State.Disposed;
+    if (ownsContextResources) {
+      releases.Add(() => uploadedMeshes.Reset(mesh => mesh.ResetUpload()));
       releases.Add(shaders.Dispose);
       releases.Add(textures.Dispose);
       releases.Add(() => {
@@ -79,6 +82,7 @@ public class Renderer : ThreadAffine, IRenderer {
     if (disposeContext != null) releases.Add(disposeContext);
     if (disposeGl != null) releases.Add(disposeGl);
     RendererTeardown.Run(context, releases);
+    if (ownsContextResources) State = State.Disposed;
   });
 
   public void Render(Scene scene) => Invoke(() => {
@@ -192,6 +196,7 @@ public class Renderer : ThreadAffine, IRenderer {
       if (!shaderProgram.Uniforms.Contains(camera)) shaderProgram.Uniforms.Add(camera);
       // Upload mesh data
       model.Mesh.Upload(shaderProgram.Shader);
+      uploadedMeshes.Track(model.Mesh);
     }
   }
 
@@ -310,6 +315,27 @@ internal sealed class ResourceCache<TKey, TResource>(Action<TResource> release) 
   }
 }
 
+internal sealed class ContextResourceRegistry<T> where T : class {
+  private readonly HashSet<T> resources = new(ReferenceEqualityComparer.Instance);
+
+  public int Count => resources.Count;
+
+  public void Track(T resource) => resources.Add(resource);
+
+  public void Reset(Action<T> reset) {
+    var errors = new List<Exception>();
+    foreach (var resource in resources.ToArray()) {
+      try {
+        reset(resource);
+        resources.Remove(resource);
+      } catch (Exception error) {
+        errors.Add(error);
+      }
+    }
+    if (errors.Count > 0) throw new AggregateException(errors);
+  }
+}
+
 internal static class RendererTeardown {
   public static void Run(IGLContext context, IEnumerable<Action> releases) {
     context.MakeCurrent();
@@ -361,7 +387,8 @@ internal sealed class WindowsSurfaceResourceOwner {
   public void OwnGl(Action release) => resources.Own(60, release);
   public void OwnInput(Action release) => resources.Own(30, release);
   public void OwnController(Action release) => resources.Own(20, release, true);
-  public void OwnRenderer(Action release) => resources.Own(10, release, true);
+  public void OwnRenderer(Action release) =>
+    resources.Own(10, release, requiresCurrent: true, retryOnFailure: true);
   public void Dispose(IGLContext context) => resources.Dispose(context);
 }
 

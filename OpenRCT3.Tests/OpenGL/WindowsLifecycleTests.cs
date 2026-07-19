@@ -212,6 +212,44 @@ public class WindowsLifecycleTests {
   }
 
   [Test]
+  public void RendererReleaseFailure_RetainsContextAndHdcForStatefulRetry() {
+    var released = new List<string>();
+    var resources = new WindowsSurfaceResourceOwner();
+    var context = new StatefulGlContext(released);
+    var rendererAttempts = 0;
+    resources.OwnRenderer(() => {
+      rendererAttempts++;
+      released.Add("renderer");
+      if (rendererAttempts == 1)
+        throw new InvalidOperationException("Injected mesh deletion failure.");
+    });
+    resources.OwnContext(context.ReleaseContext);
+    resources.OwnDeviceContext(context.ReleaseDeviceContext);
+    resources.OwnGl(() => released.Add("gl"));
+
+    Assert.Throws<AggregateException>(new Action(() => resources.Dispose(context)));
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(resources.HasPending, Is.True);
+      Assert.That(context.NativeContextAlive, Is.True);
+      Assert.That(context.DeviceContextAlive, Is.True);
+      Assert.That(released, Is.EqualTo(new[] { "make-current", "renderer" }));
+    }
+
+    resources.Dispose(context);
+    resources.Dispose(context);
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(resources.HasPending, Is.False);
+      Assert.That(context.NativeContextAlive, Is.False);
+      Assert.That(context.DeviceContextAlive, Is.False);
+      Assert.That(rendererAttempts, Is.EqualTo(2));
+      Assert.That(released, Is.EqualTo(new[] {
+        "make-current", "renderer", "make-current", "renderer",
+        "delete-context", "context", "release-device-context", "device-context", "gl",
+      }));
+    }
+  }
+
+  [Test]
   public void DeviceContextReleaseFailure_RetainsHdcAndLaterOwnersForRetry() {
     var released = new List<string>();
     var resources = new WindowsSurfaceResourceOwner();

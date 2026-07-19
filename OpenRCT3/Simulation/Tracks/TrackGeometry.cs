@@ -26,7 +26,8 @@ public enum TrackPieceAuthoringMode {
 
 /// <summary>
 /// The paired control data at one normalized position along a track piece. Tangents are derivatives
-/// with respect to <see cref="Parameter"/>, not normalized direction vectors.
+/// with respect to <see cref="Parameter"/>, not normalized direction vectors. Bank angles are
+/// unwrapped, so a difference of two pi radians explicitly authors one complete roll.
 /// </summary>
 public readonly record struct RailControlPair(
   float Parameter,
@@ -224,13 +225,13 @@ internal static class TrackMath {
       && float.IsFinite(value.M41) && float.IsFinite(value.M42) && float.IsFinite(value.M43)
       && float.IsFinite(value.M44);
 
-  public static float AngleDelta(float start, float end) {
+  public static float ShortestAngleDelta(float start, float end) {
     var delta = (end - start) % TwoPi;
     if (delta > MathF.PI) delta -= TwoPi;
     if (delta < -MathF.PI) delta += TwoPi;
     return delta;
   }
 
-  public static float LerpAngle(float start, float end, float amount)
-    => start + (AngleDelta(start, end) * amount);
+  public static float LerpUnwrapped(float start, float end, float amount)
+    => start + ((end - start) * amount);
 }

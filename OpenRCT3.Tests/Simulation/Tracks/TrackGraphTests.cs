@@ -93,6 +93,22 @@ public class TrackGraphTests {
   }
 
   [Test]
+  public void Constructor_RejectsTinyOppositeJoinTangents() {
+    var first = new TrackNode("first");
+    var join = new TrackNode("join");
+    var last = new TrackNode("last");
+    var tinyTangent = new Vector3(0.00001f, 0f, 0f);
+    var joinPosition = new Vector3(0.00001f, 0f, 0f);
+    var incoming = Piece(Vector3.Zero, joinPosition, tinyTangent, tinyTangent);
+    var outgoing = Piece(joinPosition, Vector3.Zero, -tinyTangent, -tinyTangent);
+
+    Assert.Throws<ArgumentException>(new Action(() => new TrackGraph(
+      [first, join, last],
+      [new("incoming", first, join, incoming), new("outgoing", join, last, outgoing)]
+    )));
+  }
+
+  [Test]
   public void Constructor_RejectsUnregisteredEdgeEndpoint() {
     var registered = new TrackNode("registered");
     var missing = new TrackNode("missing");

@@ -184,9 +184,22 @@ public sealed class TrackGraph {
     string nodeId,
     RailSide side
   ) {
+    var expectedMagnitude = expected.Tangent.Length();
+    var actualMagnitude = actual.Tangent.Length();
+    var directionDifference = Vector3.Distance(
+      expected.Tangent / expectedMagnitude,
+      actual.Tangent / actualMagnitude
+    );
+    var magnitudeScale = MathF.Max(expectedMagnitude, actualMagnitude);
+    var magnitudeDifference = MathF.Abs(expectedMagnitude - actualMagnitude) / magnitudeScale;
+
     if (Vector3.Distance(expected.Position, actual.Position) > positionTolerance
-        || Vector3.Distance(expected.Tangent, actual.Tangent) > tangentTolerance
-        || MathF.Abs(TrackMath.AngleDelta(expected.BankRadians, actual.BankRadians)) > bankTolerance)
+        || directionDifference > tangentTolerance
+        || magnitudeDifference > tangentTolerance
+        || MathF.Abs(TrackMath.ShortestAngleDelta(
+          expected.BankRadians,
+          actual.BankRadians
+        )) > bankTolerance)
       throw new ArgumentException(
         $"Track pieces do not form a C1-continuous {side} rail join at node '{nodeId}'."
       );

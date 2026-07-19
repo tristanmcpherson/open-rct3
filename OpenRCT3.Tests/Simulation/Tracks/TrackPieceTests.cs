@@ -101,6 +101,68 @@ public class TrackPieceTests {
   }
 
   [Test]
+  public void FullRoll_PreservesUnwrappedBankThroughBakeAndSampling() {
+    var fullTurn = MathF.PI * 2f;
+    var piece = new TrackPiece(
+      TrackPieceGeometry.FromHandAuthored([
+        Pair(0f, Vector3.Zero, new(10f, 0f, 0f), Vector3.UnitY, bank: 0f),
+        Pair(1f, new(10f, 0f, 0f), new(10f, 0f, 0f), Vector3.UnitY, bank: fullTurn),
+      ]),
+      Matrix4x4.Identity,
+      new(
+        ChordToleranceGaugeFraction: 0f,
+        MinimumChordTolerance: 1f,
+        MaximumBankAngleChangeRadians: 0.2f,
+        MaximumSubdivisionDepth: 12
+      )
+    );
+
+    var quarter = piece.SampleRail(RailSide.Left, piece.Length * 0.25f);
+    var sample = piece.SampleRail(RailSide.Left, piece.Length * 0.3f);
+    var exit = piece.SampleRail(RailSide.Left, piece.Length);
+    var quarterLateral = Vector3.Transform(Vector3.UnitY, quarter.Orientation);
+
+    Assert.That(piece.BakedSampleCount, Is.GreaterThan(2));
+    Assert.That(quarter.BankRadians, Is.EqualTo(MathF.PI / 2f).Within(0.0001f));
+    Assert.That(Vector3.Dot(quarterLateral, Vector3.UnitZ), Is.GreaterThan(0.9999f));
+    Assert.That(sample.BankRadians, Is.EqualTo(fullTurn * 0.3f).Within(0.0001f));
+    Assert.That(exit.BankRadians, Is.EqualTo(fullTurn).Within(0.0001f));
+  }
+
+  [Test]
+  public void Constructor_RejectsStationaryInteriorDerivativeOnShortSpan() {
+    var shortSpan = TrackPieceGeometry.FromHandAuthored([
+      Pair(0f, Vector3.Zero, new(0.003f, 0f, 0f), Vector3.UnitY),
+      Pair(1f, new(0.001f, 0f, 0f), new(0.003f, 0f, 0f), Vector3.UnitY),
+    ]);
+
+    Assert.Throws<ArgumentException>(new Action(() => new TrackPiece(shortSpan)));
+  }
+
+  [Test]
+  public void SampleRail_OrientationForwardMatchesHermiteTangentOnCoarseBake() {
+    var piece = new TrackPiece(
+      TrackPieceGeometry.FromHandAuthored([
+        Pair(0f, Vector3.Zero, new(2f, 0f, 0f), Vector3.UnitZ),
+        Pair(1f, new(1f, 1f, 0f), new(0f, 0.2f, 0f), Vector3.UnitZ),
+      ]),
+      Matrix4x4.Identity,
+      new(
+        ChordToleranceGaugeFraction: 0f,
+        MinimumChordTolerance: 100f,
+        MaximumBankAngleChangeRadians: MathF.PI,
+        MaximumSubdivisionDepth: 12
+      )
+    );
+
+    var sample = piece.SampleRail(RailSide.Left, piece.Length * 0.5f);
+    var orientationForward = Vector3.Transform(Vector3.UnitX, sample.Orientation);
+
+    Assert.That(piece.BakedSampleCount, Is.EqualTo(2));
+    Assert.That(Vector3.Dot(orientationForward, sample.Tangent), Is.GreaterThan(0.9999f));
+  }
+
+  [Test]
   public void HandAuthoredGeometry_RejectsMalformedRailPairs() {
     Assert.Throws<ArgumentException>(new Action(() =>
       TrackPieceGeometry.FromHandAuthored([

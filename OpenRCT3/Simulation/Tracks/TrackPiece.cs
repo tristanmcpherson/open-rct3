@@ -184,6 +184,7 @@ public sealed class TrackPiece {
     var midpoint = EvaluatePair(midpointParameter);
     var thirdQuarter = EvaluatePair(thirdQuarterParameter);
     var end = EvaluatePair(endParameter);
+    ValidateRegularity([start, firstQuarter, midpoint, thirdQuarter, end]);
 
     var leftDeviation = MaximumChordDeviation(
       start.Left.Position,
@@ -199,10 +200,7 @@ public sealed class TrackPiece {
       thirdQuarter.Right.Position,
       end.Right.Position
     );
-    var bankChange = MathF.Abs(TrackMath.AngleDelta(
-      start.Left.BankRadians,
-      end.Left.BankRadians
-    ));
+    var bankChange = MathF.Abs(end.Left.BankRadians - start.Left.BankRadians);
     var needsSubdivision = MathF.Max(leftDeviation, rightDeviation) > chordTolerance
       || bankChange > BakeSettings.MaximumBankAngleChangeRadians;
 
@@ -233,6 +231,24 @@ public sealed class TrackPiece {
         Vector3.Distance(thirdQuarter, Vector3.Lerp(start, end, 0.75f))
       )
     );
+
+  private static void ValidateRegularity(IReadOnlyList<RailPairEvaluation> evaluations) {
+    var derivativeScale = evaluations.Max(pair => MathF.Max(
+      pair.Left.Derivative.Length(),
+      pair.Right.Derivative.Length()
+    ));
+    var minimumDerivative = MathF.Max(TrackMath.Epsilon, derivativeScale * 0.00001f);
+
+    foreach (var pair in evaluations) {
+      var centerDerivative = (pair.Left.Derivative + pair.Right.Derivative) * 0.5f;
+      if (pair.Left.Derivative.Length() <= minimumDerivative
+          || pair.Right.Derivative.Length() <= minimumDerivative
+          || centerDerivative.Length() <= minimumDerivative)
+        throw new ArgumentException(
+          "A track piece cannot contain a stationary or near-stationary spline tangent."
+        );
+    }
+  }
 
   private RailPairEvaluation EvaluatePair(float parameter)
     => new(leftSpline.Evaluate(parameter), rightSpline.Evaluate(parameter));
@@ -273,17 +289,59 @@ public sealed class TrackPiece {
       + ((3f * amountSquared) - (4f * amount) + 1f) * startTangent
       + ((-6f * amountSquared) + (6f * amount)) * end.Position
       + ((3f * amountSquared) - (2f * amount)) * endTangent;
-    var tangent = derivative.LengthSquared() > TrackMath.Epsilon
-      ? Vector3.Normalize(derivative)
-      : Vector3.Normalize(Vector3.Lerp(start.Tangent, end.Tangent, amount));
+    var tangentSource = derivative;
+    if (tangentSource.LengthSquared() <= TrackMath.Epsilon)
+      tangentSource = Vector3.Lerp(start.Tangent, end.Tangent, amount);
+    if (tangentSource.LengthSquared() <= TrackMath.Epsilon)
+      tangentSource = amount < 0.5f ? start.Tangent : end.Tangent;
+    var tangent = Vector3.Normalize(tangentSource);
+    var lateral = InterpolateLateral(start, end, tangent, amount);
 
     return new(
       arcLength,
       position,
       tangent,
-      Quaternion.Normalize(Quaternion.Slerp(start.Orientation, end.Orientation, amount)),
-      TrackMath.LerpAngle(start.BankRadians, end.BankRadians, amount)
+      CreateOrientation(tangent, lateral),
+      TrackMath.LerpUnwrapped(start.BankRadians, end.BankRadians, amount)
     );
+  }
+
+  private static Vector3 InterpolateLateral(
+    BakedRailPoint start,
+    BakedRailPoint end,
+    Vector3 tangent,
+    float amount
+  ) {
+    var lateral = Vector3.Lerp(start.Lateral, end.Lateral, amount);
+    lateral -= Vector3.Dot(lateral, tangent) * tangent;
+    if (lateral.LengthSquared() > TrackMath.Epsilon) return Vector3.Normalize(lateral);
+
+    var source = amount < 0.5f ? start : end;
+    var axis = Vector3.Cross(source.Tangent, tangent);
+    if (axis.LengthSquared() <= TrackMath.Epsilon) {
+      lateral = source.Lateral - (Vector3.Dot(source.Lateral, tangent) * tangent);
+      return Vector3.Normalize(lateral);
+    }
+
+    axis = Vector3.Normalize(axis);
+    var angle = MathF.Acos(Math.Clamp(Vector3.Dot(source.Tangent, tangent), -1f, 1f));
+    lateral = Vector3.Transform(
+      source.Lateral,
+      Quaternion.CreateFromAxisAngle(axis, angle)
+    );
+    lateral -= Vector3.Dot(lateral, tangent) * tangent;
+    return Vector3.Normalize(lateral);
+  }
+
+  private static Quaternion CreateOrientation(Vector3 tangent, Vector3 lateral) {
+    var up = Vector3.Normalize(Vector3.Cross(tangent, lateral));
+    var orientationMatrix = new Matrix4x4(
+      tangent.X, tangent.Y, tangent.Z, 0f,
+      lateral.X, lateral.Y, lateral.Z, 0f,
+      up.X, up.Y, up.Z, 0f,
+      0f, 0f, 0f, 1f
+    );
+    return Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(orientationMatrix));
   }
 
   private static RailControlPair Transform(RailControlPair point, Matrix4x4 placement)
@@ -321,7 +379,7 @@ public sealed class TrackPiece {
     Vector3 Position,
     Vector3 Tangent,
     Vector3 DerivativePerArc,
-    Quaternion Orientation,
+    Vector3 Lateral,
     float BankRadians
   ) {
     public static BakedRailPoint Create(
@@ -337,25 +395,18 @@ public sealed class TrackPiece {
 
       var bankRotation = Quaternion.CreateFromAxisAngle(tangent, rail.BankRadians);
       right = Vector3.Normalize(Vector3.Transform(right, bankRotation));
-      var up = Vector3.Normalize(Vector3.Cross(tangent, right));
-      var orientationMatrix = new Matrix4x4(
-        tangent.X, tangent.Y, tangent.Z, 0f,
-        right.X, right.Y, right.Z, 0f,
-        up.X, up.Y, up.Z, 0f,
-        0f, 0f, 0f, 1f
-      );
 
       return new(
         rail.Position,
         tangent,
         rail.Derivative / centerArcDerivative,
-        Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(orientationMatrix)),
+        right,
         rail.BankRadians
       );
     }
 
     public RailSample ToSample(float arcLength)
-      => new(arcLength, Position, Tangent, Orientation, BankRadians);
+      => new(arcLength, Position, Tangent, CreateOrientation(Tangent, Lateral), BankRadians);
   }
 }
 
@@ -410,7 +461,7 @@ internal sealed class HermiteRailSpline {
     return new(
       position,
       derivative,
-      TrackMath.LerpAngle(start.BankRadians, end.BankRadians, amount)
+      TrackMath.LerpUnwrapped(start.BankRadians, end.BankRadians, amount)
     );
   }
 }

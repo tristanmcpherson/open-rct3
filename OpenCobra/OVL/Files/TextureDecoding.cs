@@ -407,10 +407,12 @@ internal static class TextureDecoding {
     // Hop 2: FlicPtr is a double pointer - flicSlot is itself a relocatable location, and the value
     // stored there is the FLIC loader's own (equally relocation-gated) data address.
     if (!ovl.TryGetRelocationSource(flicSlot, out var flicAddr))
-      return null;
+      throw new InvalidDataException(
+        $"'{name}' FLIC pointer slot {flicSlot:X} is not relocation-resolved");
 
     if (!ovl.TryReadExtraData(flicAddr, out var chunks) || chunks.Count == 0)
-      return null;
+      throw new InvalidDataException(
+        $"'{name}' FLIC address {flicAddr:X} has no extra-data chunk");
 
     var bitmapTable = bitmapTablesByFlicAddress?.GetValueOrDefault(flicAddr);
     var texture = ReadFlic(name, chunks[0], bitmapTable);
@@ -456,6 +458,10 @@ internal static class TextureDecoding {
       throw new InvalidDataException($"'{name}' has zero dimensions ({header.Width}x{header.Height})");
 
     var format = header.Format;
+    if (format is not TextureFormat.A8R8G8B8
+        and not TextureFormat.Dxt1 and not TextureFormat.Dxt3 and not TextureFormat.Dxt5)
+      throw new InvalidDataException($"'{name}' uses unsupported format {format}");
+    ValidateDimensions(name, header.Width, header.Height);
     // Reference (ManagerFLIC.cpp; rct3tex.cpp::ReadTexture) doesn't trust the header's MipCount:
     // it pre-reads the first FlicMipHeader, then loops while (width && height && pitch && blocks)
     // are all non-zero, reading a new mip header at the tail of each iteration. A mip is
@@ -522,7 +528,6 @@ internal static class TextureDecoding {
     using var headerReader = new BinaryReader(headerMs);
     if (headerReader.Read<BitmapTable>(out var table) != Marshal.SizeOf<BitmapTable>())
       throw new InvalidDataException($"'{name}' bitmap table header is truncated");
-    if (table.Length == 0) return [];
 
     if (!ovl.TryReadExtraData(file, out var chunks))
       throw new InvalidOperationException($"Failed to resolve bitmap table data for {name}");
@@ -540,7 +545,6 @@ internal static class TextureDecoding {
     using var headerReader = new BinaryReader(headerMs);
     if (headerReader.Read<BitmapTable>(out var table) != Marshal.SizeOf<BitmapTable>())
       throw new InvalidDataException($"'{name}' bitmap table header is truncated");
-    if (table.Length == 0) return [];
 
     if (!ovl.TryReadExtraData(dataAddress, out var chunks))
       throw new InvalidOperationException($"Failed to resolve bitmap table data at {dataAddress:X}");
@@ -579,6 +583,7 @@ internal static class TextureDecoding {
         if (flic.Width == 0 || flic.Height == 0)
           throw new InvalidDataException(
             $"'{name}' bitmap table entry {i} has zero dimensions ({flic.Width}x{flic.Height})");
+        ValidateDimensions($"{name} bitmap table entry {i}", flic.Width, flic.Height);
         if (flic.MipCount == 0 || flic.MipCount > 32)
           throw new InvalidDataException(
             $"'{name}' bitmap table entry {i} has invalid mip count {flic.MipCount}");
@@ -628,5 +633,12 @@ internal static class TextureDecoding {
       foreach (var texture in textures) texture?.Dispose();
       throw;
     }
+  }
+
+  private static void ValidateDimensions(string name, uint width, uint height) {
+    var pixels = Convert.ToUInt64(width) * Convert.ToUInt64(height);
+    if (width > int.MaxValue || height > int.MaxValue || pixels > int.MaxValue)
+      throw new InvalidDataException(
+        $"'{name}' dimensions {width}x{height} exceed the supported image size");
   }
 }

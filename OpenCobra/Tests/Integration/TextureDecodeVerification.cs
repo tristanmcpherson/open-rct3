@@ -27,7 +27,7 @@ public class TextureDecodeVerification {
 
   [Test]
   [SkipIfEnvironmentMissing("RCT3_PATH", "Cannot find RCT3. Skipping integration test.")]
-  public void MainCommonOvl_TexEntries_DecodeAfterRelocationFix() {
+  public void MainCommonOvl_DecodesAllBackedTexEntries() {
     var rct3 = Rct3Path()!;
     var mainPath = Path.Combine(rct3, "Main.common.ovl");
     Assert.That(File.Exists(mainPath), Is.True, $"Main.common.ovl not found at: {mainPath}");
@@ -35,19 +35,29 @@ public class TextureDecodeVerification {
     using var ovl = Ovl.Load(mainPath);
     var texEntries = ovl.Keys.Where(key => key.Type == FileType.Texture).ToList();
     using var textures = Textures.Extract(ovl);
-    var decodedTexNames = texEntries.Select(entry => entry.ToString()).Intersect(textures.Names).ToList();
+    var decodedNames = textures.Names.ToHashSet();
+    var decodedTexNames = texEntries.Select(entry => entry.ToString()).Where(decodedNames.Contains).ToList();
+    var textureless = texEntries.Where(entry => !decodedNames.Contains(entry.ToString())).ToList();
 
     TestContext.Out.WriteLine(
       $"Main.common.ovl: {texEntries.Count} Texture entries, {decodedTexNames.Count} genuine entries decoded");
+    foreach (var entry in textureless) {
+      Assert.That(ovl.TryGetDataPointer(entry, out var texAddress), Is.True);
+      var hasFlicRelocation = ovl.TryGetRelocationSource(texAddress + 52, out _);
+      TestContext.Out.WriteLine($"Textureless: {entry.Name}; FlicPtr relocation={hasFlicRelocation}");
+      Assert.That(hasFlicRelocation, Is.False,
+        $"Undecoded texture '{entry}' has a backing FLIC relocation and needs investigation");
+    }
 
     Assert.That(texEntries, Has.Count.EqualTo(84), "Expected 84 Texture entries per bug doc Part 4");
-    Assert.That(decodedTexNames, Is.Not.Empty,
-      "Expected at least one genuine Main.common.ovl Texture entry to decode after the relocation-table fix");
+    Assert.That(decodedTexNames, Has.Count.EqualTo(76));
+    Assert.That(textureless, Has.Count.EqualTo(8),
+      "Expected the remaining entries to be textureless TEX records without FLIC relocations");
   }
 
   [Test]
   [SkipIfEnvironmentMissing("RCT3_PATH", "Cannot find RCT3. Skipping integration test.")]
-  public void Af01BodyMain_GenuineTexEntry_DecodesAfterRelocationFix() {
+  public void Af01BodyMain_StandaloneTexEntry_Decodes() {
     var rct3 = Rct3Path()!;
     var path = Path.Combine(rct3, "Characters", "AF", "AF01_Body_Main.common.ovl");
     Assert.That(File.Exists(path), Is.True, $"AF01_Body_Main.common.ovl not found at: {path}");
@@ -65,7 +75,8 @@ public class TextureDecodeVerification {
     TestContext.Out.WriteLine($"Decoded: {string.Join(", ", textures.Names)}");
     var decodedTexNames = texEntries.Select(entry => entry.ToString()).Intersect(textures.Names).ToList();
 
-    Assert.That(decodedTexNames, Is.Not.Empty,
-      "Expected the genuine tex entry to decode after the relocation-table fix");
+    Assert.That(texEntries, Has.Count.EqualTo(1));
+    Assert.That(decodedTexNames, Has.Count.EqualTo(1),
+      "Expected the genuine standalone TEX entry to remain decodable");
   }
 }

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.InteropServices;
 using NUnit.Framework;
 using OpenCobra.OVL;
@@ -57,11 +58,81 @@ public class TextureDecodingTests {
   }
 
   [Test]
+  public void ReadTexture_WithoutFlicRelocation_IsTextureless() {
+    using var ovl = new Ovl("textureless");
+
+    var texture = TextureDecoding.ReadTexture(
+      "textureless", ovl, 0, new byte[Marshal.SizeOf<Tex>()], null);
+
+    Assert.That(texture, Is.Null);
+  }
+
+  [Test]
+  public void ReadTexture_RejectsUnresolvedSecondPointerHop() {
+    using var ovl = new Ovl("unresolved");
+    Relocations(ovl)[52] = 1234;
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      TextureDecoding.ReadTexture(
+        "unresolved", ovl, 0, new byte[Marshal.SizeOf<Tex>()], null)));
+  }
+
+  [Test]
+  public void ReadTexture_RejectsResolvedFlicWithoutExtraData() {
+    using var ovl = new Ovl("missing-extra-data");
+    Relocations(ovl)[52] = 1234;
+    Relocations(ovl)[1234] = 5678;
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      TextureDecoding.ReadTexture(
+        "missing-extra-data", ovl, 0, new byte[Marshal.SizeOf<Tex>()], null)));
+  }
+
+  [Test]
   public void ReadFlic_RejectsTruncatedMipHeader() {
     var header = WriteUInt32s(Convert.ToUInt32(TextureFormat.Dxt1), 4, 4, 1);
 
     Assert.Throws<InvalidDataException>(new Action(() =>
       TextureDecoding.ReadFlic("truncated", header)));
+  }
+
+  [Test]
+  public void ReadFlic_DecodesStandaloneBaseMipAndStopsAtSentinel() {
+    byte[] dxt1Block = [0x00, 0xF8, 0x1F, 0x00, 0, 0, 0, 0];
+    var chunk = WriteUInt32s(
+      Convert.ToUInt32(TextureFormat.Dxt1), 4, 4, 1,
+      4, 4, 8, 1,
+      0x001FF800, 0,
+      0, 0, 0, 0);
+    Assert.That(chunk.AsSpan(32, 8).ToArray(), Is.EqualTo(dxt1Block));
+
+    using var texture = TextureDecoding.ReadFlic("standalone", chunk);
+
+    Assert.That(texture.Width, Is.EqualTo(4));
+    Assert.That(texture.Height, Is.EqualTo(4));
+    Assert.That(texture.MipLevels[0][0, 0], Is.EqualTo(new Rgba32(255, 0, 0, 255)));
+  }
+
+  [Test]
+  public void ReadFlic_RejectsImpossibleMipPayloadSize() {
+    var chunk = WriteUInt32s(
+      Convert.ToUInt32(TextureFormat.Dxt1), 4, 4, 1,
+      4, 4, uint.MaxValue, uint.MaxValue);
+
+    Assert.Throws<OverflowException>(new Action(() =>
+      TextureDecoding.ReadFlic("impossible", chunk)));
+  }
+
+  [Test]
+  public void ReadFlic_RejectsUnsupportedFormatAndImpossibleDimensions() {
+    var unsupported = WriteUInt32s(Convert.ToUInt32(TextureFormat.P8), 4, 4, 1);
+    var impossible = WriteUInt32s(
+      Convert.ToUInt32(TextureFormat.Dxt1), Convert.ToUInt32(int.MaxValue), 2, 1);
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      TextureDecoding.ReadFlic("unsupported", unsupported)));
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      TextureDecoding.ReadFlic("impossible", impossible)));
   }
 
   [Test]
@@ -75,6 +146,15 @@ public class TextureDecodingTests {
   }
 
   [Test]
+  public void ReadBitmapTable_ZeroLengthStillRequiresReferenceChunks() {
+    using var ovl = new Ovl("empty");
+    var file = new OvlFile("empty", FileType.BitmapTable, "empty.common.ovl");
+
+    Assert.Throws<InvalidOperationException>(new Action(() =>
+      TextureDecoding.ReadBitmapTable("empty", ovl, file, WriteUInt32s(0, 0))));
+  }
+
+  [Test]
   public void DecodeBitmapTable_UsesStoredMipCount() {
     var chunks = BitmapTableChunks(TextureFormat.A8R8G8B8, 8, 8, 1, new byte[8 * 8 * 4]);
 
@@ -85,6 +165,35 @@ public class TextureDecodingTests {
       Assert.That(textures[0].MipLevels, Has.Length.EqualTo(1));
       Assert.That(textures[0].MipLevels[0].Width, Is.EqualTo(8));
       Assert.That(textures[0].MipLevels[0].Height, Is.EqualTo(8));
+    } finally {
+      DisposeAll(textures);
+    }
+  }
+
+  [Test]
+  public void DecodeBitmapTable_EmptyTableStillRequiresExactChunks() {
+    var textures = TextureDecoding.DecodeBitmapTable(
+      "empty", BitmapTableWithLength(0), [WriteUInt32s(0, 0), []]);
+
+    Assert.That(textures, Is.Empty);
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      TextureDecoding.DecodeBitmapTable("empty", BitmapTableWithLength(0), [])));
+  }
+
+  [Test]
+  public void DecodeBitmapTable_AdvancesSharedPixelCursorAcrossEntriesAndMips() {
+    var headers = new List<byte>(WriteUInt32s(0, 0));
+    headers.AddRange(WriteUInt32s(Convert.ToUInt32(TextureFormat.A8R8G8B8), 2, 2, 2));
+    headers.AddRange(WriteUInt32s(Convert.ToUInt32(TextureFormat.A8R8G8B8), 1, 1, 1));
+    var pixels = Enumerable.Range(0, 24).Select(Convert.ToByte).ToArray();
+
+    var textures = TextureDecoding.DecodeBitmapTable(
+      "shared-cursor", BitmapTableWithLength(2), [headers.ToArray(), pixels]);
+    try {
+      Assert.That(textures, Has.Length.EqualTo(2));
+      Assert.That(textures[0].MipLevels[0][0, 0], Is.EqualTo(new Rgba32(1, 2, 3, 0)));
+      Assert.That(textures[0].MipLevels[1][0, 0], Is.EqualTo(new Rgba32(17, 18, 19, 16)));
+      Assert.That(textures[1].MipLevels[0][0, 0], Is.EqualTo(new Rgba32(21, 22, 23, 20)));
     } finally {
       DisposeAll(textures);
     }
@@ -119,6 +228,8 @@ public class TextureDecodingTests {
     AssertInvalidBitmapTable(BitmapTableChunks(TextureFormat.A8R8G8B8, 1, 0, 1, []));
     AssertInvalidBitmapTable(BitmapTableChunks(TextureFormat.A8R8G8B8, 1, 1, 0, []));
     AssertInvalidBitmapTable(BitmapTableChunks(TextureFormat.P8, 1, 1, 1, [0]));
+    AssertInvalidBitmapTable(BitmapTableChunks(
+      TextureFormat.Dxt1, Convert.ToUInt32(int.MaxValue), 2, 1, []));
   }
 
   [Test]
@@ -299,4 +410,9 @@ public class TextureDecodingTests {
   private static void DisposeAll(IEnumerable<Texture> textures) {
     foreach (var texture in textures) texture.Dispose();
   }
+
+  private static Dictionary<uint, uint> Relocations(Ovl ovl) =>
+    (Dictionary<uint, uint>)typeof(Ovl)
+      .GetField("relocations", BindingFlags.Instance | BindingFlags.NonPublic)!
+      .GetValue(ovl)!;
 }

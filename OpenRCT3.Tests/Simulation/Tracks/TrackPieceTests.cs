@@ -208,6 +208,115 @@ public class TrackPieceTests {
   }
 
   [Test]
+  public void Constructor_RejectsNonIncreasingCoarseBakedArcIntervals() {
+    var selfReturning = TrackPieceGeometry.FromHandAuthored([
+      Pair(0f, Vector3.Zero, new(20f, 0f, 0f), Vector3.UnitZ),
+      Pair(0.5f, new(10f, 0f, 0f), new(6f, 6f, 0f), Vector3.UnitZ),
+      Pair(1f, new(10f, 0f, 0f), new(6f, -6f, 0f), Vector3.UnitZ),
+    ]);
+    var coarse = new TrackBakeSettings(
+      ChordToleranceGaugeFraction: 0f,
+      MinimumChordTolerance: 100f,
+      MaximumBankAngleChangeRadians: TrackBakeSettings.MaximumSafeBankAngleChangeRadians,
+      MaximumSubdivisionDepth: 12
+    );
+
+    Assert.Throws<ArgumentException>(new Action(() =>
+      new TrackPiece(selfReturning, Matrix4x4.Identity, coarse)));
+  }
+
+  [Test]
+  public void ExtremeFiniteGauge_KeepsDerivedRailFrameFinite() {
+    var halfGauge = new Vector3(0f, 0f, 1e20f);
+    var geometry = TrackPieceGeometry.FromHandAuthored([
+      new(0f, -halfGauge, new(10f, 0f, 0f), halfGauge, new(10f, 0f, 0f), 0f),
+      new(
+        1f,
+        new(10f, 0f, -1e20f),
+        new(10f, 0f, 0f),
+        new(10f, 0f, 1e20f),
+        new(10f, 0f, 0f),
+        0f
+      ),
+    ]);
+    var piece = new TrackPiece(geometry);
+
+    var sample = piece.SampleRail(RailSide.Left, piece.Length * 0.5f);
+    var lateral = Vector3.Transform(Vector3.UnitY, sample.Orientation);
+
+    Assert.That(float.IsFinite(sample.Orientation.X), Is.True);
+    Assert.That(float.IsFinite(sample.Orientation.Y), Is.True);
+    Assert.That(float.IsFinite(sample.Orientation.Z), Is.True);
+    Assert.That(float.IsFinite(sample.Orientation.W), Is.True);
+    Assert.That(float.IsFinite(lateral.X), Is.True);
+    Assert.That(float.IsFinite(lateral.Y), Is.True);
+    Assert.That(float.IsFinite(lateral.Z), Is.True);
+  }
+
+  [Test]
+  public void Constructor_RejectsNonFiniteDerivedPlacementDeterminant() {
+    var placement = new Matrix4x4(
+      1e20f, 1e20f, 0f, 0f,
+      1e20f, 1e20f, 0f, 0f,
+      0f, 0f, 1e20f, 0f,
+      0f, 0f, 0f, 1f
+    );
+
+    Assert.That(float.IsNaN(placement.GetDeterminant()), Is.True);
+    Assert.Throws<ArgumentException>(new Action(() => new TrackPiece(
+      TrackPieceGeometry.FromHandAuthored([
+        Pair(0f, Vector3.Zero, Vector3.UnitX, Vector3.UnitZ),
+        Pair(1f, Vector3.UnitX, Vector3.UnitX, Vector3.UnitZ),
+      ]),
+      placement
+    )));
+  }
+
+  [Test]
+  public void Constructor_AcceptsConstantDiagonalDerivativeAboveEuclideanMinimum() {
+    var derivative = new Vector3(0.8e-6f, 0.8e-6f, 0f);
+    var piece = new TrackPiece(TrackPieceGeometry.FromHandAuthored([
+      Pair(0f, Vector3.Zero, derivative, Vector3.UnitZ),
+      Pair(1f, derivative, derivative, Vector3.UnitZ),
+    ]));
+
+    var sample = piece.SampleRail(RailSide.Left, piece.Length * 0.5f);
+
+    AssertVector(sample.Tangent, Vector3.Normalize(derivative));
+  }
+
+  [Test]
+  public void SampleRail_SmallHermiteDerivativeMatchesSampledPositionDerivative() {
+    const float scale = 1e-4f;
+    var piece = new TrackPiece(
+      TrackPieceGeometry.FromHandAuthored([
+        Pair(0f, Vector3.Zero, new(2f * scale, 0f, 0f), Vector3.UnitZ),
+        Pair(
+          1f,
+          new(scale, scale, 0f),
+          new(0f, 0.2f * scale, 0f),
+          Vector3.UnitZ
+        ),
+      ]),
+      Matrix4x4.Identity,
+      new(
+        ChordToleranceGaugeFraction: 0f,
+        MinimumChordTolerance: 100f,
+        MaximumBankAngleChangeRadians: TrackBakeSettings.MaximumSafeBankAngleChangeRadians,
+        MaximumSubdivisionDepth: 12
+      )
+    );
+
+    var before = piece.SampleRail(RailSide.Left, piece.Length * 0.499f);
+    var sample = piece.SampleRail(RailSide.Left, piece.Length * 0.5f);
+    var after = piece.SampleRail(RailSide.Left, piece.Length * 0.501f);
+    var numericalDerivative = Vector3.Normalize(after.Position - before.Position);
+
+    Assert.That(piece.BakedSampleCount, Is.EqualTo(2));
+    Assert.That(Vector3.Dot(sample.Tangent, numericalDerivative), Is.GreaterThan(0.9999f));
+  }
+
+  [Test]
   public void HandAuthoredGeometry_RejectsMalformedRailPairs() {
     Assert.Throws<ArgumentException>(new Action(() =>
       TrackPieceGeometry.FromHandAuthored([

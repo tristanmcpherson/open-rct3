@@ -68,8 +68,8 @@ public sealed class TrackPiece {
     )));
     var centerSpline = new HermiteRailSpline(transformed.Select(point => new RailSplinePoint(
       point.Parameter,
-      (point.LeftPosition + point.RightPosition) * 0.5f,
-      (point.LeftTangent + point.RightTangent) * 0.5f,
+      TrackMath.Midpoint(point.LeftPosition, point.RightPosition),
+      TrackMath.Midpoint(point.LeftTangent, point.RightTangent),
       point.BankRadians
     )));
     leftSpline.ValidateRegularity();
@@ -95,7 +95,7 @@ public sealed class TrackPiece {
     return new(
       parameter,
       evaluation.Position,
-      Vector3.Normalize(evaluation.Derivative),
+      TrackMath.Normalize(evaluation.Derivative),
       evaluation.BankRadians
     );
   }
@@ -127,8 +127,8 @@ public sealed class TrackPiece {
 
   private BakeResult Bake(IReadOnlyList<RailControlPair> controlPoints) {
     var averageGauge = controlPoints.Average(point =>
-      Vector3.Distance(point.LeftPosition, point.RightPosition));
-    var chordTolerance = MathF.Max(
+      TrackMath.Distance(point.LeftPosition, point.RightPosition));
+    var chordTolerance = Math.Max(
       BakeSettings.MinimumChordTolerance,
       averageGauge * BakeSettings.ChordToleranceGaugeFraction
     );
@@ -151,26 +151,43 @@ public sealed class TrackPiece {
     for (var index = 1; index < evaluations.Length; index++) {
       var previousMidpoint = evaluations[index - 1].Midpoint;
       var midpoint = evaluations[index].Midpoint;
-      arcs[index] = arcs[index - 1] + Vector3.Distance(previousMidpoint, midpoint);
+      var segmentLength = TrackMath.Distance(previousMidpoint, midpoint);
+      var cumulativeLength = Convert.ToDouble(arcs[index - 1]) + segmentLength;
+      if (!double.IsFinite(segmentLength)
+          || segmentLength <= 0d
+          || cumulativeLength > float.MaxValue)
+        throw new ArgumentException(
+          "A track bake must contain finite, strictly increasing arc-length intervals.",
+          nameof(Geometry)
+        );
+
+      arcs[index] = Convert.ToSingle(cumulativeLength);
+      if (arcs[index] <= arcs[index - 1])
+        throw new ArgumentException(
+          "A track bake must contain finite, strictly increasing arc-length intervals.",
+          nameof(Geometry)
+        );
     }
     if (arcs[^1] <= TrackMath.Epsilon)
       throw new ArgumentException("A track piece must have non-zero centerline arc length.", nameof(Geometry));
 
     for (var index = 0; index < evaluations.Length; index++) {
       var pair = evaluations[index];
-      var centerDerivative = (pair.Left.Derivative + pair.Right.Derivative) * 0.5f;
-      var arcDerivative = centerDerivative.Length();
+      var centerDerivative = TrackMath.Midpoint(pair.Left.Derivative, pair.Right.Derivative);
+      var arcDerivative = TrackMath.Length(centerDerivative);
       if (arcDerivative <= TrackMath.Epsilon)
         throw new ArgumentException("A track piece cannot contain a stationary centerline tangent.", nameof(Geometry));
 
       left[index] = BakedRailPoint.Create(
         pair.Left,
-        pair.Right.Position - pair.Left.Position,
+        pair.Left.Position,
+        pair.Right.Position,
         arcDerivative
       );
       right[index] = BakedRailPoint.Create(
         pair.Right,
-        pair.Right.Position - pair.Left.Position,
+        pair.Left.Position,
+        pair.Right.Position,
         arcDerivative
       );
     }
@@ -182,7 +199,7 @@ public sealed class TrackPiece {
     float startParameter,
     float endParameter,
     int depth,
-    float chordTolerance,
+    double chordTolerance,
     ICollection<float> output
   ) {
     var midpointParameter = (startParameter + endParameter) * 0.5f;
@@ -208,8 +225,10 @@ public sealed class TrackPiece {
       thirdQuarter.Right.Position,
       end.Right.Position
     );
-    var bankChange = MathF.Abs(end.Left.BankRadians - start.Left.BankRadians);
-    var needsSubdivision = MathF.Max(leftDeviation, rightDeviation) > chordTolerance
+    var bankChange = Math.Abs(Convert.ToDouble(end.Left.BankRadians) - start.Left.BankRadians);
+    if (!double.IsFinite(bankChange))
+      throw new ArgumentException("Bank-angle subtraction produced a non-finite result.");
+    var needsSubdivision = Math.Max(leftDeviation, rightDeviation) > chordTolerance
       || bankChange > BakeSettings.MaximumBankAngleChangeRadians + TrackMath.Epsilon;
 
     if (needsSubdivision && depth < BakeSettings.MaximumSubdivisionDepth) {
@@ -225,18 +244,18 @@ public sealed class TrackPiece {
     output.Add(endParameter);
   }
 
-  private static float MaximumChordDeviation(
+  private static double MaximumChordDeviation(
     Vector3 start,
     Vector3 firstQuarter,
     Vector3 midpoint,
     Vector3 thirdQuarter,
     Vector3 end
   )
-    => MathF.Max(
-      Vector3.Distance(firstQuarter, Vector3.Lerp(start, end, 0.25f)),
-      MathF.Max(
-        Vector3.Distance(midpoint, Vector3.Lerp(start, end, 0.5f)),
-        Vector3.Distance(thirdQuarter, Vector3.Lerp(start, end, 0.75f))
+    => Math.Max(
+      TrackMath.Distance(firstQuarter, TrackMath.Lerp(start, end, 0.25d)),
+      Math.Max(
+        TrackMath.Distance(midpoint, TrackMath.Lerp(start, end, 0.5d)),
+        TrackMath.Distance(thirdQuarter, TrackMath.Lerp(start, end, 0.75d))
       )
     );
 
@@ -280,11 +299,11 @@ public sealed class TrackPiece {
       + ((-6f * amountSquared) + (6f * amount)) * end.Position
       + ((3f * amountSquared) - (2f * amount)) * endTangent;
     var tangentSource = derivative;
-    if (tangentSource.LengthSquared() <= TrackMath.Epsilon)
+    if (tangentSource.LengthSquared() <= TrackMath.EpsilonSquared)
       tangentSource = Vector3.Lerp(start.Tangent, end.Tangent, amount);
-    if (tangentSource.LengthSquared() <= TrackMath.Epsilon)
+    if (tangentSource.LengthSquared() <= TrackMath.EpsilonSquared)
       tangentSource = amount < 0.5f ? start.Tangent : end.Tangent;
-    var tangent = Vector3.Normalize(tangentSource);
+    var tangent = TrackMath.Normalize(tangentSource);
     var bank = TrackMath.LerpUnwrapped(start.BankRadians, end.BankRadians, amount);
     var lateral = ApplyBank(tangent, InterpolateLateral(start, end, tangent, amount), bank);
 
@@ -305,57 +324,70 @@ public sealed class TrackPiece {
   ) {
     var lateral = Vector3.Lerp(start.Lateral, end.Lateral, amount);
     lateral -= Vector3.Dot(lateral, tangent) * tangent;
-    if (lateral.LengthSquared() > TrackMath.Epsilon) return Vector3.Normalize(lateral);
+    if (lateral.LengthSquared() > TrackMath.EpsilonSquared)
+      return TrackMath.Normalize(lateral);
 
     var source = amount < 0.5f ? start : end;
     var axis = Vector3.Cross(source.Tangent, tangent);
-    if (axis.LengthSquared() <= TrackMath.Epsilon) {
+    if (axis.LengthSquared() <= TrackMath.EpsilonSquared) {
       lateral = source.Lateral - (Vector3.Dot(source.Lateral, tangent) * tangent);
-      return Vector3.Normalize(lateral);
+      return TrackMath.Normalize(lateral);
     }
 
-    axis = Vector3.Normalize(axis);
+    axis = TrackMath.Normalize(axis);
     var angle = MathF.Acos(Math.Clamp(Vector3.Dot(source.Tangent, tangent), -1f, 1f));
     lateral = Vector3.Transform(
       source.Lateral,
       Quaternion.CreateFromAxisAngle(axis, angle)
     );
     lateral -= Vector3.Dot(lateral, tangent) * tangent;
-    return Vector3.Normalize(lateral);
+    return TrackMath.Normalize(lateral);
   }
 
   private static Quaternion CreateOrientation(Vector3 tangent, Vector3 lateral) {
-    var up = Vector3.Normalize(Vector3.Cross(tangent, lateral));
+    var up = TrackMath.Normalize(Vector3.Cross(tangent, lateral));
     var orientationMatrix = new Matrix4x4(
       tangent.X, tangent.Y, tangent.Z, 0f,
       lateral.X, lateral.Y, lateral.Z, 0f,
       up.X, up.Y, up.Z, 0f,
       0f, 0f, 0f, 1f
     );
-    return Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(orientationMatrix));
+    var orientation = Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(orientationMatrix));
+    if (!TrackMath.IsFinite(orientation))
+      throw new ArgumentException("Rail-frame construction produced a non-finite orientation.");
+    return orientation;
   }
 
   private static Vector3 ApplyBank(Vector3 tangent, Vector3 lateral, float bankRadians)
-    => Vector3.Normalize(Vector3.Transform(
+    => TrackMath.Normalize(Vector3.Transform(
       lateral,
-      Quaternion.CreateFromAxisAngle(tangent, bankRadians)
+      Quaternion.CreateFromAxisAngle(tangent, TrackMath.NormalizeAngleForRotation(bankRadians))
     ));
 
-  private static RailControlPair Transform(RailControlPair point, Matrix4x4 placement)
-    => point with {
+  private static RailControlPair Transform(RailControlPair point, Matrix4x4 placement) {
+    var transformed = point with {
       LeftPosition = Vector3.Transform(point.LeftPosition, placement),
       LeftTangent = Vector3.TransformNormal(point.LeftTangent, placement),
       RightPosition = Vector3.Transform(point.RightPosition, placement),
       RightTangent = Vector3.TransformNormal(point.RightTangent, placement),
     };
+    if (!TrackMath.IsFinite(transformed.LeftPosition)
+        || !TrackMath.IsFinite(transformed.LeftTangent)
+        || !TrackMath.IsFinite(transformed.RightPosition)
+        || !TrackMath.IsFinite(transformed.RightTangent))
+      throw new ArgumentException("Track placement produced non-finite rail control data.");
+    return transformed;
+  }
 
   private static void ValidatePlacement(Matrix4x4 placement) {
+    var determinant = placement.GetDeterminant();
     if (!TrackMath.IsFinite(placement)
         || placement.M14 != 0f
         || placement.M24 != 0f
         || placement.M34 != 0f
         || placement.M44 != 1f
-        || MathF.Abs(placement.GetDeterminant()) <= TrackMath.Epsilon)
+        || !float.IsFinite(determinant)
+        || MathF.Abs(determinant) <= TrackMath.Epsilon)
       throw new ArgumentException("Track placement must be a finite, invertible affine transform.", nameof(placement));
   }
 
@@ -369,7 +401,7 @@ public sealed class TrackPiece {
     RailCurveEvaluation Left,
     RailCurveEvaluation Right
   ) {
-    public Vector3 Midpoint => (Left.Position + Right.Position) * 0.5f;
+    public Vector3 Midpoint => TrackMath.Midpoint(Left.Position, Right.Position);
   }
 
   private readonly record struct BakedRailPoint(
@@ -381,19 +413,28 @@ public sealed class TrackPiece {
   ) {
     public static BakedRailPoint Create(
       RailCurveEvaluation rail,
-      Vector3 gauge,
-      float centerArcDerivative
+      Vector3 leftPosition,
+      Vector3 rightPosition,
+      double centerArcDerivative
     ) {
-      var tangent = Vector3.Normalize(rail.Derivative);
+      var tangent = TrackMath.Normalize(rail.Derivative);
+      var gauge = TrackMath.Direction(leftPosition, rightPosition);
       var right = gauge - (Vector3.Dot(gauge, tangent) * tangent);
-      if (right.LengthSquared() <= TrackMath.Epsilon)
+      if (!TrackMath.IsFinite(right) || right.LengthSquared() <= TrackMath.EpsilonSquared)
         throw new ArgumentException("The rail gauge cannot be parallel to its tangent.");
-      right = Vector3.Normalize(right);
+      right = TrackMath.Normalize(right);
+      var derivativePerArc = new Vector3(
+        Convert.ToSingle(Convert.ToDouble(rail.Derivative.X) / centerArcDerivative),
+        Convert.ToSingle(Convert.ToDouble(rail.Derivative.Y) / centerArcDerivative),
+        Convert.ToSingle(Convert.ToDouble(rail.Derivative.Z) / centerArcDerivative)
+      );
+      if (!TrackMath.IsFinite(derivativePerArc))
+        throw new ArgumentException("Rail-frame construction produced a non-finite derivative.");
 
       return new(
         rail.Position,
         tangent,
-        rail.Derivative / centerArcDerivative,
+        derivativePerArc,
         right,
         rail.BankRadians
       );
@@ -437,16 +478,19 @@ internal sealed class HermiteRailSpline {
     for (var index = 0; index < points.Length - 1; index++) {
       var start = points[index];
       var end = points[index + 1];
-      var parameterRange = end.Parameter - start.Parameter;
-      var derivativeStart = start.Tangent;
-      var derivativeMiddle = (3f * (end.Position - start.Position) / parameterRange)
-        - start.Tangent - end.Tangent;
-      var derivativeEnd = end.Tangent;
-      var derivativeScale = MathF.Max(
+      var parameterRange = Convert.ToDouble(end.Parameter) - start.Parameter;
+      var derivativeStart = DoubleVector3.From(start.Tangent);
+      var derivativeMiddle = (3d * (
+        DoubleVector3.From(end.Position) - DoubleVector3.From(start.Position)
+      ) / parameterRange) - derivativeStart - DoubleVector3.From(end.Tangent);
+      var derivativeEnd = DoubleVector3.From(end.Tangent);
+      var derivativeScale = Math.Max(
         derivativeStart.Length(),
-        MathF.Max(derivativeMiddle.Length(), derivativeEnd.Length())
+        Math.Max(derivativeMiddle.Length(), derivativeEnd.Length())
       );
-      var minimumDerivative = MathF.Max(TrackMath.Epsilon, derivativeScale * 0.00001f);
+      if (!double.IsFinite(derivativeScale))
+        throw new ArgumentException("Spline derivative construction produced a non-finite result.");
+      var minimumDerivative = Math.Max(TrackMath.Epsilon, derivativeScale * 0.00001d);
       ValidateDerivativeBounds(
         derivativeStart,
         derivativeMiddle,
@@ -458,16 +502,13 @@ internal sealed class HermiteRailSpline {
   }
 
   private static void ValidateDerivativeBounds(
-    Vector3 start,
-    Vector3 middle,
-    Vector3 end,
-    float minimumDerivative,
+    DoubleVector3 start,
+    DoubleVector3 middle,
+    DoubleVector3 end,
+    double minimumDerivative,
     int depth
   ) {
-    if (ComponentBoundExcludesZero(start.X, middle.X, end.X, minimumDerivative)
-        || ComponentBoundExcludesZero(start.Y, middle.Y, end.Y, minimumDerivative)
-        || ComponentBoundExcludesZero(start.Z, middle.Z, end.Z, minimumDerivative))
-      return;
+    if (DistanceFromOriginToTriangle(start, middle, end) > minimumDerivative) return;
     if (depth >= MaximumRegularitySubdivisionDepth)
       throw new ArgumentException(
         "A track piece cannot contain a stationary or near-stationary spline tangent."
@@ -480,15 +521,56 @@ internal sealed class HermiteRailSpline {
     ValidateDerivativeBounds(split, middleEnd, end, minimumDerivative, depth + 1);
   }
 
-  private static bool ComponentBoundExcludesZero(
-    float start,
-    float middle,
-    float end,
-    float minimumDerivative
+  private static double DistanceFromOriginToTriangle(
+    DoubleVector3 first,
+    DoubleVector3 second,
+    DoubleVector3 third
   ) {
-    var minimum = MathF.Min(start, MathF.Min(middle, end));
-    var maximum = MathF.Max(start, MathF.Max(middle, end));
-    return minimum > minimumDerivative || maximum < -minimumDerivative;
+    var firstEdge = second - first;
+    var secondEdge = third - first;
+    var normal = DoubleVector3.Cross(firstEdge, secondEdge);
+    var normalLengthSquared = DoubleVector3.Dot(normal, normal);
+
+    if (normalLengthSquared > 0d && double.IsFinite(normalLengthSquared)) {
+      var projection = (DoubleVector3.Dot(normal, first) / normalLengthSquared) * normal;
+      var projectionOffset = projection - first;
+      var firstDot = DoubleVector3.Dot(firstEdge, firstEdge);
+      var crossDot = DoubleVector3.Dot(firstEdge, secondEdge);
+      var secondDot = DoubleVector3.Dot(secondEdge, secondEdge);
+      var projectionFirstDot = DoubleVector3.Dot(projectionOffset, firstEdge);
+      var projectionSecondDot = DoubleVector3.Dot(projectionOffset, secondEdge);
+      var denominator = (firstDot * secondDot) - (crossDot * crossDot);
+
+      if (denominator > 0d && double.IsFinite(denominator)) {
+        var secondWeight = ((secondDot * projectionFirstDot)
+          - (crossDot * projectionSecondDot)) / denominator;
+        var thirdWeight = ((firstDot * projectionSecondDot)
+          - (crossDot * projectionFirstDot)) / denominator;
+        var firstWeight = 1d - secondWeight - thirdWeight;
+        if (firstWeight >= 0d && secondWeight >= 0d && thirdWeight >= 0d)
+          return projection.Length();
+      }
+    }
+
+    return Math.Min(
+      DistanceFromOriginToSegment(first, second),
+      Math.Min(
+        DistanceFromOriginToSegment(second, third),
+        DistanceFromOriginToSegment(third, first)
+      )
+    );
+  }
+
+  private static double DistanceFromOriginToSegment(
+    DoubleVector3 start,
+    DoubleVector3 end
+  ) {
+    var segment = end - start;
+    var lengthSquared = DoubleVector3.Dot(segment, segment);
+    if (lengthSquared <= 0d) return start.Length();
+
+    var amount = Math.Clamp(-DoubleVector3.Dot(start, segment) / lengthSquared, 0d, 1d);
+    return (start + (amount * segment)).Length();
   }
 
   public RailCurveEvaluation Evaluate(float parameter) {
@@ -517,10 +599,47 @@ internal sealed class HermiteRailSpline {
       + ((-6f * amountSquared) + (6f * amount)) * end.Position
       + ((3f * amountSquared) - (2f * amount)) * endTangent) / parameterRange;
 
+    var bank = TrackMath.LerpUnwrapped(start.BankRadians, end.BankRadians, amount);
+    if (!TrackMath.IsFinite(position) || !TrackMath.IsFinite(derivative) || !float.IsFinite(bank))
+      throw new ArgumentException("Spline evaluation produced non-finite derived data.");
+
     return new(
       position,
       derivative,
-      TrackMath.LerpUnwrapped(start.BankRadians, end.BankRadians, amount)
+      bank
     );
+  }
+
+  private readonly record struct DoubleVector3(double X, double Y, double Z) {
+    public static DoubleVector3 From(Vector3 value)
+      => new(value.X, value.Y, value.Z);
+
+    public double Length()
+      => Math.Sqrt(Dot(this, this));
+
+    public static double Dot(DoubleVector3 left, DoubleVector3 right)
+      => (left.X * right.X) + (left.Y * right.Y) + (left.Z * right.Z);
+
+    public static DoubleVector3 Cross(DoubleVector3 left, DoubleVector3 right)
+      => new(
+        (left.Y * right.Z) - (left.Z * right.Y),
+        (left.Z * right.X) - (left.X * right.Z),
+        (left.X * right.Y) - (left.Y * right.X)
+      );
+
+    public static DoubleVector3 operator +(DoubleVector3 left, DoubleVector3 right)
+      => new(left.X + right.X, left.Y + right.Y, left.Z + right.Z);
+
+    public static DoubleVector3 operator -(DoubleVector3 left, DoubleVector3 right)
+      => new(left.X - right.X, left.Y - right.Y, left.Z - right.Z);
+
+    public static DoubleVector3 operator *(double scalar, DoubleVector3 value)
+      => new(scalar * value.X, scalar * value.Y, scalar * value.Z);
+
+    public static DoubleVector3 operator *(DoubleVector3 value, double scalar)
+      => scalar * value;
+
+    public static DoubleVector3 operator /(DoubleVector3 value, double scalar)
+      => new(value.X / scalar, value.Y / scalar, value.Z / scalar);
   }
 }

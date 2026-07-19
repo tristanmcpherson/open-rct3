@@ -109,6 +109,41 @@ public class TrackGraphTests {
   }
 
   [Test]
+  public void ExtremeFiniteBanks_DoNotCorruptSamplesOrBypassJoinValidation() {
+    var first = new TrackNode("first");
+    var join = new TrackNode("join");
+    var last = new TrackNode("last");
+    var incoming = Piece(
+      Vector3.Zero,
+      new(10f, 0f, 0f),
+      new(10f, 0f, 0f),
+      new(10f, 0f, 0f),
+      float.MaxValue,
+      float.MaxValue
+    );
+    var outgoing = Piece(
+      new(10f, 0f, 0f),
+      new(20f, 0f, 0f),
+      new(10f, 0f, 0f),
+      new(10f, 0f, 0f),
+      -float.MaxValue,
+      -float.MaxValue
+    );
+
+    var sample = incoming.SampleRail(RailSide.Left, incoming.Length * 0.5f);
+
+    Assert.That(float.IsFinite(sample.BankRadians), Is.True);
+    Assert.That(float.IsFinite(sample.Orientation.X), Is.True);
+    Assert.That(float.IsFinite(sample.Orientation.Y), Is.True);
+    Assert.That(float.IsFinite(sample.Orientation.Z), Is.True);
+    Assert.That(float.IsFinite(sample.Orientation.W), Is.True);
+    Assert.Throws<ArgumentException>(new Action(() => new TrackGraph(
+      [first, join, last],
+      [new("incoming", first, join, incoming), new("outgoing", join, last, outgoing)]
+    )));
+  }
+
+  [Test]
   public void Constructor_RejectsUnregisteredEdgeEndpoint() {
     var registered = new TrackNode("registered");
     var missing = new TrackNode("missing");
@@ -129,12 +164,14 @@ public class TrackGraphTests {
     Vector3 start,
     Vector3 end,
     Vector3 startTangent,
-    Vector3 endTangent
+    Vector3 endTangent,
+    float startBank = 0f,
+    float endBank = 0f
   ) {
     var halfGauge = Vector3.UnitZ * 0.5f;
     return new(TrackPieceGeometry.FromHandAuthored([
-      new(0f, start - halfGauge, startTangent, start + halfGauge, startTangent, 0f),
-      new(1f, end - halfGauge, endTangent, end + halfGauge, endTangent, 0f),
+      new(0f, start - halfGauge, startTangent, start + halfGauge, startTangent, startBank),
+      new(1f, end - halfGauge, endTangent, end + halfGauge, endTangent, endBank),
     ]));
   }
 }

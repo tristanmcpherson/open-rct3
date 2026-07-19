@@ -128,23 +128,23 @@ public sealed class TrackPieceGeometry {
           || !float.IsFinite(point.BankRadians))
         throw new ArgumentException("Rail control data must contain only finite values.", nameof(points));
 
-      var leftTangentLength = point.LeftTangent.Length();
-      var rightTangentLength = point.RightTangent.Length();
+      var leftTangentLength = TrackMath.Length(point.LeftTangent);
+      var rightTangentLength = TrackMath.Length(point.RightTangent);
       if (leftTangentLength <= TrackMath.Epsilon || rightTangentLength <= TrackMath.Epsilon)
         throw new ArgumentException("Rail tangents cannot be zero-length.", nameof(points));
 
-      var leftTangent = point.LeftTangent / leftTangentLength;
-      var rightTangent = point.RightTangent / rightTangentLength;
-      if (Vector3.Dot(leftTangent, rightTangent) <= 0f)
+      var leftTangent = TrackMath.Normalize(point.LeftTangent);
+      var rightTangent = TrackMath.Normalize(point.RightTangent);
+      if (TrackMath.Dot(leftTangent, rightTangent) <= 0d)
         throw new ArgumentException("Paired rail tangents must point in the same direction.", nameof(points));
 
-      var gauge = point.RightPosition - point.LeftPosition;
-      var gaugeLength = gauge.Length();
+      var gaugeLength = TrackMath.Distance(point.LeftPosition, point.RightPosition);
       if (gaugeLength <= MinimumGauge)
         throw new ArgumentException("Left and right rail positions must be distinct.", nameof(points));
 
-      var averageTangent = Vector3.Normalize(leftTangent + rightTangent);
-      var gaugeTangentDot = MathF.Abs(Vector3.Dot(gauge / gaugeLength, averageTangent));
+      var gauge = TrackMath.Direction(point.LeftPosition, point.RightPosition);
+      var averageTangent = TrackMath.Normalize(leftTangent + rightTangent);
+      var gaugeTangentDot = Math.Abs(TrackMath.Dot(gauge, averageTangent));
       if (gaugeTangentDot > MaximumGaugeTangentDot)
         throw new ArgumentException(
           "The rail gauge must remain approximately perpendicular to rail travel.",
@@ -203,7 +203,7 @@ public readonly record struct TrackContactPoints(
   RailSample Left,
   RailSample Right
 ) {
-  public Vector3 Midpoint => (Left.Position + Right.Position) * 0.5f;
+  public Vector3 Midpoint => TrackMath.Midpoint(Left.Position, Right.Position);
 }
 
 /// <summary>One rail's exact boundary state, used to validate joins between graph edges.</summary>
@@ -214,6 +214,7 @@ public readonly record struct TrackPieceEndpoint(RailEndpoint Left, RailEndpoint
 
 internal static class TrackMath {
   public const float Epsilon = 0.000001f;
+  public const float EpsilonSquared = Epsilon * Epsilon;
   public const float TwoPi = MathF.PI * 2f;
 
   public static bool IsFinite(Vector3 value)
@@ -227,13 +228,92 @@ internal static class TrackMath {
       && float.IsFinite(value.M41) && float.IsFinite(value.M42) && float.IsFinite(value.M43)
       && float.IsFinite(value.M44);
 
-  public static float ShortestAngleDelta(float start, float end) {
-    var delta = (end - start) % TwoPi;
-    if (delta > MathF.PI) delta -= TwoPi;
-    if (delta < -MathF.PI) delta += TwoPi;
-    return delta;
+  public static bool IsFinite(Quaternion value)
+    => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z)
+      && float.IsFinite(value.W);
+
+  public static double Dot(Vector3 left, Vector3 right)
+    => (Convert.ToDouble(left.X) * right.X)
+      + (Convert.ToDouble(left.Y) * right.Y)
+      + (Convert.ToDouble(left.Z) * right.Z);
+
+  public static double Length(Vector3 value)
+    => Math.Sqrt(Dot(value, value));
+
+  public static double Distance(Vector3 start, Vector3 end) {
+    var x = Convert.ToDouble(end.X) - start.X;
+    var y = Convert.ToDouble(end.Y) - start.Y;
+    var z = Convert.ToDouble(end.Z) - start.Z;
+    return Math.Sqrt((x * x) + (y * y) + (z * z));
   }
 
-  public static float LerpUnwrapped(float start, float end, float amount)
-    => start + ((end - start) * amount);
+  public static Vector3 Normalize(Vector3 value) {
+    var length = Length(value);
+    if (!double.IsFinite(length) || length <= Epsilon)
+      throw new ArgumentException("A finite, non-zero vector is required.", nameof(value));
+
+    var result = new Vector3(
+      Convert.ToSingle(Convert.ToDouble(value.X) / length),
+      Convert.ToSingle(Convert.ToDouble(value.Y) / length),
+      Convert.ToSingle(Convert.ToDouble(value.Z) / length)
+    );
+    if (!IsFinite(result))
+      throw new ArgumentException("Vector normalization produced a non-finite result.", nameof(value));
+    return result;
+  }
+
+  public static Vector3 Direction(Vector3 start, Vector3 end) {
+    var x = Convert.ToDouble(end.X) - start.X;
+    var y = Convert.ToDouble(end.Y) - start.Y;
+    var z = Convert.ToDouble(end.Z) - start.Z;
+    var length = Math.Sqrt((x * x) + (y * y) + (z * z));
+    if (!double.IsFinite(length) || length <= Epsilon)
+      throw new ArgumentException("A finite, non-zero direction is required.");
+
+    var result = new Vector3(
+      Convert.ToSingle(x / length),
+      Convert.ToSingle(y / length),
+      Convert.ToSingle(z / length)
+    );
+    if (!IsFinite(result))
+      throw new ArgumentException("Direction calculation produced a non-finite result.");
+    return result;
+  }
+
+  public static Vector3 Midpoint(Vector3 start, Vector3 end)
+    => Lerp(start, end, 0.5d);
+
+  public static Vector3 Lerp(Vector3 start, Vector3 end, double amount) {
+    var result = new Vector3(
+      Convert.ToSingle(start.X + ((Convert.ToDouble(end.X) - start.X) * amount)),
+      Convert.ToSingle(start.Y + ((Convert.ToDouble(end.Y) - start.Y) * amount)),
+      Convert.ToSingle(start.Z + ((Convert.ToDouble(end.Z) - start.Z) * amount))
+    );
+    if (!IsFinite(result))
+      throw new ArgumentException("Vector interpolation produced a non-finite result.");
+    return result;
+  }
+
+  public static float ShortestAngleDelta(float start, float end) {
+    var delta = (Convert.ToDouble(end) - start) % TwoPi;
+    if (delta > Math.PI) delta -= TwoPi;
+    if (delta < -Math.PI) delta += TwoPi;
+    if (!double.IsFinite(delta))
+      throw new ArgumentException("Bank-angle subtraction produced a non-finite result.");
+    return Convert.ToSingle(delta);
+  }
+
+  public static float LerpUnwrapped(float start, float end, float amount) {
+    var result = start + ((Convert.ToDouble(end) - start) * amount);
+    if (!double.IsFinite(result) || result > float.MaxValue || result < float.MinValue)
+      throw new ArgumentException("Bank-angle interpolation produced a non-finite result.");
+    return Convert.ToSingle(result);
+  }
+
+  public static float NormalizeAngleForRotation(float angle) {
+    var normalized = Convert.ToDouble(angle) % (Math.PI * 2d);
+    if (!double.IsFinite(normalized))
+      throw new ArgumentException("Bank-angle normalization produced a non-finite result.");
+    return Convert.ToSingle(normalized);
+  }
 }

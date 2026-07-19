@@ -184,16 +184,16 @@ public sealed class TrackGraph {
     string nodeId,
     RailSide side
   ) {
-    var expectedMagnitude = expected.Tangent.Length();
-    var actualMagnitude = actual.Tangent.Length();
-    var directionDifference = Vector3.Distance(
-      expected.Tangent / expectedMagnitude,
-      actual.Tangent / actualMagnitude
+    var expectedMagnitude = TrackMath.Length(expected.Tangent);
+    var actualMagnitude = TrackMath.Length(actual.Tangent);
+    var directionDifference = TrackMath.Distance(
+      TrackMath.Normalize(expected.Tangent),
+      TrackMath.Normalize(actual.Tangent)
     );
-    var magnitudeScale = MathF.Max(expectedMagnitude, actualMagnitude);
-    var magnitudeDifference = MathF.Abs(expectedMagnitude - actualMagnitude) / magnitudeScale;
+    var magnitudeScale = Math.Max(expectedMagnitude, actualMagnitude);
+    var magnitudeDifference = Math.Abs(expectedMagnitude - actualMagnitude) / magnitudeScale;
 
-    if (Vector3.Distance(expected.Position, actual.Position) > positionTolerance
+    if (TrackMath.Distance(expected.Position, actual.Position) > positionTolerance
         || directionDifference > tangentTolerance
         || magnitudeDifference > tangentTolerance
         || MathF.Abs(TrackMath.ShortestAngleDelta(

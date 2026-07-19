@@ -487,6 +487,44 @@ $missingCapture.capture.artifacts = @(
 Assert-Throws { Assert-NativeSmokeEvidenceRecord -Evidence $missingCapture } `
   'manifest rejects nonexistent screenshot' 'file does not exist'
 
+$nativeSmokeResults = Join-Path $repo 'TestResults\native-smoke'
+if (Test-Path -LiteralPath $nativeSmokeResults) {
+  Remove-Item -LiteralPath $nativeSmokeResults -Recurse -Force
+}
+New-Item -ItemType Directory -Path $nativeSmokeResults -Force | Out-Null
+$priorManifestPath = Join-Path $nativeSmokeResults 'native-smoke.json'
+$priorPassedEvidence = New-PassedEvidence `
+  -Repo $repo `
+  -Executable (Join-Path $nativeSmokeResults 'OpenRCT3.exe') `
+  -Map (Join-Path $nativeSmokeResults 'prior-map.dat')
+Write-NativeSmokeEvidenceManifest -Evidence $priorPassedEvidence -Path $priorManifestPath
+$priorManifestHash = (Get-FileHash -LiteralPath $priorManifestPath -Algorithm SHA256).Hash
+$priorRunNonce = $priorPassedEvidence.runNonce
+$originalVerifyNative = $env:OPENRCT3_VERIFY_NATIVE
+$env:OPENRCT3_VERIFY_NATIVE = $null
+try {
+  $optOutOutput = & powershell -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot 'Test-NativeSmoke.ps1') 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) {
+    throw "Native opt-out stale-evidence probe failed: $optOutOutput"
+  }
+} finally {
+  $env:OPENRCT3_VERIFY_NATIVE = $originalVerifyNative
+}
+$freshOptOut = Get-Content -Raw -LiteralPath $priorManifestPath | ConvertFrom-Json
+Assert-NativeSmokeEvidenceRecord -Evidence $freshOptOut
+if ($freshOptOut.outcome -ne 'skipped' -or
+    $freshOptOut.reason -ne 'OPENRCT3_VERIFY_NATIVE is not enabled') {
+  throw 'Native opt-out did not overwrite prior passed evidence with an explicit skip.'
+}
+if ($freshOptOut.runNonce -eq $priorRunNonce) {
+  throw 'Native opt-out reused the prior passed evidence nonce.'
+}
+if ((Get-FileHash -LiteralPath $priorManifestPath -Algorithm SHA256).Hash -eq
+    $priorManifestHash) {
+  throw 'Native opt-out left the prior passed manifest byte-for-byte stale.'
+}
+
 Assert-NativeSmokeProcessExited -ProcessId ([int]::MaxValue)
 Assert-Throws { Assert-NativeSmokeProcessExited -ProcessId $PID } `
   'live candidate fails cleanup validation' 'still running'

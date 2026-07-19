@@ -4,11 +4,6 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ($env:OPENRCT3_VERIFY_NATIVE -ne '1') {
-  Write-Output 'SKIP: set OPENRCT3_VERIFY_NATIVE=1 to run the native map smoke.'
-  exit 0
-}
-
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $results = Join-Path $repo 'TestResults\native-smoke'
 $manifestPath = Join-Path $results 'native-smoke.json'
@@ -56,6 +51,11 @@ function Write-NativeSmokeSkip {
   Update-NativeArtifactIdentities
   Write-NativeSmokeEvidenceManifest -Evidence $manifest -Path $manifestPath
   Write-Output "SKIP: $Reason; manifest=$manifestPath"
+}
+
+if ($env:OPENRCT3_VERIFY_NATIVE -ne '1') {
+  Write-NativeSmokeSkip 'OPENRCT3_VERIFY_NATIVE is not enabled'
+  exit 0
 }
 
 function Stop-NativeSmokeWithInputFailure {

@@ -124,6 +124,18 @@ function Assert-NativeSmokeEvidenceRecord {
   Assert-OptionalFileIdentity -Identity $Evidence.loadedMap -Name 'Loaded map identity'
   Assert-OptionalFileIdentity -Identity $Evidence.artifacts.transcript -Name 'Verification transcript'
   Assert-OptionalFileIdentity -Identity $Evidence.artifacts.applicationLog -Name 'Application log'
+  if ($Evidence.artifacts.transcript.available -eq $true) {
+    $transcript = Get-Content -Raw -LiteralPath $Evidence.artifacts.transcript.path
+    if ($transcript -notmatch "(?m)^run-id=$([regex]::Escape($Evidence.runNonce))\r?$") {
+      throw 'Verification transcript is not bound to the evidence runNonce.'
+    }
+  }
+  if ($Evidence.artifacts.applicationLog.available -eq $true) {
+    $applicationLog = Get-Content -Raw -LiteralPath $Evidence.artifacts.applicationLog.path
+    if ($applicationLog -notmatch "(?m)^run=$([regex]::Escape($Evidence.runNonce))\|") {
+      throw 'Application log is not bound to the evidence runNonce.'
+    }
+  }
 
   if (@('none', 'screenshot') -notcontains $Evidence.capture.mode) {
     throw "Native evidence capture mode '$($Evidence.capture.mode)' is invalid."
@@ -199,15 +211,6 @@ function Assert-NativeSmokeEvidenceRecord {
   if ($Evidence.cleanup.attempted -ne $true -or $Evidence.cleanup.processExited -ne $true -or
       @('graceful', 'already-exited') -notcontains $Evidence.cleanup.closeResult) {
     throw 'Passed native evidence requires successful candidate cleanup.'
-  }
-
-  $transcript = Get-Content -Raw -LiteralPath $Evidence.artifacts.transcript.path
-  if ($transcript -notmatch "(?m)^run-id=$([regex]::Escape($Evidence.runNonce))\r?$") {
-    throw 'Verification transcript is not bound to the evidence runNonce.'
-  }
-  $applicationLog = Get-Content -Raw -LiteralPath $Evidence.artifacts.applicationLog.path
-  if ($applicationLog -notmatch "(?m)^run=$([regex]::Escape($Evidence.runNonce))\|") {
-    throw 'Application log is not bound to the evidence runNonce.'
   }
 }
 

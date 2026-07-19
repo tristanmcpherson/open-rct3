@@ -404,11 +404,14 @@ public static class StaticShapes {
           throw Invalid(shapeName,
             $"mesh {meshIndex} {tag} SymbolRef target '{symbolReference.Symbol}' has conflicting " +
             "archive resource metadata");
-      }
+      } else if (source.LocalResourceKeys.Contains(symbolReference.Symbol))
+        throw Invalid(shapeName,
+          $"mesh {meshIndex} {tag} SymbolRef target '{symbolReference.Symbol}' is local but has no " +
+          "validated loader metadata");
       // Stock styles such as SIOpaque:txs are external and have no local loader/resource entry.
       // Their serialized type evidence is the fixed SHS field, the verified owning shs loader,
-      // the relocation-backed SymbolRef, and its matching tag. Local targets must also match the
-      // archive loader metadata above.
+      // the relocation-backed SymbolRef, and its matching tag. Only symbols absent from every local
+      // archive symbol may take this path; local targets must match validated loader metadata above.
       return symbolReference.Symbol;
     }
 
@@ -671,11 +674,14 @@ public static class StaticShapes {
 
       var byAddress = new Dictionary<uint, StaticShapeResourceMetadata>();
       var byKey = new Dictionary<string, StaticShapeResourceMetadata>(StringComparer.OrdinalIgnoreCase);
+      var localKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
       foreach (var file in ovl.Keys) {
+        var key = CreateResourceKey(file, context);
+        context.ReserveObjects(1, key, "local resource key index");
+        localKeys.Add(key);
         if (!ovl.TryGetDataPointer(file, out var address) ||
             !loaderMetadata.TryGetValue(address, out var loader))
           continue;
-        var key = CreateResourceKey(file, context);
         context.ReserveObjects(3, key, "resource metadata indexes");
         var metadata = new StaticShapeResourceMetadata(key, loader.Tag);
         byAddress.TryAdd(address, metadata);
@@ -684,11 +690,13 @@ public static class StaticShapes {
       }
       ResourcesByAddress = byAddress;
       ResourcesByKey = byKey;
+      LocalResourceKeys = localKeys;
       ResourceReferences = ReadResourceReferences();
     }
 
     public IReadOnlyDictionary<uint, StaticShapeResourceMetadata> ResourcesByAddress { get; }
     public IReadOnlyDictionary<string, StaticShapeResourceMetadata> ResourcesByKey { get; }
+    public IReadOnlySet<string> LocalResourceKeys { get; }
     public IReadOnlyDictionary<uint, StaticShapeResourceReference> ResourceReferences { get; }
     public IReadOnlySet<uint> StaticShapeLoaderDataAddresses { get; }
 
@@ -958,6 +966,7 @@ internal readonly record struct StaticShapeDecodeLimits(ulong MaximumBytes, ulon
 internal interface IStaticShapeDataSource {
   IReadOnlyDictionary<uint, StaticShapeResourceMetadata> ResourcesByAddress { get; }
   IReadOnlyDictionary<string, StaticShapeResourceMetadata> ResourcesByKey { get; }
+  IReadOnlySet<string> LocalResourceKeys { get; }
   IReadOnlyDictionary<uint, StaticShapeResourceReference> ResourceReferences { get; }
   IReadOnlySet<uint> StaticShapeLoaderDataAddresses { get; }
   bool TryReadBytes(uint address, int length, out byte[] bytes);

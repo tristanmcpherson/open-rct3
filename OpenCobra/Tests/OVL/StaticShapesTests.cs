@@ -153,6 +153,17 @@ public class StaticShapesTests {
   }
 
   [Test]
+  public void Decode_RejectsLocalSymbolReferenceWithoutValidatedLoaderMetadata() {
+    var fixture = new StaticShapeFixture();
+    fixture.RemoveLocalFtxLoaderMetadata();
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() => fixture.Decode()));
+
+    Assert.That(error!.Message,
+      Does.Contain("water:ftx' is local but has no validated loader metadata"));
+  }
+
+  [Test]
   public void Extract_ChargesResourceMetadataBeforeBuildingIndexes() {
     var assembly = Assembly.GetExecutingAssembly();
     var resources = assembly.GetManifestResourceNames();
@@ -173,6 +184,45 @@ public class StaticShapesTests {
     } finally {
       Directory.Delete(tempDir, recursive: true);
     }
+  }
+
+  [TestCase(LocalLoaderMutation.Missing)]
+  [TestCase(LocalLoaderMutation.WrongType)]
+  public void Extract_RejectsLocalSymbolReferenceWithoutMatchingLoaderMetadata(
+    LocalLoaderMutation mutation
+  ) {
+    WithTownHallOvl(ovl => {
+      var localFtx = ovl.Keys.Single(file =>
+        file.Name == "RS-Base" && file.Type == FileType.FlexibleTexture);
+      Assert.That(ovl.TryGetDataPointer(localFtx, out var localFtxAddress), Is.True);
+      var loaderEntries = (List<OvlLoaderEntry>)ovl.LoaderEntriesInOrder;
+      var loaderIndex = loaderEntries.FindIndex(entry =>
+        entry.DataAddress == localFtxAddress &&
+        string.Equals(entry.Tag, "ftx", StringComparison.OrdinalIgnoreCase));
+      Assert.That(loaderIndex, Is.GreaterThanOrEqualTo(0));
+
+      if (mutation == LocalLoaderMutation.Missing)
+        loaderEntries.RemoveAt(loaderIndex);
+      else
+        loaderEntries[loaderIndex] = loaderEntries[loaderIndex] with { Tag = "txs" };
+
+      var error = Assert.Throws<InvalidDataException>(new Action(() => StaticShapes.Extract(ovl)));
+
+      Assert.That(error!.Message, Does.Contain("RS-Base:ftx"));
+      Assert.That(error.Message, mutation == LocalLoaderMutation.Missing
+        ? Does.Contain("is local but has no validated loader metadata")
+        : Does.Contain("conflicting archive resource metadata"));
+    });
+  }
+
+  [Test]
+  public void Extract_AllowsExternalSIOpaqueTextureStyle() {
+    WithTownHallOvl(ovl => {
+      var shapes = StaticShapes.Extract(ovl);
+
+      Assert.That(shapes.SelectMany(shape => shape.Meshes).Select(mesh => mesh.TxsRef),
+        Does.Contain("SIOpaque:txs"));
+    });
   }
 
   [TestCase(MalformedShape.TruncatedHeader)]
@@ -267,6 +317,29 @@ public class StaticShapesTests {
     input.CopyTo(output);
   }
 
+  private static void WithTownHallOvl(Action<Ovl> action) {
+    var assembly = Assembly.GetExecutingAssembly();
+    var resources = assembly.GetManifestResourceNames();
+    var commonResource = resources.Single(name => name.EndsWith(
+      ".RS-TownHall.common.ovl", StringComparison.OrdinalIgnoreCase));
+    var uniqueResource = commonResource[..^".common.ovl".Length] + ".unique.ovl";
+    var tempDir = Directory.CreateTempSubdirectory().FullName;
+    try {
+      var commonPath = Path.Combine(tempDir, "fixture.common.ovl");
+      CopyResource(assembly, commonResource, commonPath);
+      CopyResource(assembly, uniqueResource, Path.Combine(tempDir, "fixture.unique.ovl"));
+      using var ovl = Ovl.Load(commonPath);
+      action(ovl);
+    } finally {
+      Directory.Delete(tempDir, recursive: true);
+    }
+  }
+
+  public enum LocalLoaderMutation {
+    Missing,
+    WrongType
+  }
+
   public enum MalformedShape {
     TruncatedHeader,
     OversizedMeshCount,
@@ -355,6 +428,8 @@ public class StaticShapesTests {
         new StaticShapeResourceMetadata("opaque:txs", "txs");
       source.MutableResourcesByKey["water:ftx"] = source.MutableResourcesByAddress[FtxAddress];
       source.MutableResourcesByKey["opaque:txs"] = source.MutableResourcesByAddress[TxsAddress];
+      source.MutableLocalResourceKeys.Add("water:ftx");
+      source.MutableLocalResourceKeys.Add("opaque:txs");
       source.MutableStaticShapeLoaderDataAddresses.Add(ShapeAddress);
       source.MutableResourceReferences[MeshAddress + 4] =
         new StaticShapeResourceReference("water:ftx", ShapeAddress);
@@ -396,6 +471,8 @@ public class StaticShapesTests {
 
     public void UseDanglingEffectPositionsRelocation() =>
       WritePointer(source.Blocks[ShapeAddress], ShapeAddress, 48, 1_000_000);
+
+    public void RemoveLocalFtxLoaderMetadata() => source.MutableResourcesByKey.Remove("water:ftx");
 
     public void UseDistinctMeshFanSharingGeometry(int count) {
       const uint fanPointersAddress = 12_000;
@@ -558,12 +635,14 @@ public class StaticShapesTests {
     public Dictionary<uint, StaticShapeResourceMetadata> MutableResourcesByAddress { get; } = [];
     public Dictionary<string, StaticShapeResourceMetadata> MutableResourcesByKey { get; } =
       new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> MutableLocalResourceKeys { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<uint, StaticShapeResourceReference> MutableResourceReferences { get; } = [];
     public HashSet<uint> MutableStaticShapeLoaderDataAddresses { get; } = [];
     public IReadOnlyDictionary<uint, StaticShapeResourceMetadata> ResourcesByAddress =>
       MutableResourcesByAddress;
     public IReadOnlyDictionary<string, StaticShapeResourceMetadata> ResourcesByKey =>
       MutableResourcesByKey;
+    public IReadOnlySet<string> LocalResourceKeys => MutableLocalResourceKeys;
     public IReadOnlyDictionary<uint, StaticShapeResourceReference> ResourceReferences =>
       MutableResourceReferences;
     public IReadOnlySet<uint> StaticShapeLoaderDataAddresses => MutableStaticShapeLoaderDataAddresses;

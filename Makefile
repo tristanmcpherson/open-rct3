@@ -93,29 +93,8 @@ test-plugins: $(PLUGINS_OUT)
 TESTS_PROJ := OpenCobra/Tests/Tests.csproj
 TEST_BENCH_PROJ := OpenCobra/Tests/TestRunner/OvlTestBench.csproj
 
-TESTS_SRC := $(wildcard OpenCobra/Tests/*.cs OpenCobra/Tests/*/*.cs)
-# Extract TargetFramework from the csproj
-TESTS_TFM := $(shell grep -oEm1 "<TargetFramework>[^<]+" OpenCobra/Tests/Tests.csproj | sed "s/<TargetFramework>//")
-TESTS_DLL := OpenCobra/Tests/bin/Debug/$(TESTS_TFM)/Tests.dll
-
-$(TESTS_DLL): $(TESTS_PROJ) $(TESTS_SRC)
-	dotnet build OpenCobra/Tests/Tests.csproj
-
-# Extract TargetFramework from the project files
-TEST_BENCH_TFM := $(shell grep -oEm1 "<TargetFramework>[^<]+" $(TEST_BENCH_PROJ) | sed "s/<TargetFramework>//")
-# Path to the compiled test runner using the detected TFM
-TEST_BENCH_DLL := OpenCobra/Tests/TestRunner/bin/Debug/$(TEST_BENCH_TFM)/OvlTestBench.dll
-
-# Validate TFM resolution
-TFM_ERROR := Could not determine .NET target framework!
-ifeq ($(TESTS_TFM),)
-  $(error $(TFM_ERROR))
-else ifeq ($(TEST_BENCH_TFM),)
-  $(error $(TFM_ERROR))
-else
-  $(info Using '$(TESTS_TFM)' to compile $(TESTS_PROJ))
-  $(info Using '$(TEST_BENCH_TFM)' to compile $(TEST_BENCH_PROJ))
-endif
+# Target frameworks, compiled runner paths, and their validation are resolved by .NET/MSBuild.
+# Do not scrape project XML or construct framework-dependent output paths in Make.
 
 .PHONY: test-build
 test-build:
@@ -123,8 +102,19 @@ test-build:
 
 .PHONY: test
 test: test-build
-	deno check clients/desktop/main.ts
-	dotnet test OpenRCT3.tests.slnf --no-build --no-restore -p:SolutionDir="$(CURDIR)/"
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verification/Test-Unit.ps1
+
+# Installed RCT3 verification is intentionally opt-in and never part of the unit gate or CI.
+# Set OPENRCT3_VERIFY_INSTALLED=1 and RCT3_PATH before invoking this target.
+.PHONY: test-installed-ovl
+test-installed-ovl:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verification/Test-InstalledOvl.ps1
+
+# Native verification needs Windows, a desktop session, and installed RCT3 assets. It is not CI-safe.
+# Set OPENRCT3_VERIFY_NATIVE=1 and RCT3_PATH; OPENRCT3_MAP_PATH may select a specific map.
+.PHONY: test-native-smoke
+test-native-smoke:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verification/Test-NativeSmoke.ps1
 
 .PHONY: cover
 cover: test-build
@@ -134,7 +124,6 @@ cover: test-build
 	  --results-directory "$(CURDIR)/coverage"
 
 .PHONY: integration
-$(TEST_BENCH_DLL): $(PLUGINS_OUT) test-plugins $(TEST_BENCH_PROJ) $(TESTS_SRC)
-integration: $(TEST_BENCH_DLL)
+integration: test-plugins
 	dotnet run --project $(TEST_BENCH_PROJ) -- --plugins
 	dotnet test OpenCobra/Tests/Integration/IntegrationTests.csproj

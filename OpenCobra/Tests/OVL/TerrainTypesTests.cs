@@ -108,25 +108,76 @@ public class TerrainTypesTests {
     Assert.That(terrain.Type, Is.EqualTo(type));
   }
 
+  [TestCase(OvlVersion.One)]
   [TestCase(OvlVersion.Four)]
   [TestCase(OvlVersion.Five)]
-  public void ReadRawDataOffset_RejectsMissingStringBlock(OvlVersion version) {
-    using var stream = OvlHeader(version, typeZeroBlockCount: 0);
+  public void ReadStringTableBlock_RejectsMissingBlock(OvlVersion version) {
+    using var stream = OvlArchive(version, typeZeroBlockSize: null, []);
     using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
 
-    Assert.Throws<InvalidDataException>(new Action(() => TerrainTypes.ReadRawDataOffset(reader)));
+    Assert.Throws<InvalidDataException>(new Action(() => TerrainTypes.ReadStringTableBlock(reader)));
+  }
+
+  [TestCase(OvlVersion.One)]
+  [TestCase(OvlVersion.Four)]
+  [TestCase(OvlVersion.Five)]
+  public void ReadStringTableBlock_RejectsZeroSizedBlock(OvlVersion version) {
+    using var stream = OvlArchive(version, typeZeroBlockSize: 0, []);
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    Assert.Throws<InvalidDataException>(new Action(() => TerrainTypes.ReadStringTableBlock(reader)));
+  }
+
+  [TestCase(OvlVersion.One)]
+  [TestCase(OvlVersion.Four)]
+  [TestCase(OvlVersion.Five)]
+  public void ReadStringTableBlock_PreservesFirstBlockSize(OvlVersion version) {
+    using var stream = OvlArchive(version, typeZeroBlockSize: 1, [0]);
+    var expectedOffset = stream.Length - 1;
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    var block = TerrainTypes.ReadStringTableBlock(reader);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(block.Offset, Is.EqualTo(expectedOffset));
+      Assert.That(block.Size, Is.EqualTo(1));
+    }
   }
 
   [TestCase(OvlVersion.Four)]
   [TestCase(OvlVersion.Five)]
-  public void ReadRawDataOffset_AcceptsPresentStringBlock(OvlVersion version) {
-    using var stream = OvlHeader(version, typeZeroBlockCount: 1);
-    var expectedOffset = stream.Length;
+  public void TryReadStringTableStart_RejectsTerminatorInFollowingBlock(OvlVersion version) {
+    using var stream = OvlArchive(
+      version,
+      typeZeroBlockSize: 3,
+      [(byte)'t', (byte)'e', (byte)'r', 0],
+      typeOneBlockSize: 1);
     using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
 
-    var offset = TerrainTypes.ReadRawDataOffset(reader);
+    var resolved = TerrainTypes.TryReadStringTableStart(reader, out var value);
 
-    Assert.That(offset, Is.EqualTo(expectedOffset));
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(resolved, Is.False);
+      Assert.That(value, Is.Empty);
+    }
+  }
+
+  [TestCase(OvlVersion.One)]
+  [TestCase(OvlVersion.Four)]
+  [TestCase(OvlVersion.Five)]
+  public void TryReadStringTableStart_AcceptsTerminatorInsideBlock(OvlVersion version) {
+    using var stream = OvlArchive(
+      version,
+      typeZeroBlockSize: 4,
+      [(byte)'t', (byte)'e', (byte)'r', 0]);
+    using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+    var resolved = TerrainTypes.TryReadStringTableStart(reader, out var value);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(resolved, Is.True);
+      Assert.That(value, Is.EqualTo("ter"));
+    }
   }
 
   [TestCase(40)]
@@ -194,7 +245,18 @@ public class TerrainTypesTests {
 
   private static IEnumerable<Addon> KnownAddons => Enum.GetValues<Addon>();
 
-  private static MemoryStream OvlHeader(OvlVersion version, uint typeZeroBlockCount) {
+  private static MemoryStream OvlArchive(
+    OvlVersion version,
+    uint? typeZeroBlockSize,
+    byte[] rawData,
+    uint typeOneBlockSize = 0
+  ) {
+    if (version == OvlVersion.One && typeOneBlockSize != 0)
+      throw new ArgumentException("The synthetic v1 fixture supports only its first type-0 block.");
+    var expectedRawSize = checked((typeZeroBlockSize ?? 0) + typeOneBlockSize);
+    if (rawData.Length != expectedRawSize)
+      throw new ArgumentException("Raw data length must match the synthetic block definitions.");
+
     var stream = new MemoryStream();
     using (var writer = new BinaryWriter(stream, Encoding.ASCII, leaveOpen: true)) {
       writer.Write(0x4b524746u);
@@ -211,16 +273,26 @@ public class TerrainTypesTests {
       writer.Write(0u);
       writer.Write(0u);
       foreach (var typeIndex in Enumerable.Range(0, 9)) {
-        var blockCount = typeIndex == 0 ? typeZeroBlockCount : 0u;
+        var blockSize = typeIndex switch {
+          0 => typeZeroBlockSize,
+          1 when typeOneBlockSize != 0 => typeOneBlockSize,
+          _ => null
+        };
+        var blockCount = blockSize.HasValue ? 1u : 0u;
         writer.Write(blockCount);
-        writer.Write(0u);
-        foreach (var _ in Enumerable.Range(0, Convert.ToInt32(blockCount))) writer.Write(0u);
+        if (version != OvlVersion.One) {
+          writer.Write(0u);
+          if (blockSize.HasValue) writer.Write(blockSize.Value);
+        }
       }
 
       if (version == OvlVersion.Four || version == OvlVersion.Five) {
         writer.Write(0u);
         writer.Write(0u);
       }
+      if (version == OvlVersion.One && typeZeroBlockSize.HasValue)
+        writer.Write(typeZeroBlockSize.Value);
+      writer.Write(rawData);
     }
     stream.Position = 0;
     return stream;

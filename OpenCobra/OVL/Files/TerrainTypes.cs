@@ -71,6 +71,8 @@ public static class TerrainTypes {
   private const int DescriptionReferenceOffset = 24;
   private const int IconReferenceOffset = 28;
 
+  internal readonly record struct StringTableBlock(long Offset, uint Size);
+
   /// <summary>Extracts every terrain definition, failing if any record or reference is malformed.</summary>
   public static IReadOnlyList<TerrainType> Extract(Ovl ovl) {
     ArgumentNullException.ThrowIfNull(ovl);
@@ -199,8 +201,11 @@ public static class TerrainTypes {
     return value;
   }
 
-  internal static long ReadRawDataOffset(BinaryReader reader) =>
-    OvlTerrainReferenceResolver.ReadRawDataOffset(reader);
+  internal static StringTableBlock ReadStringTableBlock(BinaryReader reader) =>
+    OvlTerrainReferenceResolver.ReadStringTableBlock(reader);
+
+  internal static bool TryReadStringTableStart(BinaryReader reader, out string value) =>
+    OvlTerrainReferenceResolver.TryReadStringTableStart(reader, out value);
 
   private sealed class OvlTerrainReferenceResolver(
     Ovl ovl,
@@ -245,14 +250,19 @@ public static class TerrainTypes {
         return false;
       }
 
-      const int maximumNameLength = 4096;
       using var stream = File.OpenRead(commonPaths[0]);
       using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
-      stream.Position = ReadRawDataOffset(reader);
+      return TryReadStringTableStart(reader, out value);
+    }
+
+    internal static bool TryReadStringTableStart(BinaryReader reader, out string value) {
+      const int maximumNameLength = 4096;
+      var stringBlock = ReadStringTableBlock(reader);
+      reader.BaseStream.Position = stringBlock.Offset;
       var bytes = new List<byte>();
-      foreach (var _ in Enumerable.Range(0, maximumNameLength)) {
-        var next = stream.ReadByte();
-        if (next < 0) break;
+      var bytesToScan = Convert.ToInt32(Math.Min(stringBlock.Size, (uint)maximumNameLength));
+      foreach (var _ in Enumerable.Range(0, bytesToScan)) {
+        var next = reader.BaseStream.ReadByte();
         if (next == 0) {
           value = Encoding.ASCII.GetString([.. bytes]);
           return true;
@@ -271,7 +281,7 @@ public static class TerrainTypes {
       return path[..^uniqueSuffix.Length] + ".common.ovl";
     }
 
-    internal static long ReadRawDataOffset(BinaryReader reader) {
+    internal static StringTableBlock ReadStringTableBlock(BinaryReader reader) {
       Require(reader, 16);
       if (reader.ReadUInt32() != 0x4b524746)
         throw new InvalidDataException("Invalid OVL magic while resolving the common string table.");
@@ -315,6 +325,7 @@ public static class TerrainTypes {
       if (version == 5) Skip(reader, checked(CheckedCount(loaderCount) * 8L));
 
       var typeZeroBlockCount = 0u;
+      var firstTypeZeroBlockSize = 0u;
       foreach (var typeIndex in Enumerable.Range(0, 9)) {
         Require(reader, 4);
         var blockCount = reader.ReadUInt32();
@@ -322,7 +333,11 @@ public static class TerrainTypes {
         if (version > 1) {
           Skip(reader, 4);
           if (version == 5 && (subVersionFlag & 1) != 0) Skip(reader, 4);
-          Skip(reader, checked(CheckedCount(blockCount) * 4L));
+          foreach (var blockIndex in Enumerable.Range(0, CheckedCount(blockCount))) {
+            Require(reader, 4);
+            var blockSize = reader.ReadUInt32();
+            if (typeIndex == 0 && blockIndex == 0) firstTypeZeroBlockSize = blockSize;
+          }
         }
       }
 
@@ -337,8 +352,14 @@ public static class TerrainTypes {
 
       if (typeZeroBlockCount == 0)
         throw new InvalidDataException($"Version {version} OVL has no common string-table block.");
-      if (version == 1) Skip(reader, 4);
-      return reader.BaseStream.Position;
+      if (version == 1) {
+        Require(reader, 4);
+        firstTypeZeroBlockSize = reader.ReadUInt32();
+      }
+      if (firstTypeZeroBlockSize == 0)
+        throw new InvalidDataException($"Version {version} OVL has an empty common string-table block.");
+      Require(reader, firstTypeZeroBlockSize);
+      return new StringTableBlock(reader.BaseStream.Position, firstTypeZeroBlockSize);
     }
 
     private static int CheckedCount(uint count) {

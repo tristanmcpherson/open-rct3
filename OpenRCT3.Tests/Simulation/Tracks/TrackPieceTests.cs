@@ -58,7 +58,7 @@ public class TrackPieceTests {
     var strictChord = new TrackBakeSettings(
       ChordToleranceGaugeFraction: 0f,
       MinimumChordTolerance: 0.01f,
-      MaximumBankAngleChangeRadians: MathF.PI,
+      MaximumBankAngleChangeRadians: TrackBakeSettings.MaximumSafeBankAngleChangeRadians,
       MaximumSubdivisionDepth: 12
     );
     var curvedGeometry = TrackPieceGeometry.FromHandAuthored([
@@ -140,6 +140,51 @@ public class TrackPieceTests {
   }
 
   [Test]
+  public void Constructor_RejectsStationaryDerivativeRootsBetweenFixedProbes() {
+    var hiddenRoots = TrackPieceGeometry.FromHandAuthored([
+      Pair(0f, Vector3.Zero, new(-0.01f, 0f, 0f), Vector3.UnitY),
+      Pair(1f, new(0.01f, 0f, 0f), new(-0.01f, 0f, 0f), Vector3.UnitY),
+    ]);
+
+    Assert.Throws<ArgumentException>(new Action(() => new TrackPiece(hiddenRoots)));
+  }
+
+  [Test]
+  public void FullRoll_CoarsestSafeBakeKeepsOrientationAlignedWithUnwrappedBank() {
+    var fullTurn = MathF.PI * 2f;
+    var geometry = TrackPieceGeometry.FromHandAuthored([
+      Pair(0f, Vector3.Zero, new(10f, 0f, 0f), Vector3.UnitY, bank: 0f),
+      Pair(1f, new(10f, 0f, 0f), new(10f, 0f, 0f), Vector3.UnitY, bank: fullTurn),
+    ]);
+    Assert.Throws<ArgumentOutOfRangeException>(new Action(() => new TrackPiece(
+      geometry,
+      Matrix4x4.Identity,
+      new(MaximumBankAngleChangeRadians: fullTurn)
+    )));
+
+    var piece = new TrackPiece(
+      geometry,
+      Matrix4x4.Identity,
+      new(
+        ChordToleranceGaugeFraction: 0f,
+        MinimumChordTolerance: 1f,
+        MaximumBankAngleChangeRadians: TrackBakeSettings.MaximumSafeBankAngleChangeRadians,
+        MaximumSubdivisionDepth: 12
+      )
+    );
+
+    var sample = piece.SampleRail(RailSide.Left, piece.Length * 0.1f);
+    var actualLateral = Vector3.Transform(Vector3.UnitY, sample.Orientation);
+    var expectedLateral = Vector3.Transform(
+      Vector3.UnitY,
+      Quaternion.CreateFromAxisAngle(Vector3.UnitX, sample.BankRadians)
+    );
+
+    Assert.That(piece.BakedSampleCount, Is.EqualTo(5));
+    Assert.That(Vector3.Dot(actualLateral, expectedLateral), Is.GreaterThan(0.9999f));
+  }
+
+  [Test]
   public void SampleRail_OrientationForwardMatchesHermiteTangentOnCoarseBake() {
     var piece = new TrackPiece(
       TrackPieceGeometry.FromHandAuthored([
@@ -150,7 +195,7 @@ public class TrackPieceTests {
       new(
         ChordToleranceGaugeFraction: 0f,
         MinimumChordTolerance: 100f,
-        MaximumBankAngleChangeRadians: MathF.PI,
+        MaximumBankAngleChangeRadians: TrackBakeSettings.MaximumSafeBankAngleChangeRadians,
         MaximumSubdivisionDepth: 12
       )
     );

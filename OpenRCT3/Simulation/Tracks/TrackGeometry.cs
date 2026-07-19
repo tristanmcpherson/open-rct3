@@ -163,6 +163,7 @@ public sealed record TrackBakeSettings(
   float MaximumBankAngleChangeRadians = 0.08726646f,
   int MaximumSubdivisionDepth = 12
 ) {
+  public const float MaximumSafeBankAngleChangeRadians = MathF.PI / 2f;
   public static TrackBakeSettings Default { get; } = new();
 
   internal void Validate() {
@@ -171,7 +172,8 @@ public sealed record TrackBakeSettings(
     if (!float.IsFinite(MinimumChordTolerance) || MinimumChordTolerance <= 0f)
       throw new ArgumentOutOfRangeException(nameof(MinimumChordTolerance));
     if (!float.IsFinite(MaximumBankAngleChangeRadians)
-        || MaximumBankAngleChangeRadians <= 0f)
+        || MaximumBankAngleChangeRadians <= 0f
+        || MaximumBankAngleChangeRadians > MaximumSafeBankAngleChangeRadians)
       throw new ArgumentOutOfRangeException(nameof(MaximumBankAngleChangeRadians));
     if (MaximumSubdivisionDepth is < 1 or > 24)
       throw new ArgumentOutOfRangeException(nameof(MaximumSubdivisionDepth));

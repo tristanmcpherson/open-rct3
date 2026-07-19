@@ -66,6 +66,15 @@ public sealed class TrackPiece {
       point.RightTangent,
       point.BankRadians
     )));
+    var centerSpline = new HermiteRailSpline(transformed.Select(point => new RailSplinePoint(
+      point.Parameter,
+      (point.LeftPosition + point.RightPosition) * 0.5f,
+      (point.LeftTangent + point.RightTangent) * 0.5f,
+      point.BankRadians
+    )));
+    leftSpline.ValidateRegularity();
+    rightSpline.ValidateRegularity();
+    centerSpline.ValidateRegularity();
 
     Entry = GetEndpoint(0f);
     Exit = GetEndpoint(1f);
@@ -184,7 +193,6 @@ public sealed class TrackPiece {
     var midpoint = EvaluatePair(midpointParameter);
     var thirdQuarter = EvaluatePair(thirdQuarterParameter);
     var end = EvaluatePair(endParameter);
-    ValidateRegularity([start, firstQuarter, midpoint, thirdQuarter, end]);
 
     var leftDeviation = MaximumChordDeviation(
       start.Left.Position,
@@ -202,7 +210,7 @@ public sealed class TrackPiece {
     );
     var bankChange = MathF.Abs(end.Left.BankRadians - start.Left.BankRadians);
     var needsSubdivision = MathF.Max(leftDeviation, rightDeviation) > chordTolerance
-      || bankChange > BakeSettings.MaximumBankAngleChangeRadians;
+      || bankChange > BakeSettings.MaximumBankAngleChangeRadians + TrackMath.Epsilon;
 
     if (needsSubdivision && depth < BakeSettings.MaximumSubdivisionDepth) {
       Subdivide(startParameter, midpointParameter, depth + 1, chordTolerance, output);
@@ -231,24 +239,6 @@ public sealed class TrackPiece {
         Vector3.Distance(thirdQuarter, Vector3.Lerp(start, end, 0.75f))
       )
     );
-
-  private static void ValidateRegularity(IReadOnlyList<RailPairEvaluation> evaluations) {
-    var derivativeScale = evaluations.Max(pair => MathF.Max(
-      pair.Left.Derivative.Length(),
-      pair.Right.Derivative.Length()
-    ));
-    var minimumDerivative = MathF.Max(TrackMath.Epsilon, derivativeScale * 0.00001f);
-
-    foreach (var pair in evaluations) {
-      var centerDerivative = (pair.Left.Derivative + pair.Right.Derivative) * 0.5f;
-      if (pair.Left.Derivative.Length() <= minimumDerivative
-          || pair.Right.Derivative.Length() <= minimumDerivative
-          || centerDerivative.Length() <= minimumDerivative)
-        throw new ArgumentException(
-          "A track piece cannot contain a stationary or near-stationary spline tangent."
-        );
-    }
-  }
 
   private RailPairEvaluation EvaluatePair(float parameter)
     => new(leftSpline.Evaluate(parameter), rightSpline.Evaluate(parameter));
@@ -295,14 +285,15 @@ public sealed class TrackPiece {
     if (tangentSource.LengthSquared() <= TrackMath.Epsilon)
       tangentSource = amount < 0.5f ? start.Tangent : end.Tangent;
     var tangent = Vector3.Normalize(tangentSource);
-    var lateral = InterpolateLateral(start, end, tangent, amount);
+    var bank = TrackMath.LerpUnwrapped(start.BankRadians, end.BankRadians, amount);
+    var lateral = ApplyBank(tangent, InterpolateLateral(start, end, tangent, amount), bank);
 
     return new(
       arcLength,
       position,
       tangent,
       CreateOrientation(tangent, lateral),
-      TrackMath.LerpUnwrapped(start.BankRadians, end.BankRadians, amount)
+      bank
     );
   }
 
@@ -343,6 +334,12 @@ public sealed class TrackPiece {
     );
     return Quaternion.Normalize(Quaternion.CreateFromRotationMatrix(orientationMatrix));
   }
+
+  private static Vector3 ApplyBank(Vector3 tangent, Vector3 lateral, float bankRadians)
+    => Vector3.Normalize(Vector3.Transform(
+      lateral,
+      Quaternion.CreateFromAxisAngle(tangent, bankRadians)
+    ));
 
   private static RailControlPair Transform(RailControlPair point, Matrix4x4 placement)
     => point with {
@@ -393,9 +390,6 @@ public sealed class TrackPiece {
         throw new ArgumentException("The rail gauge cannot be parallel to its tangent.");
       right = Vector3.Normalize(right);
 
-      var bankRotation = Quaternion.CreateFromAxisAngle(tangent, rail.BankRadians);
-      right = Vector3.Normalize(Vector3.Transform(right, bankRotation));
-
       return new(
         rail.Position,
         tangent,
@@ -406,7 +400,13 @@ public sealed class TrackPiece {
     }
 
     public RailSample ToSample(float arcLength)
-      => new(arcLength, Position, Tangent, CreateOrientation(Tangent, Lateral), BankRadians);
+      => new(
+        arcLength,
+        Position,
+        Tangent,
+        CreateOrientation(Tangent, ApplyBank(Tangent, Lateral, BankRadians)),
+        BankRadians
+      );
   }
 }
 
@@ -424,12 +424,71 @@ internal readonly record struct RailCurveEvaluation(
 );
 
 internal sealed class HermiteRailSpline {
+  private const int MaximumRegularitySubdivisionDepth = 20;
   private readonly RailSplinePoint[] points;
   private readonly float[] parameters;
 
   public HermiteRailSpline(IEnumerable<RailSplinePoint> points) {
     this.points = points.ToArray();
     parameters = this.points.Select(point => point.Parameter).ToArray();
+  }
+
+  public void ValidateRegularity() {
+    for (var index = 0; index < points.Length - 1; index++) {
+      var start = points[index];
+      var end = points[index + 1];
+      var parameterRange = end.Parameter - start.Parameter;
+      var derivativeStart = start.Tangent;
+      var derivativeMiddle = (3f * (end.Position - start.Position) / parameterRange)
+        - start.Tangent - end.Tangent;
+      var derivativeEnd = end.Tangent;
+      var derivativeScale = MathF.Max(
+        derivativeStart.Length(),
+        MathF.Max(derivativeMiddle.Length(), derivativeEnd.Length())
+      );
+      var minimumDerivative = MathF.Max(TrackMath.Epsilon, derivativeScale * 0.00001f);
+      ValidateDerivativeBounds(
+        derivativeStart,
+        derivativeMiddle,
+        derivativeEnd,
+        minimumDerivative,
+        depth: 0
+      );
+    }
+  }
+
+  private static void ValidateDerivativeBounds(
+    Vector3 start,
+    Vector3 middle,
+    Vector3 end,
+    float minimumDerivative,
+    int depth
+  ) {
+    if (ComponentBoundExcludesZero(start.X, middle.X, end.X, minimumDerivative)
+        || ComponentBoundExcludesZero(start.Y, middle.Y, end.Y, minimumDerivative)
+        || ComponentBoundExcludesZero(start.Z, middle.Z, end.Z, minimumDerivative))
+      return;
+    if (depth >= MaximumRegularitySubdivisionDepth)
+      throw new ArgumentException(
+        "A track piece cannot contain a stationary or near-stationary spline tangent."
+      );
+
+    var startMiddle = (start + middle) * 0.5f;
+    var middleEnd = (middle + end) * 0.5f;
+    var split = (startMiddle + middleEnd) * 0.5f;
+    ValidateDerivativeBounds(start, startMiddle, split, minimumDerivative, depth + 1);
+    ValidateDerivativeBounds(split, middleEnd, end, minimumDerivative, depth + 1);
+  }
+
+  private static bool ComponentBoundExcludesZero(
+    float start,
+    float middle,
+    float end,
+    float minimumDerivative
+  ) {
+    var minimum = MathF.Min(start, MathF.Min(middle, end));
+    var maximum = MathF.Max(start, MathF.Max(middle, end));
+    return minimum > minimumDerivative || maximum < -minimumDerivative;
   }
 
   public RailCurveEvaluation Evaluate(float parameter) {

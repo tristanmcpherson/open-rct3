@@ -13,20 +13,35 @@ namespace OpenCobra.GDK.Materials;
 public enum MaterialBlendMode {
   Opaque,
   AlphaMask,
-  Alpha
+  Alpha,
+  Additive
+}
+
+public enum MaterialDepthMode {
+  Less,
+  Equal
 }
 
 public readonly record struct MaterialRenderState(
   MaterialBlendMode BlendMode,
   bool DepthWrite,
-  bool CullBackFaces
+  bool CullBackFaces,
+  MaterialDepthMode DepthMode = MaterialDepthMode.Less
 ) {
   public static MaterialRenderState Opaque => new(MaterialBlendMode.Opaque, true, false);
   public static MaterialRenderState AlphaMask => new(MaterialBlendMode.AlphaMask, true, false);
   public static MaterialRenderState AlphaBlend => new(MaterialBlendMode.Alpha, false, false);
+  public static MaterialRenderState AdditiveContribution => new(
+    MaterialBlendMode.Additive,
+    false,
+    false,
+    MaterialDepthMode.Equal);
 
   [Browsable(false)]
   public bool IsTransparent => BlendMode == MaterialBlendMode.Alpha;
+
+  [Browsable(false)]
+  public bool IsAdditiveContribution => BlendMode == MaterialBlendMode.Additive;
 }
 
 public abstract class Material : IResource, IDisposable {
@@ -227,6 +242,72 @@ void main() {
 
     Shaders = new(vertexSource, fragmentSource);
   }
+}
+
+/// <summary>One weighted terrain-texture pass used by exact GroundBlended reconstruction.</summary>
+/// <remarks>
+/// A base pass writes its weighted colour and depth. Contribution passes draw the same terrain
+/// geometry at equal depth and add their independently weighted colours. This produces a stable
+/// weighted sum without depending on the original executable's hidden fixed-function blend state.
+/// </remarks>
+public sealed class TerrainBlend : Material {
+  public TerrainBlend(TerrainBlendPass pass) {
+    RenderState = pass switch {
+      TerrainBlendPass.Base => MaterialRenderState.Opaque,
+      TerrainBlendPass.Contribution => MaterialRenderState.AdditiveContribution,
+      _ => throw new ArgumentOutOfRangeException(nameof(pass), pass, null),
+    };
+
+    var vertexSource = @"#version 410 core
+in vec3 a_Position;
+in vec3 a_Normal;
+in vec2 a_TexCoord;
+in vec4 a_Color;
+
+uniform mat4 u_Model;
+uniform mat4 u_ViewProj;
+
+out vec2 v_TexCoord;
+out vec3 v_Tint;
+out float v_Weight;
+out float v_Light;
+
+void main() {
+    gl_Position = u_ViewProj * u_Model * vec4(a_Position, 1.0);
+    v_TexCoord = a_TexCoord;
+    v_Tint = a_Color.rgb;
+    v_Weight = clamp(a_Color.a, 0.0, 1.0);
+    vec3 transformedNormal = mat3(transpose(inverse(u_Model))) * a_Normal;
+    float normalLength = length(transformedNormal);
+    vec3 worldNormal = normalLength > 0.0001
+        ? transformedNormal / normalLength
+        : vec3(0.0, 0.0, 1.0);
+    vec3 lightDirection = normalize(vec3(-0.35, -0.45, 0.82));
+    float diffuse = max(dot(worldNormal, lightDirection), 0.0);
+    v_Light = 0.45 + (0.55 * diffuse);
+}";
+    var fragmentSource = @"#version 410 core
+uniform sampler2D u_Texture;
+
+in vec2 v_TexCoord;
+in vec3 v_Tint;
+in float v_Weight;
+in float v_Light;
+
+out vec4 FragColor;
+
+void main() {
+    vec4 texColor = texture(u_Texture, v_TexCoord);
+    FragColor = vec4(texColor.rgb * v_Tint * v_Light * v_Weight, v_Weight);
+}";
+
+    Shaders = new(vertexSource, fragmentSource);
+  }
+}
+
+public enum TerrainBlendPass {
+  Base,
+  Contribution
 }
 
 public class Water : Material {

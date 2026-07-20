@@ -123,7 +123,9 @@ public class Renderer : ThreadAffine, IRenderer {
   internal static DrawNode[] OrderDisplayList(IEnumerable<DrawNode> displayList) {
     var nodes = displayList.ToArray();
     return [
-      .. nodes.Where(node => !node.RenderState.IsTransparent),
+      .. nodes.Where(node =>
+        !node.RenderState.IsTransparent && !node.RenderState.IsAdditiveContribution),
+      .. nodes.Where(node => node.RenderState.IsAdditiveContribution),
       .. nodes
         .Where(node => node.RenderState.IsTransparent)
         .OrderByDescending(node => node.CameraDistanceSquared),
@@ -196,6 +198,8 @@ public class Renderer : ThreadAffine, IRenderer {
         gl.CheckError(string.Format("Draw {0}", item.Name));
       }
     } finally {
+      gl.DepthFunc(DepthFunction.Less);
+      gl.CheckError("Restore scene depth function");
       gl.DepthMask(depthWriteEnabled);
       gl.CheckError("Restore scene depth write state");
     }
@@ -205,6 +209,14 @@ public class Renderer : ThreadAffine, IRenderer {
   }
 
   private void ApplyRenderState(MaterialRenderState renderState) {
+    gl.DepthFunc(renderState.DepthMode switch {
+      MaterialDepthMode.Less => DepthFunction.Less,
+      MaterialDepthMode.Equal => DepthFunction.Equal,
+      _ => throw new ArgumentOutOfRangeException(
+        nameof(renderState),
+        renderState.DepthMode,
+        "Unsupported material depth mode."),
+    });
     gl.DepthMask(renderState.DepthWrite);
     if (renderState.CullBackFaces) {
       gl.Enable(EnableCap.CullFace);
@@ -227,6 +239,17 @@ public class Renderer : ThreadAffine, IRenderer {
           BlendingFactor.OneMinusSrcAlpha,
           BlendingFactor.One,
           BlendingFactor.OneMinusSrcAlpha);
+        break;
+      case MaterialBlendMode.Additive:
+        gl.Enable(EnableCap.Blend);
+        gl.BlendEquationSeparate(
+          BlendEquationModeEXT.FuncAdd,
+          BlendEquationModeEXT.FuncAdd);
+        gl.BlendFuncSeparate(
+          BlendingFactor.One,
+          BlendingFactor.One,
+          BlendingFactor.One,
+          BlendingFactor.One);
         break;
       default:
         throw new ArgumentOutOfRangeException(

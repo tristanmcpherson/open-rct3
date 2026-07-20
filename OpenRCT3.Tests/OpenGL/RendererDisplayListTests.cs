@@ -28,11 +28,16 @@ public class RendererDisplayListTests {
       "masked",
       MaterialRenderState.AlphaMask,
       256);
+    var terrainContribution = CreateNode(
+      "terrain-contribution",
+      MaterialRenderState.AdditiveContribution,
+      512);
 
     var ordered = Renderer.OrderDisplayList([
       transparentNear,
       opaqueFirst,
       transparentFar,
+      terrainContribution,
       masked,
       opaqueSecond,
     ]);
@@ -43,6 +48,7 @@ public class RendererDisplayListTests {
         "opaque-first",
         "masked",
         "opaque-second",
+        "terrain-contribution",
         "transparent-far",
         "transparent-near",
       }));

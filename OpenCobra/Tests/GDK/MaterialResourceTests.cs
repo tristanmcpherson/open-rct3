@@ -37,9 +37,12 @@ public class MaterialResourceTests {
     using var textured = new Textured();
     using var masked = new Textured(MaterialBlendMode.AlphaMask);
     using var blended = new Textured(MaterialBlendMode.Alpha);
+    using var depthWritingBlend = new Textured(MaterialBlendMode.Alpha, depthWrite: true);
     using var testedBlend = new Textured(MaterialBlendMode.Alpha, 8);
     using var water = new Water();
     using var chrome = new Chrome();
+    using var terrainBase = new TerrainBlend(TerrainBlendPass.Base);
+    using var terrainContribution = new TerrainBlend(TerrainBlendPass.Contribution);
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(flat.RenderState, Is.EqualTo(MaterialRenderState.Opaque));
@@ -52,6 +55,9 @@ public class MaterialResourceTests {
       Assert.That(masked.Shaders.Fragment,
         Does.Contain("texColor.a <= 208.0 / 255.0"));
       Assert.That(blended.RenderState, Is.EqualTo(MaterialRenderState.AlphaBlend));
+      Assert.That(depthWritingBlend.RenderState,
+        Is.EqualTo(MaterialRenderState.AlphaBlend with { DepthWrite = true }));
+      Assert.That(depthWritingBlend.RenderState.IsTransparent, Is.False);
       Assert.That(blended.Shaders.Fragment, Does.Not.Contain("discard"));
       Assert.That(testedBlend.RenderState, Is.EqualTo(MaterialRenderState.AlphaBlend));
       Assert.That(testedBlend.Shaders.Fragment,
@@ -61,6 +67,30 @@ public class MaterialResourceTests {
       Assert.That(water.RenderState.DepthWrite, Is.False);
       Assert.That(chrome.RenderState, Is.EqualTo(MaterialRenderState.Opaque));
       Assert.That(chrome.Textures, Is.Empty);
+      Assert.That(terrainBase.RenderState, Is.EqualTo(MaterialRenderState.Opaque));
+      Assert.That(terrainContribution.RenderState,
+        Is.EqualTo(MaterialRenderState.AdditiveContribution));
+      Assert.That(terrainContribution.RenderState.DepthMode,
+        Is.EqualTo(MaterialDepthMode.Equal));
+    }
+  }
+
+  [Test]
+  public void TerrainBlendMaterial_MultipliesTextureColourByQuantizedVertexWeight() {
+    using var terrainBase = new TerrainBlend(TerrainBlendPass.Base);
+    using var terrainContribution = new TerrainBlend(TerrainBlendPass.Contribution);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(terrainBase.Shaders.Fragment,
+        Does.Contain("texColor.rgb * v_Tint * v_Light * v_Weight"));
+      Assert.That(
+        terrainBase.Shaders.Fragment,
+        Is.EqualTo(terrainContribution.Shaders.Fragment));
+      Assert.That(terrainBase.CacheKey, Is.EqualTo(terrainContribution.CacheKey));
+      Assert.That(terrainBase.RenderState.DepthWrite, Is.True);
+      Assert.That(terrainContribution.RenderState.DepthWrite, Is.False);
+      Assert.That(terrainContribution.RenderState.IsAdditiveContribution, Is.True);
+      Assert.That(terrainContribution.RenderState.IsTransparent, Is.False);
     }
   }
 

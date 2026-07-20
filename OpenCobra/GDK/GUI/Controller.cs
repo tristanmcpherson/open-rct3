@@ -40,6 +40,8 @@ public class Controller : ThreadAffine, IDisposable {
     io.DisplayFramebufferScale = new Vector2(1);
     unsafe { io.IniFilename = null; }
     io.ConfigFlags |= ImGuiConfigFlags.NavEnableKeyboard;
+    // Let gameplay keys through unless an active widget captures them.
+    io.ConfigNavCaptureKeyboard = false;
     io.ConfigFlags |= ImGuiConfigFlags.NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags.DockingEnable;
     // TODO: io.ConfigFlags |= ImGuiConfigFlags.ViewportsEnable;

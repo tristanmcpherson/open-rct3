@@ -147,6 +147,41 @@ public class PathSurfaceResourceResolverTests {
     }
   }
 
+  [Test]
+  [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
+  public void LoadInstalled_ResolvesStockOrdinaryAndRecolouredQueueTextures() {
+    var root = Environment.GetEnvironmentVariable("RCT3_PATH");
+    Assert.That(
+      string.IsNullOrWhiteSpace(root),
+      Is.False,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    Assert.That(
+      Directory.Exists(root),
+      Is.True,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    var queueColours = new PathSurfaceColours(4, 5, 6);
+    var path = new PathTile { SurfaceSystemName = "Asphalt" };
+    var queue = new PathTile {
+      IsQueue = true,
+      SurfaceSystemName = "QueueSet1",
+      SurfaceColours = queueColours,
+    };
+
+    using var resolver = PathSurfaceResourceResolver.LoadInstalled(root!, [path, queue]);
+    var foundPath = resolver.TryResolveTexture(path, out var pathTexture);
+    var foundQueue = resolver.TryResolveTexture(queue, out var queueTexture);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(foundPath, Is.True);
+      Assert.That(pathTexture, Is.Not.Null);
+      Assert.That(pathTexture!.Name, Is.EqualTo("Path_Asphalt_GroundA"));
+      Assert.That(foundQueue, Is.True);
+      Assert.That(queueTexture, Is.Not.Null);
+      Assert.That(queueTexture!.Name, Is.EqualTo("GroundQueueSet1"));
+      Assert.That(queueTexture.IsRecolorable, Is.True);
+    }
+  }
+
   private static PathType PathResource(
     string name = "Asphalt",
     string internalName = "Asphalt"

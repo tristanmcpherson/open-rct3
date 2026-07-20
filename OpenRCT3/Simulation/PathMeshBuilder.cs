@@ -62,14 +62,17 @@ public static class PathMeshBuilder {
     ArgumentNullException.ThrowIfNull(park);
     ArgumentNullException.ThrowIfNull(terrain);
 
-    var geometry =
-      new Dictionary<(PathMaterialKind Kind, string? SurfaceSystemName), MeshGeometry>();
+    var geometry = new Dictionary<(
+      PathMaterialKind Kind,
+      string? SurfaceSystemName,
+      PathSurfaceColours? MaterialColours), MeshGeometry>();
     foreach (var placement in OrderedPlacements(park)) {
       var (tileX, tileY, tile) = placement;
       ValidatePlacement(terrain, tileX, tileY);
 
       var kind = tile.IsQueue ? PathMaterialKind.Queue : PathMaterialKind.Ordinary;
-      var key = (kind, tile.SurfaceSystemName);
+      var materialColours = tile.IsQueue ? tile.SurfaceColours : null;
+      var key = (kind, tile.SurfaceSystemName, materialColours);
       if (!geometry.TryGetValue(key, out var batch)) {
         batch = new MeshGeometry();
         geometry.Add(key, batch);
@@ -88,13 +91,19 @@ public static class PathMeshBuilder {
     return geometry
       .OrderBy(batch => batch.Key.Kind)
       .ThenBy(batch => batch.Key.SurfaceSystemName, StringComparer.Ordinal)
+      .ThenBy(batch => batch.Key.MaterialColours.HasValue ? 1 : 0)
+      .ThenBy(batch => batch.Key.MaterialColours?.First ?? 0)
+      .ThenBy(batch => batch.Key.MaterialColours?.Second ?? 0)
+      .ThenBy(batch => batch.Key.MaterialColours?.Third ?? 0)
       .Select(batch => new PathMeshBatch(
         batch.Key.Kind,
         batch.Key.SurfaceSystemName,
         batch.Value.SurfaceColours.ToArray(),
         new Mesh(batch.Value.Vertices, batch.Value.Indices) {
           Name = $"{name} {batch.Key.Kind} {batch.Key.SurfaceSystemName ?? "Unresolved"}"
-        }))
+        }) {
+          MaterialColours = batch.Key.MaterialColours
+        })
       .ToArray();
   }
 
@@ -226,4 +235,10 @@ public sealed record PathMeshBatch(
   string? SurfaceSystemName,
   IReadOnlyList<PathSurfaceColours?> SurfaceColours,
   Mesh Mesh
-);
+) {
+  /// <summary>
+  /// The one queue flexi-colour triplet shared by this material batch, or <c>null</c> for ordinary
+  /// paths and queues that do not serialize a ground-surface colour wrapper.
+  /// </summary>
+  public PathSurfaceColours? MaterialColours { get; init; }
+}

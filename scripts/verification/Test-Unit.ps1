@@ -38,9 +38,11 @@ $approvedInstalledAssetSkips = @(
   'OpenRCT3.Tests.Serialization.DatTrackedRideInstanceReaderTests.Read_InstalledCampaignCapturesRideInstanceLinkage("Campaigns/Base/BoxOffice.dat")',
   'OpenRCT3.Tests.Serialization.DatTrackedRideInstanceReaderTests.Read_InstalledCampaignCapturesRideInstanceLinkage("Campaigns/Base/Soaked/Atlantis.dat")',
   'OpenRCT3.Tests.Serialization.DatTrackedRideInstanceReaderTests.Read_InstalledCampaignCapturesRideInstanceLinkage("Campaigns/Base/Wild/GeminiBasin.dat")',
+  'OpenRCT3.Tests.Simulation.PathSurfaceResourceResolverTests.LoadInstalled_ResolvesStockOrdinaryAndRecolouredQueueTextures',
   'OpenRCT3.Tests.Simulation.PathSurfaceResourceResolverTests.TryResolve_InstalledAsphaltAndQueueSet1MatchDatSystemNames',
   'OpenRCT3.Tests.Simulation.RideInstanceResourceResolverTests.Resolve_InstalledCampaignIdentitiesAgainstTheirExactOvlOverlays',
   'OpenRCT3.Tests.Simulation.RideInstanceTrackGraphTests.Build_InstalledCampaignsHaveExactNonSentinelReciprocalLinks',
+  'OpenRCT3.Tests.Simulation.RideTrackInstalledPipelineTests.BoxOffice_DatThroughCatalogProducesTypedGeometryOutcomes',
   'OpenRCT3.Tests.Simulation.RideTrackSectionResourceResolverTests.Resolve_InstalledCampaignsLinkExactDatOverlayAndTksIdentities'
 )
 $approvedSkippedTests = @($approvedDumperSkip) + $approvedInstalledAssetSkips

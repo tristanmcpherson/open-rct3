@@ -14,4 +14,18 @@ public class GamePresentationOptionsTests {
   public void ShouldShowUserInterface_OnlyHidesForExplicitOne(string? value, bool expected) {
     Assert.That(GamePresentationOptions.ShouldShowUserInterface(value), Is.EqualTo(expected));
   }
+
+  [TestCase(null, false)]
+  [TestCase("", false)]
+  [TestCase("0", false)]
+  [TestCase("true", false)]
+  [TestCase("1", true)]
+  public void ShouldShowRideTrackDiagnostics_OnlyEnablesForExplicitOne(
+    string? value,
+    bool expected
+  ) {
+    Assert.That(
+      GamePresentationOptions.ShouldShowRideTrackDiagnostics(value),
+      Is.EqualTo(expected));
+  }
 }

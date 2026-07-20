@@ -138,18 +138,27 @@ public class PathMeshBuilderTests {
       SurfaceColours = westColours,
     }));
 
-    var batch = PathMeshBuilder.BuildBatches(
-      park, terrain, Vector4.One, Vector4.UnitY).Single();
+    var batches = PathMeshBuilder.BuildBatches(
+      park, terrain, Vector4.One, Vector4.UnitY);
 
     using (Assert.EnterMultipleScope()) {
-      Assert.That(batch.Kind, Is.EqualTo(PathMaterialKind.Queue));
-      Assert.That(batch.SurfaceSystemName, Is.EqualTo("QueueStone"));
-      Assert.That(batch.SurfaceColours,
+      Assert.That(batches, Has.Count.EqualTo(2));
+      Assert.That(batches.Select(batch => batch.Kind),
+        Is.All.EqualTo(PathMaterialKind.Queue));
+      Assert.That(batches.Select(batch => batch.SurfaceSystemName),
+        Is.All.EqualTo("QueueStone"));
+      Assert.That(batches.Select(batch => batch.MaterialColours),
         Is.EqualTo(new PathSurfaceColours?[] { westColours, eastColours }));
-      Assert.That(batch.Mesh.Vertices, Has.Count.EqualTo(8));
-      Assert.That(batch.Mesh.Indices, Has.Count.EqualTo(12));
-      Assert.That(batch.Mesh.Vertices[0].Position.X,
-        Is.LessThan(batch.Mesh.Vertices[4].Position.X));
+      Assert.That(batches.Select(batch => batch.SurfaceColours), Is.EqualTo(new[] {
+        new PathSurfaceColours?[] { westColours },
+        new PathSurfaceColours?[] { eastColours },
+      }));
+      Assert.That(batches.Select(batch => batch.Mesh.Vertices.Count),
+        Is.All.EqualTo(4));
+      Assert.That(batches.Select(batch => batch.Mesh.Indices.Count),
+        Is.All.EqualTo(6));
+      Assert.That(batches[0].Mesh.Vertices[0].Position.X,
+        Is.LessThan(batches[1].Mesh.Vertices[0].Position.X));
     }
   }
 

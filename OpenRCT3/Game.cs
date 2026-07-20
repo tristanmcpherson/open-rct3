@@ -19,6 +19,7 @@ using OpenRCT3.Scenario;
 using OpenRCT3.Simulation;
 using Silk.NET.Input;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using System.Threading;
 
@@ -199,22 +200,35 @@ public class Game : IGame {
     logger.Debug("Added terrain meshes");
 
     Debug.Assert(World.Park != null);
+    var installPath = Config.InstallPath
+      ?? throw new InvalidOperationException("RCT3 installation path is not configured.");
     if (World.Park.PathPlacements.Count > 0) {
+      using var pathSurfaces = PathSurfaceResourceResolver.LoadInstalled(
+        installPath,
+        World.Park.PathPlacements.Select(placement => placement.Tile).ToArray());
       foreach (var batch in PathMeshBuilder.BuildBatches(
         World.Park,
         World.Terrain,
         new Vector4(0.72f, 0.64f, 0.50f, 1f),
         new Vector4(0.28f, 0.48f, 0.70f, 1f))) {
-        // The batch retains exact RCT3 queue flexi-colour indices. Until the palette is decoded,
-        // keep the established ordinary/queue vertex tints instead of inventing a conversion.
-        var pathModel = new Model(batch.Mesh) { Material = new Flat() };
+        var materialTile = new PathTile {
+          IsQueue = batch.Kind == PathMaterialKind.Queue,
+          SurfaceSystemName = batch.SurfaceSystemName,
+          SurfaceColours = batch.MaterialColours,
+        };
+        Material material;
+        if (pathSurfaces.TryResolveTexture(materialTile, out var texture)) {
+          material = new Textured { AlbedoTexture = texture! };
+        } else {
+          // Unknown custom and legacy DAT surfaces keep the established kind-specific vertex tint.
+          material = new Flat();
+        }
+        var pathModel = new Model(batch.Mesh) { Material = material };
         Scene.Models.Add(pathModel);
       }
     }
     logger.Debug("Added {Count} path tiles", World.Park.PathPlacements.Count);
 
-    var installPath = Config.InstallPath
-      ?? throw new InvalidOperationException("RCT3 installation path is not configured.");
     var scenery = ScenerySceneLoader.Load(World.Park, World.Terrain, installPath);
     Scene.Models.AddRange(scenery.Models);
     logger.Debug(
@@ -226,6 +240,53 @@ public class Game : IGame {
       scenery.Geometry.SkippedPlacementCount,
       scenery.MissingOverlayPlacementCount,
       scenery.MissingTextureBatchCount);
+
+    if (World.Park.RideTrackPlacements.Count > 0 && World.Park.RideTracks.Count > 0) {
+      try {
+        using var loadedTrackResources = RideTrackResourceCatalogLoader.Load(
+          installPath,
+          World.Park.RideTrackPlacements);
+        var trackResources = loadedTrackResources.Catalog.ResolveAll(
+          World.Park.RideTrackPlacements);
+        var trackGeometry = RideTrackGeometryResolver.Resolve(
+          World.Terrain,
+          World.Park.RideTracks,
+          trackResources);
+        World.Park.RideTrackGeometry = trackGeometry;
+
+        logger.Debug(
+          "Resolved {TrackCount} ride tracks from {PlacementCount} placements and " +
+          "{PairCount} exact OVL pairs: {OpenCount} open, {CircuitCount} circuits, " +
+          "{UnresolvedCount} unresolved, {UnsupportedGeometryCount} unsupported geometry, " +
+          "{UnsupportedTopologyCount} unsupported topology, {IssueCount} resource issues",
+          trackGeometry.Tracks.Count,
+          trackResources.Placements.Count,
+          loadedTrackResources.Context.LoadedCommonPaths.Count,
+          trackGeometry.Tracks.Count(track =>
+            track.Status == RideTrackGeometryStatus.OpenTrack),
+          trackGeometry.Tracks.Count(track =>
+            track.Status == RideTrackGeometryStatus.Circuit),
+          trackGeometry.UnresolvedResourceTrackCount,
+          trackGeometry.UnsupportedGeometryTrackCount,
+          trackGeometry.UnsupportedTopologyTrackCount,
+          loadedTrackResources.Issues.Count);
+
+        if (GamePresentationOptions.ShowRideTrackDiagnostics) {
+          var diagnostics = RideTrackDiagnosticSceneBuilder.Build(trackGeometry);
+          Scene.Models.AddRange(diagnostics.Models);
+          logger.Debug(
+            "Added {ModelCount} diagnostic ride-track contact-rail models ({Detail})",
+            diagnostics.Models.Count,
+            diagnostics.Detail);
+        }
+      } catch (Exception error) when (
+        error is InvalidDataException or IOException or UnauthorizedAccessException or
+          ArgumentException or InvalidOperationException or AggregateException) {
+        // Exact ride geometry is additive while the linked scenery models remain authoritative.
+        // Keep the park loadable when custom or malformed OVL resources cannot enter this subset.
+        logger.Warn(error, "Ride-track runtime geometry could not be resolved");
+      }
+    }
 
     // Water is a separate overlay over the terrain. Each decoded DAT WaterManager pool keeps its
     // exact triangle masks and surface height while rendering independently from the terrain mesh.

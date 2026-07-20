@@ -108,6 +108,12 @@ public class Park {
   /// <summary>Semantic DAT <c>Track</c> roots, without generated or duplicated geometry.</summary>
   public List<RideTrack> RideTracks { get; } = [];
 
+  /// <summary>
+  /// Provenance-resolved dual-rail runtime geometry for the loaded ride tracks, when installed
+  /// resources were available and the serialized topology was supported.
+  /// </summary>
+  internal RideTrackGeometryResolution? RideTrackGeometry { get; set; }
+
   /// <summary>Semantic DAT <c>TrackSegment</c> records linked to their ride-track roots.</summary>
   public List<RideTrackSegment> RideTrackSegments { get; } = [];
 

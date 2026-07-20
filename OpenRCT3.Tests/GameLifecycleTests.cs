@@ -100,6 +100,44 @@ public class GameLifecycleTests {
     }
   }
 
+  [Test]
+  public void InitializeOwnedGame_FailureCleansUpWithoutPublishing() {
+    var primaryError = new InvalidDataException("Injected initialization failure.");
+    var released = new List<string>();
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      Game.InitializeOwnedGame(
+        () => throw primaryError,
+        () => released.Add("cleanup"),
+        () => released.Add("publish"))));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error, Is.SameAs(primaryError));
+      Assert.That(released, Is.EqualTo(new[] { "cleanup" }));
+    }
+  }
+
+  [Test]
+  public void InitializeOwnedGame_CleanupFailurePreservesBothErrorsWithoutPublishing() {
+    var released = new List<string>();
+
+    var error = Assert.Throws<AggregateException>(new Action(() =>
+      Game.InitializeOwnedGame(
+        () => throw new InvalidDataException("Injected initialization failure."),
+        () => {
+          released.Add("cleanup");
+          throw new IOException("Injected cleanup failure.");
+        },
+        () => released.Add("publish"))));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error?.InnerExceptions, Has.Count.EqualTo(2));
+      Assert.That(error?.InnerExceptions[0], Is.TypeOf<InvalidDataException>());
+      Assert.That(error?.InnerExceptions[1], Is.TypeOf<IOException>());
+      Assert.That(released, Is.EqualTo(new[] { "cleanup" }));
+    }
+  }
+
   private static void SetField(Game game, string fieldName, object value) {
     var field = typeof(Game).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
     Assert.That(field, Is.Not.Null, $"Could not access Game.{fieldName}.");

@@ -128,7 +128,14 @@ public class Game : IGame {
   public Game() {
     ownedScene = Scene;
     ownedWorld = World;
-    Instance = this;
+
+    InitializeOwnedGame(
+      Initialize,
+      Dispose,
+      () => Instance = this);
+  }
+
+  private void Initialize() {
 
     logger.Trace("Creating game world...");
     logger.Warn("Simulation features are unimplemented!");
@@ -155,9 +162,35 @@ public class Game : IGame {
     }
     logger.Debug("Added terrain meshes");
 
+    Debug.Assert(World.Park != null);
+    if (World.Park.PathPlacements.Count > 0) {
+      var pathModel = new Model(PathMeshBuilder.Build(
+        World.Park,
+        World.Terrain,
+        new Vector4(0.72f, 0.64f, 0.50f, 1f),
+        new Vector4(0.28f, 0.48f, 0.70f, 1f))) {
+        Material = new Flat()
+      };
+      Scene.Models.Add(pathModel);
+    }
+    logger.Debug("Added {Count} path tiles", World.Park.PathPlacements.Count);
+
+    var installPath = Config.InstallPath
+      ?? throw new InvalidOperationException("RCT3 installation path is not configured.");
+    var scenery = ScenerySceneLoader.Load(World.Park, World.Terrain, installPath);
+    Scene.Models.AddRange(scenery.Models);
+    logger.Debug(
+      "Added {ModelCount} scenery models from {RenderedCount} placements; " +
+      "skipped {SkippedCount} placements ({MissingOverlayCount} missing overlays) and " +
+      "{MissingTextureCount} missing-texture batches",
+      scenery.Models.Count,
+      scenery.Geometry.RenderedPlacementCount,
+      scenery.Geometry.SkippedPlacementCount,
+      scenery.MissingOverlayPlacementCount,
+      scenery.MissingTextureBatchCount);
+
     // Water is a separate overlay over the terrain. Each decoded DAT WaterManager pool keeps its
     // exact triangle masks and surface height while rendering independently from the terrain mesh.
-    Debug.Assert(World.Park != null);
     foreach (var pool in World.Park.WaterPools) {
       var waterModel = new Model(WaterMeshBuilder.Build(
         World.Terrain,
@@ -307,9 +340,31 @@ public class Game : IGame {
       () => {
         lifecycle.Stop();
         resumeSignal.Set();
-        Instance = null;
+        if (ReferenceEquals(Instance, this)) Instance = null;
         GC.SuppressFinalize(this);
       });
+  }
+
+  internal static void InitializeOwnedGame(
+    Action initialize,
+    Action cleanup,
+    Action publish
+  ) {
+    try {
+      initialize();
+    } catch (Exception primaryError) {
+      try {
+        cleanup();
+      } catch (Exception cleanupError) {
+        throw new AggregateException(
+          "Game initialization failed and cleanup also reported an error.",
+          primaryError,
+          cleanupError);
+      }
+      throw;
+    }
+
+    publish();
   }
 
   internal static void DisposeOwnedResources(

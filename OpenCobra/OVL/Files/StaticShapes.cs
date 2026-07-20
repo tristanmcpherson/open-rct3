@@ -34,22 +34,22 @@ public sealed record StaticShapeMesh(
   public StaticShapeIndexLayout IndexLayout { get; init; }
   /// <summary>The raw count stored in <c>StaticShapeMesh.index_count</c>.</summary>
   public uint StoredIndexCount { get; init; }
-  /// <summary>The triangle count, or null when the serialized placement layout is ambiguous.</summary>
-  public int? TriangleCount => IndexLayout == StaticShapeIndexLayout.PlacementAmbiguous
-    ? null
-    : Indices.Count / 3;
-  /// <summary>Every triangle count consistent with the serialized payload.</summary>
-  public IReadOnlyList<int> PossibleTriangleCounts =>
-    IndexLayout == StaticShapeIndexLayout.PlacementAmbiguous
-      ? [Convert.ToInt32(StoredIndexCount / 3), Convert.ToInt32(StoredIndexCount)]
-      : [Indices.Count / 3];
+  /// <summary>
+  /// The three X/Y/Z triangle orders emitted for placement-sorted meshes. <see cref="Indices"/>
+  /// retains the first order as the current deterministic renderer fallback.
+  /// </summary>
+  public IReadOnlyList<IReadOnlyList<uint>> PlacementSortPermutations { get; init; } = [];
+  /// <summary>The triangle count in one complete render order.</summary>
+  public int TriangleCount => Indices.Count / 3;
+  /// <summary>Every triangle count consistent with the proven serialized layout.</summary>
+  public IReadOnlyList<int> PossibleTriangleCounts => [TriangleCount];
 }
 
 /// <summary>The index layouts that can be proven from <c>ManagerSHS.cpp</c>'s serialized data.</summary>
 public enum StaticShapeIndexLayout {
   TriangleList,
   PlacementTriangleList,
-  PlacementAmbiguous
+  PlacementSortedTriangleList
 }
 
 /// <summary>An effect attachment point stored on a static shape.</summary>
@@ -79,7 +79,6 @@ public static class StaticShapes {
   private const int MaximumResourceNameBytes = 4 * 1024;
   private const int MaximumShapeCount = 64 * 1024;
   private const int MaximumResourceCount = 1_000_000;
-  private const int MaximumSymbolReferenceCount = 1_000_000;
 
   /// <summary>Decodes every static-shape resource from the unique half of an OVL pair.</summary>
   public static IReadOnlyList<StaticShape> Extract(Ovl ovl) {
@@ -251,7 +250,8 @@ public static class StaticShapes {
     return new StaticShapeMesh(
       name, supportType, ftxRef, txsRef, transparency, textureFlags, sides, vertices, indexData.Indices) {
       IndexLayout = indexData.Layout,
-      StoredIndexCount = storedIndexCount
+      StoredIndexCount = storedIndexCount,
+      PlacementSortPermutations = indexData.PlacementSortPermutations
     };
   }
 
@@ -322,16 +322,84 @@ public static class StaticShapes {
       indices[i] = index;
     }
 
-    var layout = !placementTextured
-      ? StaticShapeIndexLayout.TriangleList
-      : storedCount % 3 == 0
-        ? StaticShapeIndexLayout.PlacementAmbiguous
-        : StaticShapeIndexLayout.PlacementTriangleList;
-    var decoded = new StaticShapeIndexData(layout, indices);
+    var layout = placementTextured
+      ? StaticShapeIndexLayout.PlacementTriangleList
+      : StaticShapeIndexLayout.TriangleList;
+    IReadOnlyList<uint> retainedIndices = indices;
+    IReadOnlyList<IReadOnlyList<uint>> placementSortPermutations = [];
+    if (placementTextured && storedCount % 3 == 0 &&
+        HasMatchingPlacementSortPermutations(
+          indices, storedCount, shapeName, meshIndex, context)) {
+      layout = StaticShapeIndexLayout.PlacementSortedTriangleList;
+      var permutationCount = ToCount(
+        storedCount, shapeName, $"mesh {meshIndex} sorted placement index count");
+      placementSortPermutations = [
+        new ArraySegment<uint>(indices, 0, permutationCount),
+        new ArraySegment<uint>(indices, permutationCount, permutationCount),
+        new ArraySegment<uint>(indices, permutationCount * 2, permutationCount)
+      ];
+      retainedIndices = placementSortPermutations[0];
+    }
+    var decoded = new StaticShapeIndexData(
+      layout,
+      retainedIndices,
+      placementSortPermutations);
 
     context.AddIndices(
       address, storedCount, vertexCount, placementTextured, decoded, shapeName, meshIndex);
     return decoded;
+  }
+
+  private static bool HasMatchingPlacementSortPermutations(
+    uint[] indices,
+    uint storedCount,
+    string shapeName,
+    int meshIndex,
+    DecodeContext context
+  ) {
+    var permutationIndexCount = ToCount(
+      storedCount, shapeName, $"mesh {meshIndex} placement permutation index count");
+    if (permutationIndexCount == 0 || permutationIndexCount % 3 != 0) return false;
+    if (Convert.ToInt64(permutationIndexCount) * 3 != indices.Length)
+      throw Invalid(shapeName,
+        $"mesh {meshIndex} placement payload cannot be split into three complete permutations");
+
+    var triangleCount = permutationIndexCount / 3;
+    var comparisonBytes = Convert.ToUInt64(triangleCount) * 3 * sizeof(uint) * 2;
+    context.ReserveBytes(
+      comparisonBytes, shapeName, $"mesh {meshIndex} placement permutation comparison");
+    var expected = ReadTriangles(indices, 0, triangleCount);
+    var candidate = new StaticShapeTriangle[triangleCount];
+    Array.Sort(expected);
+
+    foreach (var offset in new[] { permutationIndexCount, permutationIndexCount * 2 }) {
+      ReadTriangles(indices, offset, candidate);
+      Array.Sort(candidate);
+      if (!expected.AsSpan().SequenceEqual(candidate)) return false;
+    }
+    return true;
+  }
+
+  private static StaticShapeTriangle[] ReadTriangles(
+    uint[] indices,
+    int offset,
+    int triangleCount
+  ) {
+    var triangles = new StaticShapeTriangle[triangleCount];
+    ReadTriangles(indices, offset, triangles);
+    return triangles;
+  }
+
+  private static void ReadTriangles(
+    uint[] indices,
+    int offset,
+    StaticShapeTriangle[] triangles
+  ) {
+    for (var triangleIndex = 0; triangleIndex < triangles.Length; triangleIndex++) {
+      var indexOffset = offset + triangleIndex * 3;
+      triangles[triangleIndex] = new StaticShapeTriangle(
+        indices[indexOffset], indices[indexOffset + 1], indices[indexOffset + 2]);
+    }
   }
 
   private static IReadOnlyList<ShapeEffect> ReadEffects(
@@ -414,10 +482,14 @@ public static class StaticShapes {
       return symbolReference.Symbol;
     }
 
-    // Some already-linked archives may instead carry a direct relocated resource pointer.
-    if (rawValue == 0) return null;
-    if (!source.TryGetRelocationSource(fieldAddress, out var target) || target != rawValue)
+    // Some already-linked archives may instead carry a direct relocated resource pointer. Address
+    // zero is a valid first-block target, so relocation membership distinguishes it from null.
+    if (!source.TryGetRelocationSource(fieldAddress, out var target)) {
+      if (rawValue == 0) return null;
       throw Invalid(shapeName, $"mesh {meshIndex} {tag} reference is not a valid relocation");
+    }
+    if (target != rawValue)
+      throw Invalid(shapeName, $"mesh {meshIndex} {tag} reference has a conflicting relocation");
     if (!source.ResourcesByAddress.TryGetValue(target, out var resource))
       throw Invalid(shapeName, $"mesh {meshIndex} {tag} reference target {target} is not a known resource");
     if (!string.Equals(resource.Tag, tag, StringComparison.OrdinalIgnoreCase) ||
@@ -541,8 +613,19 @@ public static class StaticShapes {
 
   private sealed record StaticShapeIndexData(
     StaticShapeIndexLayout Layout,
-    IReadOnlyList<uint> Indices
+    IReadOnlyList<uint> Indices,
+    IReadOnlyList<IReadOnlyList<uint>> PlacementSortPermutations
   );
+
+  private readonly record struct StaticShapeTriangle(uint A, uint B, uint C)
+    : IComparable<StaticShapeTriangle> {
+    public int CompareTo(StaticShapeTriangle other) {
+      var a = A.CompareTo(other.A);
+      if (a != 0) return a;
+      var b = B.CompareTo(other.B);
+      return b != 0 ? b : C.CompareTo(other.C);
+    }
+  }
 
   private sealed class DecodeContext(StaticShapeDecodeLimits limits) {
     private readonly Dictionary<uint, (uint Count, IReadOnlyList<StaticShapeVertex> Vertices)> vertices = [];
@@ -635,8 +718,6 @@ public static class StaticShapes {
   private sealed class OvlStaticShapeDataSource : IStaticShapeDataSource {
     private readonly Ovl ovl;
     private readonly DecodeContext context;
-    private readonly IReadOnlyDictionary<uint, OvlLoaderEntry> loaderEntriesByStructAddress;
-    private readonly Dictionary<uint, string> symbolStrings = [];
 
     public OvlStaticShapeDataSource(Ovl ovl, DecodeContext context) {
       this.ovl = ovl;
@@ -645,18 +726,15 @@ public static class StaticShapes {
         throw new InvalidDataException(
           $"OVL loader count {ovl.LoaderEntriesInOrder.Count} exceeds the SHS decoder limit " +
           $"{MaximumResourceCount}.");
+      var symbolReferences = OvlSymbolReferenceIndex.Create(ovl);
 
       context.ReserveObjects(
         Convert.ToUInt64(ovl.LoaderEntriesInOrder.Count) * 4,
         "OVL",
         "loader metadata index");
-      var byStructAddress = new Dictionary<uint, OvlLoaderEntry>();
       var loaderMetadata = new Dictionary<uint, OvlLoaderEntry>();
       var shapeLoaders = new HashSet<uint>();
       foreach (var entry in ovl.LoaderEntriesInOrder) {
-        if (!byStructAddress.TryAdd(entry.StructAddress, entry))
-          throw new InvalidDataException(
-            $"OVL loader struct address {entry.StructAddress} is duplicated.");
         if (loaderMetadata.TryGetValue(entry.DataAddress, out var existing) &&
             !string.Equals(existing.Tag, entry.Tag, StringComparison.OrdinalIgnoreCase))
           throw new InvalidDataException(
@@ -665,7 +743,6 @@ public static class StaticShapes {
         if (entry.Tag.ToFileType() == FileType.StaticShape)
           shapeLoaders.Add(entry.DataAddress);
       }
-      loaderEntriesByStructAddress = byStructAddress;
       StaticShapeLoaderDataAddresses = shapeLoaders;
 
       var byAddress = new Dictionary<uint, StaticShapeResourceMetadata>();
@@ -687,7 +764,7 @@ public static class StaticShapes {
       ResourcesByAddress = byAddress;
       ResourcesByKey = byKey;
       LocalResourceKeys = localKeys;
-      ResourceReferences = ReadResourceReferences();
+      ResourceReferences = ReadResourceReferences(symbolReferences);
     }
 
     public IReadOnlyDictionary<uint, StaticShapeResourceMetadata> ResourcesByAddress { get; }
@@ -758,130 +835,26 @@ public static class StaticShapes {
       context.ReserveBytes(Convert.ToUInt64(length) + 1, name, "resource index key");
     }
 
-    private IReadOnlyDictionary<uint, StaticShapeResourceReference> ReadResourceReferences() {
+    private IReadOnlyDictionary<uint, StaticShapeResourceReference> ReadResourceReferences(
+      OvlSymbolReferenceIndex symbolReferenceIndex
+    ) {
       var references = new Dictionary<uint, StaticShapeResourceReference>();
-      ulong indexedRecordCount = 0;
-
-      if (ovl.SymbolReferenceBlocksInOrder.Count > MaximumSymbolReferenceCount)
-        throw new InvalidDataException(
-          $"SHS SymbolRef block count exceeds the decoder limit {MaximumSymbolReferenceCount}.");
-      foreach (var block in ovl.SymbolReferenceBlocksInOrder) {
-        context.ReserveObjects(1, "OVL", "SymbolRef block index");
-        ReadSymbolReferenceBlock(block, references, ref indexedRecordCount);
+      foreach (var (fieldAddress, indexed) in symbolReferenceIndex.References) {
+        if (indexed.Owner.Tag.ToFileType() != FileType.StaticShape) continue;
+        var reference = new StaticShapeResourceReference(
+          indexed.Symbol, indexed.Owner.DataAddress);
+        if (references.TryGetValue(fieldAddress, out var existing) && existing != reference)
+          throw new InvalidDataException(
+            $"SHS SymbolRef field {fieldAddress} has conflicting targets or owners.");
+        if (references.ContainsKey(fieldAddress)) continue;
+        context.ReserveBytes(
+          Convert.ToUInt64(Encoding.ASCII.GetByteCount(indexed.Symbol)) + 1,
+          indexed.Symbol,
+          "SymbolRef string");
+        context.ReserveObjects(1, indexed.Symbol, "SymbolRef index");
+        references.Add(fieldAddress, reference);
       }
       return references;
-    }
-
-    private void ReadSymbolReferenceBlock(
-      OvlBlockEntry blockEntry,
-      Dictionary<uint, StaticShapeResourceReference> references,
-      ref ulong indexedRecordCount
-    ) {
-      var block = blockEntry.Data;
-      var stride = blockEntry.RecordStride;
-      var expectedLength = Convert.ToUInt64(blockEntry.RecordCount) * Convert.ToUInt64(stride);
-      if (expectedLength != Convert.ToUInt64(block.Length))
-        throw new InvalidDataException(
-          $"OVL SymbolRef block size {block.Length} does not match its parsed count " +
-          $"{blockEntry.RecordCount} and stride {stride}.");
-      if (blockEntry.RecordCount > MaximumSymbolReferenceCount)
-        throw new InvalidDataException(
-          $"SHS SymbolRef count exceeds the decoder limit {MaximumSymbolReferenceCount}.");
-
-      // Validate the complete relocation-backed record block before allocating or indexing it.
-      for (var offset = 0; offset < block.Length; offset += stride) {
-        var recordAddressValue = Convert.ToUInt64(blockEntry.Address) + Convert.ToUInt64(offset);
-        if (recordAddressValue + 8 > uint.MaxValue)
-          throw new InvalidDataException("OVL SymbolRef record address exceeds the address space.");
-        var recordAddress = Convert.ToUInt32(recordAddressValue);
-        var hasReferenceRelocation =
-          ovl.TryGetRelocationSource(recordAddress, out var referenceAddress);
-        var hasSymbolRelocation =
-          ovl.TryGetRelocationSource(recordAddress + 4, out var symbolAddress);
-        var hasLoaderRelocation =
-          ovl.TryGetRelocationSource(recordAddress + 8, out var loaderAddress);
-        if (!hasLoaderRelocation ||
-            loaderAddress == 0 ||
-            !loaderEntriesByStructAddress.TryGetValue(loaderAddress, out var loader) ||
-            !string.Equals(
-              loader.SourcePath, blockEntry.SourcePath, StringComparison.OrdinalIgnoreCase))
-          throw new InvalidDataException(
-            $"OVL SymbolRef owner {loaderAddress} at {recordAddress} in '{blockEntry.SourcePath}' " +
-            "is not an exact loader-table entry.");
-        if (!hasReferenceRelocation || referenceAddress == 0 ||
-            !hasSymbolRelocation ||
-            !ovl.TryResolveRelocation(referenceAddress, out _, out _) ||
-            !TryGetSymbolStringLocation(
-              symbolAddress, out var symbolBlock, out var symbolStart, out var symbolLength) ||
-            Array.IndexOf(
-              symbolBlock, Convert.ToByte(':'), symbolStart, symbolLength) < 0)
-          throw new InvalidDataException(
-            $"OVL SymbolRef record at {recordAddress} has invalid relocation or symbol data.");
-      }
-
-      if (indexedRecordCount + blockEntry.RecordCount > MaximumSymbolReferenceCount)
-        throw new InvalidDataException(
-          $"SHS SymbolRef count exceeds the decoder limit {MaximumSymbolReferenceCount}.");
-      indexedRecordCount += blockEntry.RecordCount;
-
-      for (var offset = 0; offset < block.Length; offset += stride) {
-        var recordAddress = blockEntry.Address + Convert.ToUInt32(offset);
-        ovl.TryGetRelocationSource(recordAddress + 8, out var loaderAddress);
-        var loader = loaderEntriesByStructAddress[loaderAddress];
-        if (loader.Tag.ToFileType() != FileType.StaticShape)
-          continue;
-        ovl.TryGetRelocationSource(recordAddress, out var referenceAddress);
-        ovl.TryGetRelocationSource(recordAddress + 4, out var symbolAddress);
-        if (!TryResolveSymbolString(symbolAddress, out var symbol) || !symbol.Contains(':'))
-          throw new InvalidDataException($"SHS SymbolRef field {referenceAddress} has an invalid symbol.");
-        var reference = new StaticShapeResourceReference(symbol, loader.DataAddress);
-        if (references.TryGetValue(referenceAddress, out var existing) && existing != reference)
-          throw new InvalidDataException(
-            $"SHS SymbolRef field {referenceAddress} has conflicting targets or owners.");
-        if (references.ContainsKey(referenceAddress)) continue;
-        context.ReserveObjects(1, symbol, "SymbolRef index");
-        references.Add(referenceAddress, reference);
-      }
-    }
-
-    private bool TryResolveSymbolString(uint address, out string value) {
-      if (symbolStrings.TryGetValue(address, out value!)) return true;
-      if (!TryGetSymbolStringLocation(address, out var block, out var start, out var length)) {
-        value = string.Empty;
-        return false;
-      }
-      context.ReserveBytes(Convert.ToUInt64(length) + 1, "OVL", "SymbolRef string");
-      context.ReserveObjects(1, "OVL", "SymbolRef string cache entry");
-      value = Encoding.ASCII.GetString(block, start, length);
-      symbolStrings.Add(address, value);
-      return true;
-    }
-
-    private bool TryGetSymbolStringLocation(
-      uint address,
-      out byte[] block,
-      out int start,
-      out int length
-    ) {
-      if (address != 0) {
-        if (!ovl.TryResolveRelocation(address, out block!, out var offset)) {
-          start = 0;
-          length = 0;
-          return false;
-        }
-        start = Convert.ToInt32(offset);
-        return TryGetNullTerminatedByteLength(block, start, MaximumResourceNameBytes, out length);
-      }
-
-      // Symbol strings may legitimately begin at virtual address zero. The relocation on the
-      // SymbolRef field proves pointer intent; resolving address one proves a block starts at zero.
-      if (!ovl.TryResolveRelocation(1, out block!, out var offsetAtOne) || offsetAtOne != 1) {
-        start = 0;
-        length = 0;
-        return false;
-      }
-      start = 0;
-      return TryGetNullTerminatedByteLength(block, start, MaximumResourceNameBytes, out length);
     }
 
     private static bool TryGetNullTerminatedByteLength(

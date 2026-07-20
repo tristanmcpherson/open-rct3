@@ -62,6 +62,7 @@ public readonly struct GLState : IDisposable {
   private readonly int blendDstAlpha;
   private readonly int blendEquationRgb;
   private readonly int blendEquationAlpha;
+  private readonly int cullFaceMode;
   private readonly bool blendEnabled;
   private readonly bool cullFaceEnabled;
   private readonly bool depthTestEnabled;
@@ -99,6 +100,7 @@ public readonly struct GLState : IDisposable {
     blendDstAlpha = gl.GetInteger(GLEnum.BlendDstAlpha);
     blendEquationRgb = gl.GetInteger(GLEnum.BlendEquationRgb);
     blendEquationAlpha = gl.GetInteger(GLEnum.BlendEquationAlpha);
+    cullFaceMode = gl.GetInteger(GLEnum.CullFaceMode);
 
     blendEnabled = gl.IsEnabled(EnableCap.Blend);
     cullFaceEnabled = gl.IsEnabled(EnableCap.CullFace);
@@ -160,6 +162,9 @@ public readonly struct GLState : IDisposable {
       (BlendingFactor)blendSrcAlpha,
       (BlendingFactor)blendDstAlpha);
     gl.CheckError("GLState restore BlendFunc");
+
+    gl.CullFace((TriangleFace)cullFaceMode);
+    gl.CheckError("GLState restore CullFaceMode");
 
     gl.PolygonMode(TriangleFace.FrontAndBack, (PolygonMode)frontAndBackPolygonMode);
     gl.CheckError("GLState restore PolygonMode");

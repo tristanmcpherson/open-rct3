@@ -34,4 +34,32 @@ public class PaletteConverterTests {
     Assert.That(outputRgba[2], Is.EqualTo(new Rgba32(0, 0, 255, 255)));
     Assert.That(outputRgba[3], Is.EqualTo(new Rgba32(255, 0, 0, 255)));
   }
+
+  [Test]
+  public void ConvertIndexedBgraToRgba_OrsAlphaPlaneWithPaletteAlpha() {
+    var palette = new byte[256 * 4];
+    palette[0] = 10;
+    palette[1] = 20;
+    palette[2] = 30;
+    palette[3] = 80;
+    byte[] indexedPixels = [0];
+    byte[] alphaPixels = [15];
+
+    var outputRgba = PaletteConverter.ConvertIndexedBgraToRgba(
+      1, 1, palette, indexedPixels, alphaPixels);
+
+    Assert.That(outputRgba[0], Is.EqualTo(new Rgba32(30, 20, 10, 95)));
+  }
+
+  [Test]
+  public void ConvertIndexedBgraToRgba_WithoutAlphaPlaneForcesOpaqueAlpha() {
+    var palette = new byte[256 * 4];
+    palette[3] = 7;
+    byte[] indexedPixels = [0];
+
+    var outputRgba = PaletteConverter.ConvertIndexedBgraToRgba(
+      1, 1, palette, indexedPixels, []);
+
+    Assert.That(outputRgba[0].A, Is.EqualTo(byte.MaxValue));
+  }
 }

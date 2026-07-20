@@ -69,18 +69,86 @@ public class StaticShapesTests {
   }
 
   [Test]
-  public void Decode_PlacementLayoutAmbiguity_PreservesTheCompleteSerializedPayload() {
+  public void Decode_PlacementSortedPermutations_PreservesAllThreeAndSelectsFirstByDefault() {
     var fixture = new StaticShapeFixture();
-    fixture.UsePlacementTriangleList([0, 1, 2, 0, 1, 2, 0, 1, 2]);
+    fixture.UsePlacementTriangleList([
+      0, 1, 2, 2, 1, 0,
+      2, 1, 0, 0, 1, 2,
+      0, 1, 2, 2, 1, 0
+    ]);
+
+    var mesh = fixture.Decode().Meshes[0];
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(mesh.StoredIndexCount, Is.EqualTo(6));
+      Assert.That(mesh.IndexLayout,
+        Is.EqualTo(StaticShapeIndexLayout.PlacementSortedTriangleList));
+      Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 0, 1, 2, 2, 1, 0 }));
+      Assert.That(mesh.PlacementSortPermutations, Has.Count.EqualTo(3));
+      Assert.That(mesh.PlacementSortPermutations[0],
+        Is.EqualTo(new uint[] { 0, 1, 2, 2, 1, 0 }));
+      Assert.That(mesh.PlacementSortPermutations[1],
+        Is.EqualTo(new uint[] { 2, 1, 0, 0, 1, 2 }));
+      Assert.That(mesh.PlacementSortPermutations[2],
+        Is.EqualTo(new uint[] { 0, 1, 2, 2, 1, 0 }));
+      Assert.That(mesh.TriangleCount, Is.EqualTo(2));
+      Assert.That(mesh.PossibleTriangleCounts, Is.EqualTo(new[] { 2 }));
+    }
+  }
+
+  [Test]
+  public void Decode_PlacementDivisibleUnsortedPayload_RetainsTheCompleteTriangleList() {
+    var fixture = new StaticShapeFixture();
+    fixture.UsePlacementTriangleList([0, 1, 2, 1, 2, 0, 2, 0, 1]);
 
     var mesh = fixture.Decode().Meshes[0];
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(mesh.StoredIndexCount, Is.EqualTo(3));
-      Assert.That(mesh.IndexLayout, Is.EqualTo(StaticShapeIndexLayout.PlacementAmbiguous));
-      Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 0, 1, 2, 0, 1, 2, 0, 1, 2 }));
-      Assert.That(mesh.TriangleCount, Is.Null);
-      Assert.That(mesh.PossibleTriangleCounts, Is.EqualTo(new[] { 1, 3 }));
+      Assert.That(mesh.IndexLayout,
+        Is.EqualTo(StaticShapeIndexLayout.PlacementTriangleList));
+      Assert.That(mesh.Indices,
+        Is.EqualTo(new uint[] { 0, 1, 2, 1, 2, 0, 2, 0, 1 }));
+      Assert.That(mesh.TriangleCount, Is.EqualTo(3));
+      Assert.That(mesh.PossibleTriangleCounts, Is.EqualTo(new[] { 3 }));
+    }
+  }
+
+  [Test]
+  public void Decode_PlacementSortProof_RequiresExactTriangleBoundaries() {
+    var fixture = new StaticShapeFixture();
+    fixture.UsePlacementTriangleList([
+      0, 1, 2, 2, 1, 0,
+      0, 1, 2, 2, 0, 1,
+      2, 1, 0, 0, 1, 2
+    ]);
+
+    var mesh = fixture.Decode().Meshes[0];
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(mesh.IndexLayout,
+        Is.EqualTo(StaticShapeIndexLayout.PlacementTriangleList));
+      Assert.That(mesh.Indices, Has.Count.EqualTo(18));
+      Assert.That(mesh.TriangleCount, Is.EqualTo(6));
+    }
+  }
+
+  [Test]
+  public void Decode_PlacementSortProof_RequiresMatchingDuplicateMultiplicity() {
+    var fixture = new StaticShapeFixture();
+    fixture.UsePlacementTriangleList([
+      0, 1, 2, 0, 1, 2,
+      0, 1, 2, 2, 1, 0,
+      0, 1, 2, 0, 1, 2
+    ]);
+
+    var mesh = fixture.Decode().Meshes[0];
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(mesh.IndexLayout,
+        Is.EqualTo(StaticShapeIndexLayout.PlacementTriangleList));
+      Assert.That(mesh.Indices, Has.Count.EqualTo(18));
+      Assert.That(mesh.TriangleCount, Is.EqualTo(6));
     }
   }
 
@@ -161,6 +229,16 @@ public class StaticShapesTests {
 
     Assert.That(error!.Message,
       Does.Contain("water:ftx' is local but has no validated loader metadata"));
+  }
+
+  [Test]
+  public void Decode_DirectResourceReferenceAllowsRelocatedTargetAtZero() {
+    var fixture = new StaticShapeFixture();
+    fixture.UseDirectFtxReferenceAtZero();
+
+    var mesh = fixture.Decode().Meshes[0];
+
+    Assert.That(mesh.FtxRef, Is.EqualTo("water:ftx"));
   }
 
   [Test]
@@ -516,6 +594,14 @@ public class StaticShapesTests {
       WritePointer(source.Blocks[ShapeAddress], ShapeAddress, 48, 1_000_000);
 
     public void RemoveLocalFtxLoaderMetadata() => source.MutableResourcesByKey.Remove("water:ftx");
+
+    public void UseDirectFtxReferenceAtZero() {
+      source.MutableResourceReferences.Remove(MeshAddress + 4);
+      WriteUInt32(source.Blocks[MeshAddress], 4, 0);
+      source.Relocations[MeshAddress + 4] = 0;
+      source.MutableResourcesByAddress[0] =
+        new StaticShapeResourceMetadata("water:ftx", "ftx");
+    }
 
     public void UseDistinctMeshFanSharingGeometry(int count) {
       const uint fanPointersAddress = 12_000;

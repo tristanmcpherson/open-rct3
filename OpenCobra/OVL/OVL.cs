@@ -68,6 +68,8 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   // Keep archive-controlled FileBlock materialization bounded even if a malicious file pads enough
   // bytes to satisfy the structural size-table preflight below.
   private const int MaxBlocksPerArchive = 65_536;
+  private const int MaxExternalReferencesPerFile = 65_536;
+  private const int MaxExternalReferencesPerArchive = 65_536;
 
   public readonly string Name = name;
   public Version Version => version;
@@ -79,6 +81,9 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   private readonly List<LoaderHeader[]> allLoaderHeaders = [];
   private readonly List<Version> allVersions = [];
   private readonly List<Dictionary<uint, List<byte[]>>> allExtraData = [];
+  private readonly List<string> externalReferences = [];
+  private readonly HashSet<string> externalReferenceNames =
+    new(StringComparer.OrdinalIgnoreCase);
   // Relocation-fixup table (Part 6 Finding 3 / rct3tex.cpp:1830-1842's DoReloc): a flat
   // sourceAddress -> rawValueAtThatAddress map. "Source address" here is a location in block data
   // that the archive's own linker flagged as needing pointer interpretation; the raw bytes stored
@@ -107,6 +112,17 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   /// <summary>Exact per-source SymbolRef blocks and their serialized layout metadata.</summary>
   internal IReadOnlyList<OvlBlockEntry> SymbolReferenceBlocksInOrder =>
     symbolReferenceBlocksInOrder;
+
+  /// <summary>
+  /// Exact external OVL dependency names in serialized order, common half first and unique half
+  /// second. Duplicate names across the pair are removed case-insensitively while retaining the
+  /// first serialized spelling.
+  /// </summary>
+  /// <remarks>
+  /// This mirrors the pinned libOVLDump reference's per-file <c>GetReferences</c> data, merged for
+  /// this paired archive's single virtual address space.
+  /// </remarks>
+  public IReadOnlyList<string> ExternalReferences => externalReferences;
 
   /// <summary>Reads <paramref name="length"/> raw bytes at a relocation-resolved data address.</summary>
   public bool TryReadBytes(uint address, int length, [MaybeNullWhen(false)] out byte[] data) {
@@ -344,10 +360,7 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
 
     Debug.WriteLine($"[OVL] subVersionFlag: {subVersionFlag}, referenceCount: {referenceCount}");
 
-    foreach (var _ in Enumerable.Range(0, ToCount(referenceCount, "reference count"))) {
-      var len = ReadUInt16(reader, "reference name length");
-      ReadBytes(reader, len, "reference name");
-    }
+    ReadExternalReferences(reader, referenceCount);
 
     ReadUInt32(reader, "secondary header unknown field"); // OvlHeader2.unk
     var fileTypeCount = ReadUInt32(reader, "loader count");
@@ -400,6 +413,29 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
   private static byte[] ReadBytes(BinaryReader reader, int length, string section) {
     EnsureRemaining(reader, length, section);
     return reader.ReadBytes(length);
+  }
+
+  private void ReadExternalReferences(BinaryReader reader, uint referenceCount) {
+    if (referenceCount > MaxExternalReferencesPerFile)
+      throw new InvalidDataException(
+        $"OVL reference count {referenceCount} exceeds the supported limit " +
+        $"{MaxExternalReferencesPerFile}.");
+
+    foreach (var _ in Enumerable.Range(0, Convert.ToInt32(referenceCount))) {
+      var length = ReadUInt16(reader, "reference name length");
+      if (length == 0) throw new InvalidDataException("OVL reference name is empty.");
+      var bytes = ReadBytes(reader, length, "reference name");
+      if (bytes.Any(value => value < 32 || value > 126))
+        throw new InvalidDataException("OVL reference name contains non-ASCII path bytes.");
+
+      var reference = Encoding.ASCII.GetString(bytes);
+      if (!externalReferenceNames.Add(reference)) continue;
+      if (externalReferences.Count >= MaxExternalReferencesPerArchive)
+        throw new InvalidDataException(
+          $"OVL paired reference count exceeds the supported limit " +
+          $"{MaxExternalReferencesPerArchive}.");
+      externalReferences.Add(reference);
+    }
   }
 
   /// <summary>
@@ -774,6 +810,8 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
       allFileTypeBlocks.Clear();
       allLoaderHeaders.Clear();
       allExtraData.Clear();
+      externalReferences.Clear();
+      externalReferenceNames.Clear();
       loaderEntriesInOrder.Clear();
       symbolReferenceBlocksInOrder.Clear();
     }

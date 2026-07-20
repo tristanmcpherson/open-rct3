@@ -11,7 +11,10 @@ using SixLabors.ImageSharp.Processing;
 
 namespace OpenCobra.OVL.Files;
 
-public record struct FlexiTexture(Recolorable Recolorable, Image<Rgba32> Texture);
+public record struct FlexiTexture(Recolorable Recolorable, Image<Rgba32> Texture) {
+  public ReadOnlyMemory<byte> PaletteBgra { get; init; }
+  public ReadOnlyMemory<byte> IndexedPixels { get; init; }
+}
 
 public record struct FlexiTextureList(uint Fps, FlexiTexture[] Frames) {
   private const int HeaderSize = 36;
@@ -138,16 +141,35 @@ public record struct FlexiTextureList(uint Fps, FlexiTexture[] Frames) {
     var frames = new FlexiTexture[frameOrder.Length];
     foreach (var outputIndex in Enumerable.Range(0, frameOrder.Length)) {
       var data = frameData[frameOrder[outputIndex]];
+      var paletteBgra = data.Palette.ToArray();
+      var indexedPixels = FlipVertical(data.Width, data.Height, data.Texture.Span);
       var alpha = data.Alpha.HasValue ? data.Alpha.Value.Span : ReadOnlySpan<byte>.Empty;
       var rgbaTexture = PaletteConverter.ConvertIndexedBgraToRgba(
         data.Width, data.Height, data.Palette.Span, data.Texture.Span, alpha);
       var image = Image.LoadPixelData<Rgba32>(
         rgbaTexture, Convert.ToInt32(data.Width), Convert.ToInt32(data.Height));
       image.Mutate(context => context.Flip(FlipMode.Vertical));
-      frames[outputIndex] = new FlexiTexture(data.Recolorable, image);
+      frames[outputIndex] = new FlexiTexture(data.Recolorable, image) {
+        PaletteBgra = paletteBgra,
+        IndexedPixels = indexedPixels,
+      };
     }
 
     return new FlexiTextureList(fps, frames);
+  }
+
+  private static byte[] FlipVertical(
+    uint width, uint height, ReadOnlySpan<byte> pixels
+  ) {
+    var rowLength = Convert.ToInt32(width);
+    var rowCount = Convert.ToInt32(height);
+    var flipped = new byte[pixels.Length];
+    foreach (var outputRow in Enumerable.Range(0, rowCount)) {
+      var sourceRow = rowCount - outputRow - 1;
+      pixels.Slice(sourceRow * rowLength, rowLength)
+        .CopyTo(flipped.AsSpan(outputRow * rowLength, rowLength));
+    }
+    return flipped;
   }
 
   private static int[] ReadFrameOrder(

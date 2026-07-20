@@ -23,6 +23,7 @@ public class PathNetworkTests {
 
     Assert.That(placed, Is.True);
     Assert.That(park.Paths.ContainsKey((1, 1)), Is.True);
+    Assert.That(park.PathPlacements, Has.Count.EqualTo(1));
   }
 
   [Test]

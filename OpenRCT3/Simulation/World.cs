@@ -6,6 +6,8 @@
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 
 using OpenCobra.GDK.Streaming;
+using OpenRCT3.Serialization;
+using System.Collections.Generic;
 using GDK = OpenCobra.GDK;
 
 namespace OpenRCT3.Simulation;
@@ -25,10 +27,18 @@ public class World : GDK.Game.World {
   public override void Load() {
     var measurement = Progress.MeasureTasks([
       new(() => {
-        var terrain = Terrain.Load(out var waterManager);
+        var terrain = Terrain.Load(
+          out var waterManager,
+          out var paths,
+          out var sceneryItems,
+          out var sceneryItemPlacements);
         try {
-          var park = new Park(terrain);
-          if (waterManager != null) WaterManagerLoader.Load(park, terrain, waterManager);
+          var park = BuildPark(
+            terrain,
+            waterManager,
+            paths,
+            sceneryItems,
+            sceneryItemPlacements);
           Terrain = terrain;
           Park = park;
         } catch {
@@ -39,6 +49,20 @@ public class World : GDK.Game.World {
     ]);
     Progress = measurement.Progress;
     measurement.Task.Wait();
+  }
+
+  internal static Park BuildPark(
+    Terrain terrain,
+    DatWaterManagerData? waterManager,
+    IReadOnlyList<DatPathData> paths,
+    IReadOnlyList<DatSceneryItemData> sceneryItems,
+    IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements
+  ) {
+    var park = new Park(terrain);
+    if (waterManager != null) WaterManagerLoader.Load(park, terrain, waterManager);
+    PathManagerLoader.Load(park, terrain, paths);
+    SceneryManagerLoader.Load(park, terrain, sceneryItems, sceneryItemPlacements);
+    return park;
   }
 
   protected override void Dispose(bool disposing) {

@@ -35,14 +35,59 @@ public class MaterialResourceTests {
   public void BuiltInMaterials_DeclareTheirRenderState() {
     using var flat = new Flat();
     using var textured = new Textured();
+    using var masked = new Textured(MaterialBlendMode.AlphaMask);
+    using var blended = new Textured(MaterialBlendMode.Alpha);
+    using var testedBlend = new Textured(MaterialBlendMode.Alpha, 8);
     using var water = new Water();
+    using var chrome = new Chrome();
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(flat.RenderState, Is.EqualTo(MaterialRenderState.Opaque));
+      Assert.That(flat.RenderState.CullBackFaces, Is.False);
       Assert.That(textured.RenderState, Is.EqualTo(MaterialRenderState.Opaque));
+      Assert.That(masked.RenderState, Is.EqualTo(MaterialRenderState.AlphaMask));
+      Assert.That(masked.RenderState.IsTransparent, Is.False);
+      Assert.That(masked.RenderState.DepthWrite, Is.True);
+      Assert.That(masked.AlphaReference, Is.EqualTo(Textured.DefaultAlphaMaskReference));
+      Assert.That(masked.Shaders.Fragment,
+        Does.Contain("texColor.a <= 208.0 / 255.0"));
+      Assert.That(blended.RenderState, Is.EqualTo(MaterialRenderState.AlphaBlend));
+      Assert.That(blended.Shaders.Fragment, Does.Not.Contain("discard"));
+      Assert.That(testedBlend.RenderState, Is.EqualTo(MaterialRenderState.AlphaBlend));
+      Assert.That(testedBlend.Shaders.Fragment,
+        Does.Contain("texColor.a <= 8.0 / 255.0"));
       Assert.That(water.RenderState, Is.EqualTo(MaterialRenderState.AlphaBlend));
       Assert.That(water.RenderState.IsTransparent, Is.True);
       Assert.That(water.RenderState.DepthWrite, Is.False);
+      Assert.That(chrome.RenderState, Is.EqualTo(MaterialRenderState.Opaque));
+      Assert.That(chrome.Textures, Is.Empty);
+    }
+  }
+
+  [Test]
+  public void Material_BackFaceCullingIsPartOfRenderState() {
+    using var material = new Flat { CullBackFaces = true };
+
+    Assert.That(material.RenderState,
+      Is.EqualTo(MaterialRenderState.Opaque with { CullBackFaces = true }));
+  }
+
+  [Test]
+  public void TexturedMaterial_AlphaReferencesDifferentiateShadersAndCacheKeys() {
+    using var highMask = new Textured(MaterialBlendMode.AlphaMask);
+    using var lowMask = new Textured(MaterialBlendMode.AlphaMask, 100);
+    using var blended = new Textured(MaterialBlendMode.Alpha, 8);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(highMask.Shaders.Fragment,
+        Does.Contain("texColor.a <= 208.0 / 255.0"));
+      Assert.That(lowMask.Shaders.Fragment,
+        Does.Contain("texColor.a <= 100.0 / 255.0"));
+      Assert.That(blended.Shaders.Fragment,
+        Does.Contain("texColor.a <= 8.0 / 255.0"));
+      Assert.That(highMask.CacheKey, Is.Not.EqualTo(lowMask.CacheKey));
+      Assert.That(highMask.CacheKey, Is.Not.EqualTo(blended.CacheKey));
+      Assert.That(lowMask.CacheKey, Is.Not.EqualTo(blended.CacheKey));
     }
   }
 
@@ -59,6 +104,21 @@ public class MaterialResourceTests {
       Assert.That(water.Shaders.Fragment, Does.Contain("float fresnel"));
       Assert.That(water.Shaders.Fragment,
         Does.Contain("0.0, 0.60"));
+    }
+  }
+
+  [Test]
+  public void ChromeMaterial_UsesViewDependentProceduralReflection() {
+    using var chrome = new Chrome();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(chrome.Shaders.Vertex, Does.Contain("in vec3 a_Normal;"));
+      Assert.That(chrome.Shaders.Vertex, Does.Contain("v_WorldPosition"));
+      Assert.That(chrome.Shaders.Fragment,
+        Does.Contain($"uniform vec3 {Water.CameraPositionUniformName};"));
+      Assert.That(chrome.Shaders.Fragment,
+        Does.Contain("reflect(-viewDirection, normal)"));
+      Assert.That(chrome.Shaders.Fragment, Does.Contain("20.0"));
     }
   }
 

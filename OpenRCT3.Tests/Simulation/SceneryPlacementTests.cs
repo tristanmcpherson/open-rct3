@@ -23,6 +23,16 @@ public class SceneryPlacementTests {
     return registry;
   }
 
+  [TestCase(Edge.West, 0)]
+  [TestCase(Edge.North, 1)]
+  [TestCase(Edge.East, 2)]
+  [TestCase(Edge.South, 3)]
+  public void Constructor_PreservesMatchingSerializedDirection(Edge rotation, int expected) {
+    var placement = new SceneryPlacement("Tree_Oak", 1, 1, rotation);
+
+    Assert.That(placement.SerializedDirection, Is.EqualTo(expected));
+  }
+
   [Test]
   public void TryPlaceScenery_RejectsUnregisteredObjectKey() {
     var park = new Park();
@@ -89,9 +99,9 @@ public class SceneryPlacementTests {
     var park = new Park();
     var terrain = NewTerrain();
     // Unrotated footprint is 2 wide x 3 tall; raise a corner only covered once rotated 90 degrees
-    // (West), which swaps the footprint to 3 wide x 2 tall and reaches tile (2, 0)'s far corner.
+    // (North), which swaps the footprint to 3 wide x 2 tall and reaches tile (2, 0)'s far corner.
     terrain.RaiseCorner(2, 0, TerrainCornerSlot.SouthEast, delta: 10);
-    var placement = new SceneryPlacement("Ride_FlatFoundation", 0, 0, Edge.West);
+    var placement = new SceneryPlacement("Ride_FlatFoundation", 0, 0, Edge.North);
 
     var placed = park.TryPlaceScenery(placement, NewRegistry(), terrain);
 
@@ -141,4 +151,5 @@ public class SceneryPlacementTests {
     Assert.That(near, Is.EqualTo(30));
     Assert.That(far, Is.EqualTo(40));
   }
+
 }

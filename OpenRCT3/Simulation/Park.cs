@@ -68,6 +68,13 @@ public class Park {
   public Dictionary<(int X, int Y), PathTile> Paths { get; } = [];
 
   /// <summary>
+  /// Every path layer. RCT3 can store a ground path and an elevated path at the same grid
+  /// coordinate, so this list is the lossless source for rendering and serialization. <see cref="Paths"/>
+  /// remains the primary layer used by the current single-level gameplay queries.
+  /// </summary>
+  public List<PathPlacement> PathPlacements { get; } = [];
+
+  /// <summary>
   /// Every placed <see cref="WaterPool"/>. Prefer <see cref="WaterTiles"/> for tile occupancy and
   /// <see cref="WaterTriangles"/> for exact coverage; this list exists for iteration (e.g. rendering
   /// every pool) and O(1) removal by reference.
@@ -138,7 +145,19 @@ public class Park {
   public bool TryPlacePath(int tileX, int tileY, Terrain terrain, PathTile tile) {
     if (!tile.Raised && !IsAtGradePathPlaceable(tileX, tileY, terrain)) return false;
 
-    Paths[(tileX, tileY)] = tile;
+    var key = (tileX, tileY);
+    var placement = new PathPlacement(tileX, tileY, tile);
+    if (Paths.TryGetValue(key, out var previousTile)) {
+      var placementIndex = PathPlacements.FindIndex(candidate =>
+        candidate.TileX == tileX &&
+        candidate.TileY == tileY &&
+        candidate.Tile.Equals(previousTile));
+      if (placementIndex >= 0) PathPlacements[placementIndex] = placement;
+      else PathPlacements.Add(placement);
+    } else {
+      PathPlacements.Add(placement);
+    }
+    Paths[key] = tile;
     return true;
   }
 
@@ -382,7 +401,8 @@ public class Park {
   /// <see cref="Simulation.Placement.Wall"/> are edge-conforming: the two returned values are the
   /// heights of the two corners bounding <see cref="SceneryPlacement.Rotation"/>'s edge, so the
   /// object's mesh can follow the terrain's slope along that edge instead of sitting at one flat
-  /// height.
+  /// height. This helper serves live gameplay placement; loaded DAT rendering applies exact SID
+  /// position and height flags in <see cref="SceneryGeometryBuilder"/>.
   /// </remarks>
   public static (int Near, int Far) GetSceneryHeight(SceneryPlacement placement, SceneryDefinition definition, Terrain terrain) {
     switch (definition.Placement) {
@@ -404,11 +424,11 @@ public class Park {
 
   /// <summary>
   /// Returns <paramref name="definition"/>'s footprint, swapping width/height when
-  /// <paramref name="rotation"/> is <see cref="Edge.West"/>/<see cref="Edge.East"/> — a 90°/270° turn
-  /// relative to the unrotated <see cref="Edge.South"/>/<see cref="Edge.North"/> orientations.
+  /// <paramref name="rotation"/> is <see cref="Edge.North"/>/<see cref="Edge.South"/> — the 90°/270°
+  /// orientations relative to RCT3 scenery's unrotated <see cref="Edge.West"/>/<see cref="Edge.East"/> pair.
   /// </summary>
   private static (int Width, int Height) GetRotatedFootprint(SceneryDefinition definition, Edge rotation)
-    => rotation is Edge.West or Edge.East
+    => rotation is Edge.North or Edge.South
       ? (definition.FootprintHeight, definition.FootprintWidth)
       : (definition.FootprintWidth, definition.FootprintHeight);
 

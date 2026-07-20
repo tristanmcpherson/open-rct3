@@ -121,6 +121,63 @@ public class OvlCoreTests {
   }
 
   [Test]
+  public void ExternalReferences_MergePairOrderDeduplicateCaseAndRetainExactText() {
+    common.ExternalReferences = [
+      @"..\..\..\SharedTextures\PoolTiles",
+      "Track18_textures"
+    ];
+    unique.ExternalReferences = [
+      "track18_TEXTURES",
+      "../../SharedTextures/chain"
+    ];
+    common.Write(commonPath);
+    unique.Write(uniquePath);
+    var ovl = Ovl.Load(commonPath);
+    var references = ovl.ExternalReferences;
+
+    Assert.That(references, Is.EqualTo(new[] {
+      @"..\..\..\SharedTextures\PoolTiles",
+      "Track18_textures",
+      "../../SharedTextures/chain"
+    }));
+
+    ovl.Dispose();
+    Assert.That(references, Is.Empty);
+  }
+
+  [Test]
+  public void Load_RejectsTruncatedExternalReference() {
+    using (var stream = File.Create(commonPath))
+    using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false)) {
+      writer.Write(0x4B524746u);
+      writer.Write(0u);
+      writer.Write(4u);
+      writer.Write(0u);
+      writer.Write(1u);
+      writer.Write(Convert.ToUInt16(12));
+      writer.Write(Encoding.ASCII.GetBytes("short"));
+    }
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() => Ovl.Load(commonPath)));
+    Assert.That(error!.Message, Does.Contain("reference name"));
+  }
+
+  [Test]
+  public void Load_RejectsExternalReferenceCountAboveHardLimit() {
+    using (var stream = File.Create(commonPath))
+    using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false)) {
+      writer.Write(0x4B524746u);
+      writer.Write(0u);
+      writer.Write(4u);
+      writer.Write(0u);
+      writer.Write(65_537u);
+    }
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() => Ovl.Load(commonPath)));
+    Assert.That(error!.Message, Does.Contain("reference count"));
+  }
+
+  [Test]
   public void ResourceReads_ReturnOnlyTheResolvedBlockSliceAndRejectInvalidFileRanges() {
     using var ovl = Ovl.Load(commonPath);
     var commonFile = ovl.Find("Common", FileType.Texture);
@@ -217,6 +274,7 @@ public class OvlCoreTests {
     public byte[][][] Blocks { get; } = Enumerable.Range(0, 9)
       .Select(_ => Array.Empty<byte[]>()).ToArray();
     public uint[] Relocations { get; set; } = [];
+    public string[] ExternalReferences { get; set; } = [];
 
     public uint Size => Convert.ToUInt32(
       Blocks.SelectMany(blocks => blocks).Sum(block => block.Length));
@@ -238,7 +296,9 @@ public class OvlCoreTests {
       writer.Write(0u);
       writer.Write(4u);
       writer.Write(0u);
-      writer.Write(0u);
+      writer.Write(Convert.ToUInt32(ExternalReferences.Length));
+      foreach (var reference in ExternalReferences)
+        WriteString(writer, reference);
       writer.Write(0u);
       writer.Write(Convert.ToUInt32(loaderTags.Length));
       foreach (var tag in loaderTags) {

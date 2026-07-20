@@ -140,6 +140,22 @@ public class Terrain {
   internal static Terrain Load(
     out DatWaterManagerData? waterManager,
     string? mapPath = null
+  ) => Load(out waterManager, out _, mapPath);
+
+  /// <summary>Loads terrain plus decoded park-object records for world construction.</summary>
+  internal static Terrain Load(
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    string? mapPath = null
+  ) => Load(out waterManager, out paths, out _, out _, mapPath);
+
+  /// <summary>Loads terrain plus all decoded park-object records for world construction.</summary>
+  internal static Terrain Load(
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    string? mapPath = null
   ) {
     var config = AppConfig.Instance;
     Debug.Assert(config.InstallPath != null);
@@ -175,13 +191,33 @@ public class Terrain {
       });
       logger.Info($"Native smoke loaded map {loadedMapIdentity}");
     }
-    var terrain = FromData(data);
-    waterManager = data.WaterManager;
+    var terrain = FromData(
+      data,
+      out waterManager,
+      out paths,
+      out sceneryItems,
+      out sceneryItemPlacements);
 
     // Load textures from terrain/RCT3/Terrain_RCT3.common.ovl
     var terrainOvl = Path.Combine(installPath, "terrain", "RCT3", "Terrain_RCT3.common.ovl");
     terrain.TextureCatalog = TextureLoader.LoadTerrainCatalog(terrainOvl);
 
+    return terrain;
+  }
+
+  /// <summary>Builds terrain while preserving the decoded park-object collections for loaders.</summary>
+  internal static Terrain FromData(
+    DatTerrainData data,
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements
+  ) {
+    var terrain = FromData(data);
+    waterManager = data.WaterManager;
+    paths = data.Paths;
+    sceneryItems = data.SceneryItems;
+    sceneryItemPlacements = data.SceneryItemPlacements;
     return terrain;
   }
 

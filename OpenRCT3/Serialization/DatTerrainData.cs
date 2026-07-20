@@ -18,6 +18,11 @@ internal sealed class DatTerrainData {
   public float TileSizeY { get; }
   public IReadOnlyList<DatTerrainCell> Cells { get; }
   public DatWaterManagerData? WaterManager { get; }
+  public IReadOnlyList<DatPathData> Paths { get; }
+  public IReadOnlyList<DatSceneryEntryData> SceneryEntries { get; }
+  public IReadOnlyList<DatSidDatabaseEntryData> SidDatabaseEntries { get; }
+  public IReadOnlyList<DatSceneryItemData> SceneryItems { get; }
+  public IReadOnlyList<DatSceneryItemPlacementSingleData> SceneryItemPlacements { get; }
 
   public DatTerrainData(
     int width,
@@ -27,7 +32,9 @@ internal sealed class DatTerrainData {
     float tileSizeX,
     float tileSizeY,
     DatTerrainCell[] cells,
-    DatWaterManagerData? waterManager = null) {
+    DatWaterManagerData? waterManager = null,
+    DatPathData[]? paths = null,
+    DatSceneryEntryData[]? sceneryEntries = null) {
     if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
     if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
     ArgumentNullException.ThrowIfNull(cells);
@@ -42,5 +49,30 @@ internal sealed class DatTerrainData {
     TileSizeY = tileSizeY;
     Cells = Array.AsReadOnly((DatTerrainCell[])cells.Clone());
     WaterManager = waterManager;
+    var pathData = (DatPathData[])(paths?.Clone() ?? Array.Empty<DatPathData>());
+    Paths = Array.AsReadOnly(pathData);
+    var rawSceneryEntries = (DatSceneryEntryData[])(
+      sceneryEntries?.Clone() ?? Array.Empty<DatSceneryEntryData>());
+    var sidDatabaseEntries = new List<DatSidDatabaseEntryData>();
+    var sceneryItems = new List<DatSceneryItemData>();
+    var sceneryItemPlacements = new List<DatSceneryItemPlacementSingleData>();
+    foreach (var entry in rawSceneryEntries) {
+      switch (entry) {
+        case DatSidDatabaseEntryData sidDatabaseEntry:
+          sidDatabaseEntries.Add(sidDatabaseEntry);
+          break;
+        case DatSceneryItemData sceneryItem:
+          sceneryItems.Add(sceneryItem);
+          break;
+        case DatSceneryItemPlacementSingleData sceneryItemPlacement:
+          sceneryItemPlacements.Add(sceneryItemPlacement);
+          break;
+      }
+    }
+
+    SceneryEntries = Array.AsReadOnly(rawSceneryEntries);
+    SidDatabaseEntries = sidDatabaseEntries.AsReadOnly();
+    SceneryItems = sceneryItems.AsReadOnly();
+    SceneryItemPlacements = sceneryItemPlacements.AsReadOnly();
   }
 }

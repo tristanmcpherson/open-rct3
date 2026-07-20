@@ -32,12 +32,16 @@ public static class PaletteConverter {
     var stride = 4;
     foreach (var i in Enumerable.Range(0, indexedPixels.Length)) {
       var index = indexedPixels[i];
+      var paletteOffset = index * stride;
+      var alpha = alphaValues.IsEmpty
+        ? byte.MaxValue
+        : Convert.ToByte(alphaValues[i] | palette[paletteOffset + 3]);
       texture[i] = new Rgba32(
         // BGRA to RGBA conversion
-        b: palette[index * stride + 0],
-        g: palette[index * stride + 1],
-        r: palette[index * stride + 2],
-        a: alphaValues.IsEmpty ? byte.MaxValue : alphaValues[i]
+        b: palette[paletteOffset + 0],
+        g: palette[paletteOffset + 1],
+        r: palette[paletteOffset + 2],
+        a: alpha
       );
     }
 

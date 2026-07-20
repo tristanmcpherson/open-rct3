@@ -206,8 +206,15 @@ public class Renderer : ThreadAffine, IRenderer {
 
   private void ApplyRenderState(MaterialRenderState renderState) {
     gl.DepthMask(renderState.DepthWrite);
+    if (renderState.CullBackFaces) {
+      gl.Enable(EnableCap.CullFace);
+      gl.CullFace(TriangleFace.Back);
+    } else {
+      gl.Disable(EnableCap.CullFace);
+    }
     switch (renderState.BlendMode) {
       case MaterialBlendMode.Opaque:
+      case MaterialBlendMode.AlphaMask:
         gl.Disable(EnableCap.Blend);
         break;
       case MaterialBlendMode.Alpha:

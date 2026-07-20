@@ -48,6 +48,41 @@ public class FlexiTextureTests {
   }
 
   [Test]
+  public void Decode_RetainsOwnedPaletteAndVerticallyOrientedIndexedPixels() {
+    var fixture = new FlexiTextureFixture();
+    fixture.WriteHeader(20, 0);
+    fixture.Data[FlexiTextureFixture.Texture0Address] = [0, 0, 1, 1];
+    var expectedPalette = fixture.Data[FlexiTextureFixture.Palette0Address].ToArray();
+
+    var textures = fixture.Decode();
+    try {
+      fixture.Data[FlexiTextureFixture.Palette0Address][0] = byte.MaxValue;
+      fixture.Data[FlexiTextureFixture.Texture0Address][0] = byte.MaxValue;
+
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(textures[0].PaletteBgra.ToArray(), Is.EqualTo(expectedPalette));
+        Assert.That(textures[0].IndexedPixels.ToArray(), Is.EqualTo(new byte[] { 1, 1, 0, 0 }));
+        Assert.That(textures[0].Texture[0, 0], Is.EqualTo(new Rgba32(10, 20, 30, 255)));
+        Assert.That(textures[0].Texture[0, 1], Is.EqualTo(new Rgba32(1, 2, 3, 255)));
+      }
+    }
+    finally {
+      foreach (var frame in textures.Frames) frame.Texture.Dispose();
+    }
+  }
+
+  [Test]
+  public void Constructor_TwoArgumentsLeavesRawFrameDataEmpty() {
+    using var image = new SixLabors.ImageSharp.Image<Rgba32>(1, 1);
+    var texture = new FlexiTexture(Recolorable.First, image);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(texture.PaletteBgra.IsEmpty, Is.True);
+      Assert.That(texture.IndexedPixels.IsEmpty, Is.True);
+    }
+  }
+
+  [Test]
   public void Decode_UsesEachFrameDimensions() {
     var fixture = new FlexiTextureFixture();
     fixture.WriteFrame(1, 0, 0);
@@ -61,7 +96,7 @@ public class FlexiTextureTests {
       using (Assert.EnterMultipleScope()) {
         Assert.That(textures[0].Texture.Width, Is.EqualTo(1));
         Assert.That(textures[0].Texture.Height, Is.EqualTo(1));
-        Assert.That(textures[0].Texture[0, 0], Is.EqualTo(new Rgba32(7, 8, 9, 64)));
+        Assert.That(textures[0].Texture[0, 0], Is.EqualTo(new Rgba32(7, 8, 9, 74)));
         Assert.That(textures[1].Texture.Width, Is.EqualTo(2));
         Assert.That(textures[1].Texture.Height, Is.EqualTo(2));
       }
@@ -88,7 +123,7 @@ public class FlexiTextureTests {
           using (Assert.EnterMultipleScope()) {
             Assert.That(textures[0].Texture.Width, Is.EqualTo(1));
             Assert.That(textures[0].Texture.Height, Is.EqualTo(1));
-            Assert.That(textures[0].Texture[0, 0], Is.EqualTo(new Rgba32(7, 8, 9, 64)));
+            Assert.That(textures[0].Texture[0, 0], Is.EqualTo(new Rgba32(7, 8, 9, 74)));
             Assert.That(textures[1].Texture.Width, Is.EqualTo(2));
             Assert.That(textures[1].Texture.Height, Is.EqualTo(2));
             Assert.That(textures[1].Texture[0, 0], Is.EqualTo(new Rgba32(1, 2, 3, 255)));

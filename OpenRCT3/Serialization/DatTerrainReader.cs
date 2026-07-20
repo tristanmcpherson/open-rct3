@@ -9,8 +9,8 @@ using System.Text;
 namespace OpenRCT3.Serialization;
 
 /// <summary>
-/// Reads the first EngineTerrain/GE_Terrain field and first WaterManager payload from an RCT3 DAT
-/// file while consuming every declared value.
+/// Reads terrain, water, and proven ordinary path/scenery structures from an RCT3 DAT file while
+/// consuming every declared value.
 /// </summary>
 internal static class DatTerrainReader {
   private const string TargetFieldName = "EngineTerrain";
@@ -32,6 +32,254 @@ internal static class DatTerrainReader {
   private const int WaterPoolHeaderBytes = 8;
   private const int WaterRecordBytes = 4;
   private const int MaxWaterRecordCount = 2 * byte.MaxValue * byte.MaxValue;
+  private static readonly Encoding StrictUtf16 = new UnicodeEncoding(
+    bigEndian: false,
+    byteOrderMark: false,
+    throwOnInvalidBytes: true);
+  private static readonly ExpectedField[] GroundPathSchema = [
+    new("ColIndex", FieldKind.UInt8, 1),
+    new("Direction", FieldKind.UInt8, 1),
+    new("PathType", FieldKind.UInt8, 1),
+    new("RowIndex", FieldKind.UInt8, 1),
+    new("Surface", FieldKind.Reference, 8),
+    new("SurfaceType", FieldKind.UInt8, 1),
+    new("bool", FieldKind.UInt8, 1),
+  ];
+  private static readonly ExpectedField[] FlyingPathSchema = [
+    new("BaseHeight", FieldKind.Int32, 4),
+    new("ColIndex", FieldKind.UInt8, 1),
+    new("Direction", FieldKind.UInt8, 1),
+    new("PathType", FieldKind.UInt8, 1),
+    new("QuantisedHeight", FieldKind.Int32, 4),
+    new("RowIndex", FieldKind.UInt8, 1),
+    new("SceneryItem", FieldKind.Reference, 8),
+    new("SlopeType", FieldKind.UInt8, 1),
+    new("Surface", FieldKind.Reference, 8),
+    new("SurfaceType", FieldKind.UInt8, 1),
+    new("bool", FieldKind.UInt8, 1),
+  ];
+  private static readonly ExpectedField[] UndergroundFlyingPathSchema = [
+    new("BaseHeight", FieldKind.Int32, 4),
+    new("ColIndex", FieldKind.UInt8, 1),
+    new("Direction", FieldKind.UInt8, 1),
+    new("PathType", FieldKind.UInt8, 1),
+    new("QuantisedHeight", FieldKind.Int32, 4),
+    new("RowIndex", FieldKind.UInt8, 1),
+    new("SceneryItem", FieldKind.Reference, 8),
+    new("SlopeType", FieldKind.UInt8, 1),
+    new("Surface", FieldKind.Reference, 8),
+    new("SurfaceType", FieldKind.UInt8, 1),
+    new("UndergroundFlag", FieldKind.Bool, 1),
+    new("bool", FieldKind.UInt8, 1),
+  ];
+  private static readonly ExpectedField FenceFlexiColoursField = new(
+    "FenceFlexiColours",
+    FieldKind.Struct,
+    12,
+    [
+      new("COL0", FieldKind.Int32, 4),
+      new("COL1", FieldKind.Int32, 4),
+      new("COL2", FieldKind.Int32, 4),
+    ]);
+  private static readonly ExpectedField[] QueuePathSchema = [
+    new("BaseHeight", FieldKind.Int32, 4),
+    new("ColIndex", FieldKind.UInt8, 1),
+    new("Direction", FieldKind.UInt8, 1),
+    new("EndDirection", FieldKind.UInt8, 1),
+    new("FenceEntry", FieldKind.ManagedObjectPtr, 8),
+    FenceFlexiColoursField,
+    new("PathType", FieldKind.UInt8, 1),
+    new("QuantisedHeight", FieldKind.Int32, 4),
+    new("QueueLine", FieldKind.Reference, 8),
+    new("RowIndex", FieldKind.UInt8, 1),
+    new("SceneryItem", FieldKind.Reference, 8),
+    new("SlopeType", FieldKind.UInt8, 1),
+    new("StartDirection", FieldKind.UInt8, 1),
+    new("Surface", FieldKind.Reference, 8),
+    new("SurfaceType", FieldKind.UInt8, 1),
+    new("bool", FieldKind.UInt8, 1),
+  ];
+  private static readonly ExpectedField[] UndergroundQueuePathSchema = [
+    new("BaseHeight", FieldKind.Int32, 4),
+    new("ColIndex", FieldKind.UInt8, 1),
+    new("Direction", FieldKind.UInt8, 1),
+    new("EndDirection", FieldKind.UInt8, 1),
+    new("FenceEntry", FieldKind.ManagedObjectPtr, 8),
+    FenceFlexiColoursField,
+    new("PathType", FieldKind.UInt8, 1),
+    new("QuantisedHeight", FieldKind.Int32, 4),
+    new("QueueLine", FieldKind.Reference, 8),
+    new("RowIndex", FieldKind.UInt8, 1),
+    new("SceneryItem", FieldKind.Reference, 8),
+    new("SlopeType", FieldKind.UInt8, 1),
+    new("StartDirection", FieldKind.UInt8, 1),
+    new("Surface", FieldKind.Reference, 8),
+    new("SurfaceType", FieldKind.UInt8, 1),
+    new("UndergroundFlag", FieldKind.Bool, 1),
+    new("bool", FieldKind.UInt8, 1),
+  ];
+  private static readonly ExpectedField AnimInfoListField = new(
+    "AnimInfoList",
+    FieldKind.List,
+    0,
+    [
+      new("AutoLoop", FieldKind.Bool, 1),
+      new("CurrentAnimation", FieldKind.Int32, 4),
+      new("CurrentAnimationTime", FieldKind.Float32, 4),
+      new("MarkedForDeletion", FieldKind.Bool, 1),
+    ]);
+  private static readonly ExpectedField BehaviourArrayField = new(
+    "BehaviourArray",
+    FieldKind.Array,
+    0,
+    [new("BehaviourReference", FieldKind.Reference, 8)]);
+  private static readonly ExpectedField FlexiColourField = new(
+    "FlexiColourField",
+    FieldKind.Struct,
+    12,
+    [
+      new("COL0", FieldKind.Int32, 4),
+      new("COL1", FieldKind.Int32, 4),
+      new("COL2", FieldKind.Int32, 4),
+    ]);
+  private static readonly ExpectedField FireworkSlotTransformField = new(
+    "FireworkSlotTransform",
+    FieldKind.Struct,
+    8,
+    [
+      new("Angle", FieldKind.Float32, 4),
+      new("Elevation", FieldKind.Float32, 4),
+    ]);
+  private static readonly ExpectedField LightFlexiColourField = new(
+    "LightFlexiColourField",
+    FieldKind.Struct,
+    12,
+    [
+      new("COL0", FieldKind.Int32, 4),
+      new("COL1", FieldKind.Int32, 4),
+      new("COL2", FieldKind.Int32, 4),
+    ]);
+  private static readonly ExpectedField ParticleSourceEntriesField = new(
+    "ParticleSourceEntries",
+    FieldKind.Array,
+    0,
+    [new("SourceRef", FieldKind.Reference, 8)]);
+  private static readonly ExpectedField SceneryItemDataField20 = new(
+    "SceneryItemDataField",
+    FieldKind.Struct,
+    20,
+    [
+      new("CORNER", FieldKind.Int32, 4),
+      new("DIRECTION", FieldKind.Int32, 4),
+      new("HEIGHT", FieldKind.Int32, 4),
+      new("POSX", FieldKind.Int32, 4),
+      new("POSZ", FieldKind.Int32, 4),
+    ]);
+  private static readonly ExpectedField SceneryItemDataField24 = new(
+    "SceneryItemDataField",
+    FieldKind.Struct,
+    24,
+    [
+      new("CORNER", FieldKind.Int32, 4),
+      new("DIRECTION", FieldKind.Int32, 4),
+      new("HEIGHT", FieldKind.Int32, 4),
+      new("HEIGHTADJUST", FieldKind.Float32, 4),
+      new("POSX", FieldKind.Int32, 4),
+      new("POSZ", FieldKind.Int32, 4),
+    ]);
+  private static readonly ExpectedField[] SidDatabaseEntrySchema = [
+    new("IsAvailable", FieldKind.Bool, 1),
+    new("IsHidden", FieldKind.Bool, 1),
+    new("IsInvented", FieldKind.Bool, 1),
+    new("OVERLAYFILENAME", FieldKind.String, 0),
+    new("SYMBOLNAME", FieldKind.String, 0),
+  ];
+  private static readonly ExpectedField[] TutorialSidDatabaseEntrySchema = [
+    new("IsAvailable", FieldKind.Bool, 1),
+    new("IsHidden", FieldKind.Bool, 1),
+    new("OVERLAYFILENAME", FieldKind.String, 0),
+    new("SYMBOLNAME", FieldKind.String, 0),
+  ];
+  private static readonly ExpectedField[] BaseSceneryItemSchema = [
+    AnimInfoListField,
+    new("BREAKFLAGS", FieldKind.Int32, 4),
+    new("BREAKTIME", FieldKind.Float32, 4),
+    BehaviourArrayField,
+    new("CustomUVProvider", FieldKind.Reference, 8),
+    new("DATABASEENTRY", FieldKind.Reference, 8),
+    new("FORCEABSOLUTEHEIGHT", FieldKind.Bool, 1),
+    new("FRAMEOFFSET", FieldKind.Int32, 4),
+    FlexiColourField,
+    new("HEIGHTOFFSET", FieldKind.Int32, 4),
+    new("IsHidden", FieldKind.Bool, 1),
+    new("Owner", FieldKind.Reference, 8),
+    ParticleSourceEntriesField,
+    SceneryItemDataField20,
+    new("Vendor", FieldKind.ManagedObjectPtr, 8),
+  ];
+  private static readonly ExpectedField[] TutorialSceneryItemSchema = [
+    AnimInfoListField,
+    new("BREAKFLAGS", FieldKind.Int32, 4),
+    new("BREAKTIME", FieldKind.Float32, 4),
+    BehaviourArrayField,
+    new("DATABASEENTRY", FieldKind.Reference, 8),
+    new("FORCEABSOLUTEHEIGHT", FieldKind.Bool, 1),
+    new("FRAMEOFFSET", FieldKind.Int32, 4),
+    FlexiColourField,
+    new("HEIGHTOFFSET", FieldKind.Int32, 4),
+    new("IsHidden", FieldKind.Bool, 1),
+    new("Owner", FieldKind.Reference, 8),
+    ParticleSourceEntriesField,
+    SceneryItemDataField20,
+    new("Vendor", FieldKind.ManagedObjectPtr, 8),
+  ];
+  private static readonly ExpectedField[] SoakedSceneryItemSchema = [
+    AnimInfoListField,
+    new("BREAKFLAGS", FieldKind.Int32, 4),
+    new("BREAKTIME", FieldKind.Float32, 4),
+    BehaviourArrayField,
+    new("CustomUVProvider", FieldKind.Reference, 8),
+    new("DATABASEENTRY", FieldKind.Reference, 8),
+    new("FORCEABSOLUTEHEIGHT", FieldKind.Bool, 1),
+    new("FRAMEOFFSET", FieldKind.Int32, 4),
+    FireworkSlotTransformField,
+    FlexiColourField,
+    new("HEIGHTOFFSET", FieldKind.Int32, 4),
+    new("IsHidden", FieldKind.Bool, 1),
+    LightFlexiColourField,
+    new("Owner", FieldKind.Reference, 8),
+    ParticleSourceEntriesField,
+    SceneryItemDataField24,
+    new("Vendor", FieldKind.ManagedObjectPtr, 8),
+  ];
+  private static readonly ExpectedField[] WildSceneryItemSchema = [
+    new("ADSPEND", FieldKind.Float32, 4),
+    AnimInfoListField,
+    new("BREAKFLAGS", FieldKind.Int32, 4),
+    new("BREAKTIME", FieldKind.Float32, 4),
+    BehaviourArrayField,
+    new("CustomUVProvider", FieldKind.Reference, 8),
+    new("DATABASEENTRY", FieldKind.Reference, 8),
+    new("FORCEABSOLUTEHEIGHT", FieldKind.Bool, 1),
+    new("FRAMEOFFSET", FieldKind.Int32, 4),
+    FireworkSlotTransformField,
+    FlexiColourField,
+    new("HEIGHTOFFSET", FieldKind.Int32, 4),
+    new("IsHidden", FieldKind.Bool, 1),
+    LightFlexiColourField,
+    new("MADINDEX", FieldKind.Int32, 4),
+    new("Owner", FieldKind.Reference, 8),
+    ParticleSourceEntriesField,
+    SceneryItemDataField24,
+    new("Vendor", FieldKind.ManagedObjectPtr, 8),
+  ];
+  private static readonly ExpectedField[] SceneryItemPlacementSingleSchema = [
+    FlexiColourField,
+    new("Owner", FieldKind.ManagedObjectPtr, 8),
+    new("SIDDatabaseEntry", FieldKind.ManagedObjectPtr, 8),
+    new("SceneryItem", FieldKind.ManagedObjectPtr, 8),
+    SceneryItemDataField20,
+  ];
 
   public static DatTerrainData Read(string path) {
     if (string.IsNullOrWhiteSpace(path))
@@ -56,16 +304,27 @@ internal static class DatTerrainReader {
       if (structureIndex >= Convert.ToUInt32(structures.Length))
         throw new InvalidDataException($"DAT entry {entryIndex} has an invalid structure index.");
 
-      reader.ReadUInt64();
+      var entryId = reader.ReadUInt64();
       var structure = structures[Convert.ToInt32(structureIndex)];
-      foreach (var field in structure.Fields)
-        ReadFieldValue(reader, field, state);
+      if (TryGetPathStructureKind(structure.Name, out var pathKind))
+        state.CapturePath(ReadPathEntry(reader, structure, entryId, pathKind, state));
+      else if (TryGetSceneryStructureKind(structure.Name, out var sceneryKind))
+        state.CaptureScenery(ReadSceneryEntry(reader, structure, entryId, sceneryKind, state));
+      else {
+        foreach (var field in structure.Fields)
+          ReadFieldValue(reader, field, state);
+      }
     }
 
     var terrain = state.Terrain
       ?? throw new InvalidDataException(
         "The DAT file does not contain an EngineTerrain/GE_Terrain field.");
-    return AttachWaterManager(terrain, state.WaterManager);
+    state.ResolveSceneryDatabaseEntries();
+    return AttachDecodedData(
+      terrain,
+      state.WaterManager,
+      state.Paths,
+      state.SceneryEntries);
   }
 
   private static int ReadStructureCount(DatBinaryReader reader) {
@@ -103,7 +362,12 @@ internal static class DatTerrainReader {
     var fields = new FieldDefinition[fieldCount];
     for (var index = 0; index < fieldCount; index++)
       fields[index] = ReadFieldDefinition(reader, state, depth: 1);
-    return new DataStructure(name, fields);
+    var structure = new DataStructure(name, fields);
+    if (TryGetPathStructureKind(name, out var pathKind))
+      ValidatePathStructureSchema(structure, pathKind);
+    else if (TryGetSceneryStructureKind(name, out var sceneryKind))
+      ValidateSceneryStructureSchema(structure, sceneryKind);
+    return structure;
   }
 
   private static FieldDefinition ReadFieldDefinition(
@@ -128,6 +392,130 @@ internal static class DatTerrainReader {
   private static int ReadSchemaChildCount(uint value, SchemaReadState state) {
     var remaining = MaxSchemaFieldCount - state.FieldCount;
     return ReadBoundedCount(value, remaining, "schema field count");
+  }
+
+  private static bool TryGetPathStructureKind(
+    string name,
+    out DatPathStructureKind pathKind
+  ) {
+    switch (name) {
+      case "PathTile":
+        pathKind = DatPathStructureKind.PathTile;
+        return true;
+      case "PathGround":
+        pathKind = DatPathStructureKind.PathGround;
+        return true;
+      case "PathFlying":
+        pathKind = DatPathStructureKind.PathFlying;
+        return true;
+      case "PathQueue":
+        pathKind = DatPathStructureKind.PathQueue;
+        return true;
+      default:
+        pathKind = default;
+        return false;
+    }
+  }
+
+  private static bool TryGetSceneryStructureKind(
+    string name,
+    out SceneryStructureKind sceneryKind
+  ) {
+    switch (name) {
+      case "SIDDatabaseEntry":
+        sceneryKind = SceneryStructureKind.SidDatabaseEntry;
+        return true;
+      case "SceneryItem":
+        sceneryKind = SceneryStructureKind.SceneryItem;
+        return true;
+      case "SceneryItemPlacementSingle":
+        sceneryKind = SceneryStructureKind.SceneryItemPlacementSingle;
+        return true;
+      default:
+        sceneryKind = default;
+        return false;
+    }
+  }
+
+  private static void ValidatePathStructureSchema(
+    DataStructure structure,
+    DatPathStructureKind pathKind
+  ) {
+    var valid = pathKind switch {
+      DatPathStructureKind.PathTile => SchemaMatches(structure.Fields, GroundPathSchema),
+      DatPathStructureKind.PathGround => SchemaMatches(structure.Fields, GroundPathSchema),
+      DatPathStructureKind.PathFlying =>
+        SchemaMatches(structure.Fields, FlyingPathSchema)
+        || SchemaMatches(structure.Fields, UndergroundFlyingPathSchema),
+      DatPathStructureKind.PathQueue =>
+        SchemaMatches(structure.Fields, QueuePathSchema)
+        || SchemaMatches(structure.Fields, UndergroundQueuePathSchema),
+      _ => false,
+    };
+    if (!valid)
+      throw new InvalidDataException(
+        $"DAT structure '{structure.Name}' does not match a supported exact schema.");
+  }
+
+  private static void ValidateSceneryStructureSchema(
+    DataStructure structure,
+    SceneryStructureKind sceneryKind
+  ) {
+    var valid = sceneryKind switch {
+      SceneryStructureKind.SidDatabaseEntry =>
+        SchemaMatches(structure.Fields, SidDatabaseEntrySchema)
+        || SchemaMatches(structure.Fields, TutorialSidDatabaseEntrySchema),
+      SceneryStructureKind.SceneryItem =>
+        TryGetSceneryItemSchemaKind(structure, out _),
+      SceneryStructureKind.SceneryItemPlacementSingle =>
+        SchemaMatches(structure.Fields, SceneryItemPlacementSingleSchema),
+      _ => false,
+    };
+    if (!valid)
+      throw new InvalidDataException(
+        $"DAT structure '{structure.Name}' does not match a supported exact schema.");
+  }
+
+  private static bool TryGetSceneryItemSchemaKind(
+    DataStructure structure,
+    out SceneryItemSchemaKind schemaKind
+  ) {
+    if (SchemaMatches(structure.Fields, BaseSceneryItemSchema)) {
+      schemaKind = SceneryItemSchemaKind.Base;
+      return true;
+    }
+    if (SchemaMatches(structure.Fields, TutorialSceneryItemSchema)) {
+      schemaKind = SceneryItemSchemaKind.Tutorial;
+      return true;
+    }
+    if (SchemaMatches(structure.Fields, SoakedSceneryItemSchema)) {
+      schemaKind = SceneryItemSchemaKind.Soaked;
+      return true;
+    }
+    if (SchemaMatches(structure.Fields, WildSceneryItemSchema)) {
+      schemaKind = SceneryItemSchemaKind.Wild;
+      return true;
+    }
+
+    schemaKind = default;
+    return false;
+  }
+
+  private static bool SchemaMatches(
+    FieldDefinition[] actual,
+    ExpectedField[] expected
+  ) {
+    if (actual.Length != expected.Length) return false;
+    for (var index = 0; index < actual.Length; index++) {
+      var actualField = actual[index];
+      var expectedField = expected[index];
+      var expectedChildren = expectedField.Children ?? Array.Empty<ExpectedField>();
+      if (actualField.Name != expectedField.Name
+        || actualField.Kind != expectedField.Kind
+        || actualField.FixedSize != expectedField.FixedSize
+        || !SchemaMatches(actualField.Children, expectedChildren)) return false;
+    }
+    return true;
   }
 
   private static FieldKind ParseFieldKind(string kind) => kind switch {
@@ -196,7 +584,7 @@ internal static class DatTerrainReader {
         reader.Skip(64);
         return;
       case FieldKind.String:
-        reader.Skip(ReadBoundedSize(reader.ReadUInt32(), MaxStringBytes, "string length"));
+        ReadDatString(reader, "string");
         return;
       case FieldKind.Array:
       case FieldKind.List:
@@ -262,6 +650,438 @@ internal static class DatTerrainReader {
     ValueReadState state) {
     foreach (var child in field.Children)
       ReadFieldValue(reader, child, state);
+  }
+
+  private static DatPathData ReadPathEntry(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    DatPathStructureKind pathKind,
+    ValueReadState state
+  ) {
+    foreach (var field in structure.Fields)
+      CountPathFieldValues(field, state);
+
+    return pathKind switch {
+      DatPathStructureKind.PathTile => ReadPathTile(reader, entryId),
+      DatPathStructureKind.PathGround => ReadPathGround(reader, entryId),
+      DatPathStructureKind.PathFlying => ReadPathFlying(
+        reader,
+        entryId,
+        HasUndergroundFlag(structure)),
+      DatPathStructureKind.PathQueue => ReadPathQueue(
+        reader,
+        entryId,
+        HasUndergroundFlag(structure)),
+      _ => throw new InvalidDataException($"Unsupported path structure kind '{pathKind}'."),
+    };
+  }
+
+  private static DatSceneryEntryData ReadSceneryEntry(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    SceneryStructureKind sceneryKind,
+    ValueReadState state
+  ) {
+    foreach (var field in structure.Fields)
+      CountScenerySchemaValues(field, state);
+
+    return sceneryKind switch {
+      SceneryStructureKind.SidDatabaseEntry =>
+        ReadSidDatabaseEntry(reader, structure, entryId),
+      SceneryStructureKind.SceneryItem =>
+        ReadSceneryItem(reader, structure, entryId, state),
+      SceneryStructureKind.SceneryItemPlacementSingle =>
+        ReadSceneryItemPlacementSingle(reader, entryId),
+      _ => throw new InvalidDataException(
+        $"Unsupported scenery structure kind '{sceneryKind}'."),
+    };
+  }
+
+  private static void CountScenerySchemaValues(
+    FieldDefinition field,
+    ValueReadState state
+  ) {
+    state.AddValue();
+    if (field.Kind is FieldKind.Array or FieldKind.List) return;
+    foreach (var child in field.Children)
+      CountScenerySchemaValues(child, state);
+  }
+
+  private static DatSidDatabaseEntryData ReadSidDatabaseEntry(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId
+  ) {
+    var isAvailable = ReadBoolean(reader, "SIDDatabaseEntry IsAvailable");
+    var isHidden = ReadBoolean(reader, "SIDDatabaseEntry IsHidden");
+    var hasIsInvented = SchemaMatches(structure.Fields, SidDatabaseEntrySchema);
+    var isInvented = hasIsInvented
+      ? ReadBoolean(reader, "SIDDatabaseEntry IsInvented")
+      : (bool?)null;
+    var overlayFilename = ReadDatString(reader, "SIDDatabaseEntry OVERLAYFILENAME");
+    var symbolName = ReadDatString(reader, "SIDDatabaseEntry SYMBOLNAME");
+    return new DatSidDatabaseEntryData(
+      entryId,
+      isAvailable,
+      isHidden,
+      isInvented,
+      overlayFilename,
+      symbolName);
+  }
+
+  private static DatSceneryItemData ReadSceneryItem(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    if (!TryGetSceneryItemSchemaKind(structure, out var schemaKind))
+      throw new InvalidDataException(
+        "SceneryItem does not match a supported exact schema.");
+
+    var isSoakedOrWild = schemaKind is SceneryItemSchemaKind.Soaked
+      or SceneryItemSchemaKind.Wild;
+    var variant = schemaKind switch {
+      SceneryItemSchemaKind.Soaked => DatSceneryItemVariant.Soaked,
+      SceneryItemSchemaKind.Wild => DatSceneryItemVariant.Wild,
+      _ => DatSceneryItemVariant.Base,
+    };
+    var adSpend = schemaKind == SceneryItemSchemaKind.Wild
+      ? ReadFiniteSingle(reader, "SceneryItem ADSPEND")
+      : (float?)null;
+    var animInfoList = ReadAnimationInfoList(reader, state);
+    var breakFlags = reader.ReadInt32();
+    var breakTime = ReadFiniteSingle(reader, "SceneryItem BREAKTIME");
+    var behaviourArray = ReadReferenceCollection(
+      reader,
+      state,
+      "SceneryItem BehaviourArray");
+    var customUvProvider = schemaKind != SceneryItemSchemaKind.Tutorial
+      ? reader.ReadUInt64()
+      : (ulong?)null;
+    var databaseEntry = reader.ReadUInt64();
+    var forceAbsoluteHeight = ReadBoolean(reader, "SceneryItem FORCEABSOLUTEHEIGHT");
+    var frameOffset = reader.ReadInt32();
+    var fireworkSlotTransform = isSoakedOrWild
+      ? ReadFireworkSlotTransform(reader)
+      : (DatFireworkSlotTransform?)null;
+    var flexiColourField = ReadSceneryFlexiColour(reader);
+    var heightOffset = reader.ReadInt32();
+    var isHidden = ReadBoolean(reader, "SceneryItem IsHidden");
+    var lightFlexiColourField = isSoakedOrWild
+      ? ReadSceneryFlexiColour(reader)
+      : (DatSceneryFlexiColour?)null;
+    var madIndex = schemaKind == SceneryItemSchemaKind.Wild
+      ? reader.ReadInt32()
+      : (int?)null;
+    var owner = reader.ReadUInt64();
+    var particleSourceEntries = ReadReferenceCollection(
+      reader,
+      state,
+      "SceneryItem ParticleSourceEntries");
+    var sceneryItemDataField = ReadSceneryItemDataField(
+      reader,
+      hasHeightAdjust: isSoakedOrWild,
+      "SceneryItem SceneryItemDataField");
+    var vendor = reader.ReadUInt64();
+    return new DatSceneryItemData(
+      entryId,
+      variant,
+      adSpend,
+      animInfoList,
+      breakFlags,
+      breakTime,
+      behaviourArray,
+      customUvProvider,
+      databaseEntry,
+      forceAbsoluteHeight,
+      frameOffset,
+      fireworkSlotTransform,
+      flexiColourField,
+      heightOffset,
+      isHidden,
+      lightFlexiColourField,
+      madIndex,
+      owner,
+      particleSourceEntries,
+      sceneryItemDataField,
+      vendor);
+  }
+
+  private static DatSceneryItemPlacementSingleData ReadSceneryItemPlacementSingle(
+    DatBinaryReader reader,
+    ulong entryId
+  ) {
+    var flexiColourField = ReadSceneryFlexiColour(reader);
+    var owner = reader.ReadUInt64();
+    var sidDatabaseEntry = reader.ReadUInt64();
+    var sceneryItem = reader.ReadUInt64();
+    var sceneryItemDataField = ReadSceneryItemDataField(
+      reader,
+      hasHeightAdjust: false,
+      "SceneryItemPlacementSingle SceneryItemDataField");
+    return new DatSceneryItemPlacementSingleData(
+      entryId,
+      flexiColourField,
+      owner,
+      sidDatabaseEntry,
+      sceneryItem,
+      sceneryItemDataField);
+  }
+
+  private static DatSceneryAnimationInfo[] ReadAnimationInfoList(
+    DatBinaryReader reader,
+    ValueReadState state
+  ) {
+    var length = ReadCollectionLength(reader, state, "SceneryItem AnimInfoList");
+    state.AddValues(checked(length * 4));
+    var values = new DatSceneryAnimationInfo[length];
+    for (var index = 0; index < length; index++) {
+      var autoLoop = ReadBoolean(reader, $"SceneryItem AnimInfoList[{index}] AutoLoop");
+      var currentAnimation = reader.ReadInt32();
+      var currentAnimationTime = ReadFiniteSingle(
+        reader,
+        $"SceneryItem AnimInfoList[{index}] CurrentAnimationTime");
+      var markedForDeletion = ReadBoolean(
+        reader,
+        $"SceneryItem AnimInfoList[{index}] MarkedForDeletion");
+      values[index] = new DatSceneryAnimationInfo(
+        autoLoop,
+        currentAnimation,
+        currentAnimationTime,
+        markedForDeletion);
+    }
+    return values;
+  }
+
+  private static ulong[] ReadReferenceCollection(
+    DatBinaryReader reader,
+    ValueReadState state,
+    string description
+  ) {
+    var length = ReadCollectionLength(reader, state, description);
+    state.AddValues(length);
+    var values = new ulong[length];
+    for (var index = 0; index < length; index++)
+      values[index] = reader.ReadUInt64();
+    return values;
+  }
+
+  private static int ReadCollectionLength(
+    DatBinaryReader reader,
+    ValueReadState state,
+    string description
+  ) {
+    ReadBoundedSize(reader.ReadUInt32(), MaxPayloadBytes, $"{description} payload");
+    var length = ReadBoundedCount(
+      reader.ReadUInt32(),
+      MaxCollectionLength,
+      $"{description} length");
+    state.AddCollectionElements(length);
+    return length;
+  }
+
+  private static DatFireworkSlotTransform ReadFireworkSlotTransform(
+    DatBinaryReader reader
+  ) => new(
+    ReadFiniteSingle(reader, "SceneryItem FireworkSlotTransform Angle"),
+    ReadFiniteSingle(reader, "SceneryItem FireworkSlotTransform Elevation"));
+
+  private static DatSceneryFlexiColour ReadSceneryFlexiColour(
+    DatBinaryReader reader
+  ) => new(
+    reader.ReadInt32(),
+    reader.ReadInt32(),
+    reader.ReadInt32());
+
+  private static DatSceneryItemDataField ReadSceneryItemDataField(
+    DatBinaryReader reader,
+    bool hasHeightAdjust,
+    string description
+  ) {
+    var corner = reader.ReadInt32();
+    var direction = reader.ReadInt32();
+    var height = reader.ReadInt32();
+    var heightAdjust = hasHeightAdjust
+      ? ReadFiniteSingle(reader, $"{description} HEIGHTADJUST")
+      : (float?)null;
+    return new DatSceneryItemDataField(
+      corner,
+      direction,
+      height,
+      heightAdjust,
+      reader.ReadInt32(),
+      reader.ReadInt32());
+  }
+
+  private static float ReadFiniteSingle(
+    DatBinaryReader reader,
+    string description
+  ) {
+    var value = reader.ReadSingle();
+    if (!float.IsFinite(value))
+      throw new InvalidDataException($"DAT {description} contains a non-finite value.");
+    return value;
+  }
+
+  private static void CountPathFieldValues(
+    FieldDefinition field,
+    ValueReadState state
+  ) {
+    state.AddValue();
+    foreach (var child in field.Children)
+      CountPathFieldValues(child, state);
+  }
+
+  private static bool HasUndergroundFlag(DataStructure structure) =>
+    structure.Fields.Length >= 2
+    && structure.Fields[^2].Name == "UndergroundFlag";
+
+  private static DatPathTileData ReadPathTile(DatBinaryReader reader, ulong entryId) =>
+    new(
+      entryId,
+      reader.ReadByte(),
+      reader.ReadByte(),
+      reader.ReadByte(),
+      reader.ReadByte(),
+      reader.ReadUInt64(),
+      reader.ReadByte(),
+      reader.ReadByte());
+
+  private static DatPathGroundData ReadPathGround(DatBinaryReader reader, ulong entryId) =>
+    new(
+      entryId,
+      reader.ReadByte(),
+      reader.ReadByte(),
+      reader.ReadByte(),
+      reader.ReadByte(),
+      reader.ReadUInt64(),
+      reader.ReadByte(),
+      reader.ReadByte());
+
+  private static DatPathFlyingData ReadPathFlying(
+    DatBinaryReader reader,
+    ulong entryId,
+    bool hasUndergroundFlag
+  ) {
+    var baseHeight = reader.ReadInt32();
+    var colIndex = reader.ReadByte();
+    var direction = reader.ReadByte();
+    var pathType = reader.ReadByte();
+    var quantisedHeight = reader.ReadInt32();
+    var rowIndex = reader.ReadByte();
+    var sceneryItem = reader.ReadUInt64();
+    var slopeType = reader.ReadByte();
+    var surface = reader.ReadUInt64();
+    var surfaceType = reader.ReadByte();
+    var undergroundFlag = hasUndergroundFlag
+      ? ReadBoolean(reader, "PathFlying UndergroundFlag")
+      : (bool?)null;
+    var boolValue = reader.ReadByte();
+    return new DatPathFlyingData(
+      entryId,
+      baseHeight,
+      colIndex,
+      direction,
+      pathType,
+      quantisedHeight,
+      rowIndex,
+      sceneryItem,
+      slopeType,
+      surface,
+      surfaceType,
+      undergroundFlag,
+      boolValue);
+  }
+
+  private static DatPathQueueData ReadPathQueue(
+    DatBinaryReader reader,
+    ulong entryId,
+    bool hasUndergroundFlag
+  ) {
+    var baseHeight = reader.ReadInt32();
+    var colIndex = reader.ReadByte();
+    var direction = reader.ReadByte();
+    var endDirection = reader.ReadByte();
+    var fenceEntry = reader.ReadUInt64();
+    var fenceFlexiColours = new DatFenceFlexiColours(
+      reader.ReadInt32(),
+      reader.ReadInt32(),
+      reader.ReadInt32());
+    var pathType = reader.ReadByte();
+    var quantisedHeight = reader.ReadInt32();
+    var queueLine = reader.ReadUInt64();
+    var rowIndex = reader.ReadByte();
+    var sceneryItem = reader.ReadUInt64();
+    var slopeType = reader.ReadByte();
+    var startDirection = reader.ReadByte();
+    var surface = reader.ReadUInt64();
+    var surfaceType = reader.ReadByte();
+    var undergroundFlag = hasUndergroundFlag
+      ? ReadBoolean(reader, "PathQueue UndergroundFlag")
+      : (bool?)null;
+    var boolValue = reader.ReadByte();
+    return new DatPathQueueData(
+      entryId,
+      baseHeight,
+      colIndex,
+      direction,
+      endDirection,
+      fenceEntry,
+      fenceFlexiColours,
+      pathType,
+      quantisedHeight,
+      queueLine,
+      rowIndex,
+      sceneryItem,
+      slopeType,
+      startDirection,
+      surface,
+      surfaceType,
+      undergroundFlag,
+      boolValue);
+  }
+
+  private static bool ReadBoolean(DatBinaryReader reader, string description) {
+    var value = reader.ReadByte();
+    if (value > 1)
+      throw new InvalidDataException($"DAT {description} contains an invalid bool value.");
+    return value != 0;
+  }
+
+  private static string ReadDatString(
+    DatBinaryReader reader,
+    string description
+  ) {
+    var length = ReadBoundedSize(
+      reader.ReadUInt32(),
+      MaxStringBytes,
+      $"{description} length");
+    var bytes = reader.ReadBytes(length);
+    var hasUtf16Marker = length >= sizeof(uint)
+      && BinaryPrimitives.ReadUInt32LittleEndian(bytes) == 0xEFEFEFEF;
+    if (!hasUtf16Marker) {
+      foreach (var value in bytes) {
+        if (value > 0x7F)
+          throw new InvalidDataException($"DAT {description} is not ASCII.");
+      }
+      return Encoding.ASCII.GetString(bytes);
+    }
+
+    var utf16Length = length - sizeof(uint);
+    if ((utf16Length & 1) != 0)
+      throw new InvalidDataException(
+        $"DAT {description} has an invalid UTF-16 byte length.");
+    try {
+      return StrictUtf16.GetString(bytes, sizeof(uint), utf16Length);
+    }
+    catch (DecoderFallbackException exception) {
+      throw new InvalidDataException(
+        $"DAT {description} contains malformed UTF-16 data.",
+        exception);
+    }
   }
 
   private static int ReadSizedValueLength(
@@ -378,13 +1198,24 @@ internal static class DatTerrainReader {
       throw new InvalidDataException($"The {description} exceeds its declared payload size.");
   }
 
-  private static DatTerrainData AttachWaterManager(
+  private static DatTerrainData AttachDecodedData(
     DatTerrainData terrain,
-    DatWaterManagerData? waterManager) {
-    if (waterManager == null) return terrain;
-    if (waterManager.Width != terrain.Width || waterManager.Height != terrain.Height)
+    DatWaterManagerData? waterManager,
+    IReadOnlyList<DatPathData> paths,
+    IReadOnlyList<DatSceneryEntryData> sceneryEntries
+  ) {
+    if (waterManager != null
+      && (waterManager.Width != terrain.Width || waterManager.Height != terrain.Height))
       throw new InvalidDataException(
         "WaterManager dimensions do not match the decoded GE_Terrain dimensions.");
+
+    foreach (var path in paths) {
+      if (path.ColIndex >= terrain.Width || path.RowIndex >= terrain.Height)
+        throw new InvalidDataException(
+          $"DAT path entry {path.EntryId} is outside the decoded GE_Terrain dimensions.");
+    }
+
+    if (waterManager == null && paths.Count == 0 && sceneryEntries.Count == 0) return terrain;
 
     var cells = new DatTerrainCell[terrain.Cells.Count];
     for (var index = 0; index < cells.Length; index++)
@@ -397,7 +1228,9 @@ internal static class DatTerrainReader {
       terrain.TileSizeX,
       terrain.TileSizeY,
       cells,
-      waterManager);
+      waterManager,
+      [.. paths],
+      [.. sceneryEntries]);
   }
 
   private static DatTerrainData ReadTerrain(DatBinaryReader reader, int payloadSize) {
@@ -507,8 +1340,22 @@ internal static class DatTerrainReader {
 
   private static int ReadBoundedSize(uint value, int maximum, string description) {
     if (value > Convert.ToUInt32(maximum))
-      throw new InvalidDataException($"DAT {description} exceeds the supported limit.");
+      throw new InvalidDataException(
+        $"DAT {description} value {value} exceeds the supported limit.");
     return Convert.ToInt32(value);
+  }
+
+  private enum SceneryStructureKind {
+    SidDatabaseEntry,
+    SceneryItem,
+    SceneryItemPlacementSingle,
+  }
+
+  private enum SceneryItemSchemaKind {
+    Base,
+    Tutorial,
+    Soaked,
+    Wild,
   }
 
   private enum FieldKind {
@@ -571,6 +1418,12 @@ internal static class DatTerrainReader {
     }
   }
 
+  private readonly record struct ExpectedField(
+    string Name,
+    FieldKind Kind,
+    uint FixedSize,
+    ExpectedField[]? Children = null);
+
   private sealed class SchemaReadState {
     public int FieldCount { get; private set; }
 
@@ -584,9 +1437,13 @@ internal static class DatTerrainReader {
   private sealed class ValueReadState {
     private int _collectionElementCount;
     private int _valueReadCount;
+    private readonly List<DatPathData> _paths = [];
+    private readonly List<DatSceneryEntryData> _sceneryEntries = [];
 
     public DatTerrainData? Terrain { get; private set; }
     public DatWaterManagerData? WaterManager { get; private set; }
+    public IReadOnlyList<DatPathData> Paths => _paths;
+    public IReadOnlyList<DatSceneryEntryData> SceneryEntries => _sceneryEntries;
 
     public void AddCollectionElements(int count) {
       if (count > MaxTotalCollectionElements - _collectionElementCount)
@@ -595,9 +1452,13 @@ internal static class DatTerrainReader {
     }
 
     public void AddValue() {
-      if (_valueReadCount >= MaxValueReadCount)
+      AddValues(1);
+    }
+
+    public void AddValues(int count) {
+      if (count < 0 || count > MaxValueReadCount - _valueReadCount)
         throw new InvalidDataException("DAT value count exceeds the supported limit.");
-      _valueReadCount++;
+      _valueReadCount += count;
     }
 
     public void CaptureTerrain(DatTerrainData terrain) {
@@ -606,6 +1467,28 @@ internal static class DatTerrainReader {
 
     public void CaptureWaterManager(DatWaterManagerData waterManager) {
       WaterManager ??= waterManager;
+    }
+
+    public void CapturePath(DatPathData path) => _paths.Add(path);
+
+    public void CaptureScenery(DatSceneryEntryData sceneryEntry) =>
+      _sceneryEntries.Add(sceneryEntry);
+
+    public void ResolveSceneryDatabaseEntries() {
+      var sidEntries = new Dictionary<ulong, DatSidDatabaseEntryData>();
+      foreach (var entry in _sceneryEntries) {
+        if (entry is not DatSidDatabaseEntryData sidEntry) continue;
+        if (!sidEntries.TryAdd(sidEntry.EntryId, sidEntry))
+          throw new InvalidDataException(
+            $"DAT contains duplicate SIDDatabaseEntry ID {sidEntry.EntryId}.");
+      }
+
+      foreach (var entry in _sceneryEntries) {
+        if (entry is not DatSceneryItemData sceneryItem
+          || sceneryItem.DatabaseEntry == 0
+          || !sidEntries.TryGetValue(sceneryItem.DatabaseEntry, out var sidEntry)) continue;
+        sceneryItem.ResolveDatabaseEntry(sidEntry);
+      }
     }
   }
 
@@ -640,6 +1523,12 @@ internal static class DatTerrainReader {
       return BinaryPrimitives.ReadUInt16LittleEndian(bytes);
     }
 
+    public int ReadInt32() {
+      Span<byte> bytes = stackalloc byte[4];
+      ReadExact(bytes);
+      return BinaryPrimitives.ReadInt32LittleEndian(bytes);
+    }
+
     public uint ReadUInt32() {
       Span<byte> bytes = stackalloc byte[4];
       ReadExact(bytes);
@@ -656,6 +1545,13 @@ internal static class DatTerrainReader {
       Span<byte> bytes = stackalloc byte[4];
       ReadExact(bytes);
       return BinaryPrimitives.ReadSingleLittleEndian(bytes);
+    }
+
+    public byte[] ReadBytes(int count) {
+      if (count < 0) throw new InvalidDataException("DAT byte count is invalid.");
+      var bytes = new byte[count];
+      ReadExact(bytes);
+      return bytes;
     }
 
     public string ReadAscii16(string description) {

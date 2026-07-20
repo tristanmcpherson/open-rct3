@@ -24,11 +24,16 @@ public class RendererDisplayListTests {
       "opaque-second",
       MaterialRenderState.Opaque,
       100);
+    var masked = CreateNode(
+      "masked",
+      MaterialRenderState.AlphaMask,
+      256);
 
     var ordered = Renderer.OrderDisplayList([
       transparentNear,
       opaqueFirst,
       transparentFar,
+      masked,
       opaqueSecond,
     ]);
 
@@ -36,6 +41,7 @@ public class RendererDisplayListTests {
       ordered.Select(node => node.Name),
       Is.EqualTo(new[] {
         "opaque-first",
+        "masked",
         "opaque-second",
         "transparent-far",
         "transparent-near",
@@ -52,6 +58,22 @@ public class RendererDisplayListTests {
     Assert.That(
       ordered.Select(node => node.Name),
       Is.EqualTo(new[] { "first", "second" }));
+  }
+
+  [Test]
+  public void OrderDisplayList_PreservesPerDrawFaceCullingState() {
+    var singleSided = CreateNode(
+      "single-sided",
+      MaterialRenderState.Opaque with { CullBackFaces = true },
+      1);
+    var doubleSided = CreateNode("double-sided", MaterialRenderState.Opaque, 2);
+
+    var ordered = Renderer.OrderDisplayList([singleSided, doubleSided]);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(ordered[0].RenderState.CullBackFaces, Is.True);
+      Assert.That(ordered[1].RenderState.CullBackFaces, Is.False);
+    }
   }
 
   private static DrawNode CreateNode(

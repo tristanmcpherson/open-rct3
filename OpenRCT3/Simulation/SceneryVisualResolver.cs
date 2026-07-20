@@ -1,0 +1,172 @@
+// Scenery Visual Resolver
+//
+// Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
+
+using OpenCobra.OVL;
+using OpenCobra.OVL.Files;
+using System.Collections.Generic;
+
+namespace OpenRCT3.Simulation;
+
+/// <summary>One static-shape LOD reached through a placed object's SID and SVD resources.</summary>
+public sealed record ResolvedSceneryStaticLod(
+  SceneryItemVisual Visual,
+  SceneryItemVisualLod Lod,
+  StaticShape Shape
+);
+
+/// <summary>
+/// A decoded SID plus the static-shape LODs from its first supported visual alternative.
+/// </summary>
+public sealed record ResolvedSceneryObject(
+  SceneryItem Item,
+  IReadOnlyList<ResolvedSceneryStaticLod> StaticLods
+);
+
+/// <summary>Resolves the SID-to-SVD-to-SHS resource chain for scenery rendering.</summary>
+public sealed class SceneryVisualResolver {
+  private readonly Func<string, FileType, SceneryResourceEntry?> find;
+  private readonly Func<Ovl, IReadOnlyList<SceneryItem>> decodeItems;
+  private readonly Func<Ovl, IReadOnlyList<SceneryItemVisual>> decodeVisuals;
+  private readonly Func<Ovl, IReadOnlyList<StaticShape>> decodeShapes;
+  private readonly Dictionary<Ovl, IReadOnlyDictionary<string, SceneryItem>> itemCache = [];
+  private readonly Dictionary<Ovl, IReadOnlyDictionary<string, SceneryItemVisual>> visualCache = [];
+  private readonly Dictionary<Ovl, IReadOnlyDictionary<string, StaticShape>> shapeCache = [];
+
+  public SceneryVisualResolver(SceneryResourceCatalog catalog)
+    : this(
+      catalog.Find,
+      SceneryItems.Extract,
+      SceneryItemVisuals.Extract,
+      StaticShapes.Extract) { }
+
+  internal SceneryVisualResolver(
+    Func<string, FileType, SceneryResourceEntry?> find,
+    Func<Ovl, IReadOnlyList<SceneryItem>> decodeItems,
+    Func<Ovl, IReadOnlyList<SceneryItemVisual>> decodeVisuals,
+    Func<Ovl, IReadOnlyList<StaticShape>> decodeShapes
+  ) {
+    ArgumentNullException.ThrowIfNull(find);
+    ArgumentNullException.ThrowIfNull(decodeItems);
+    ArgumentNullException.ThrowIfNull(decodeVisuals);
+    ArgumentNullException.ThrowIfNull(decodeShapes);
+    this.find = find;
+    this.decodeItems = decodeItems;
+    this.decodeVisuals = decodeVisuals;
+    this.decodeShapes = decodeShapes;
+  }
+
+  /// <summary>
+  /// Resolves <paramref name="objectKey"/>. A missing catalog SID returns <c>null</c>. SID visual
+  /// references are serialized alternatives (for example, billboard and 3D tree variants), so the
+  /// first visual containing a supported static-shape LOD wins.
+  /// </summary>
+  public ResolvedSceneryObject? Resolve(string objectKey) {
+    ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
+    var itemEntry = find(objectKey, FileType.SceneryItem);
+    if (itemEntry == null) return null;
+
+    var item = GetExact(
+      itemEntry.Archive,
+      itemEntry.File.Name,
+      itemCache,
+      decodeItems,
+      "SID");
+    foreach (var visualRef in item.VisualRefs) {
+      var visualEntry = FindRequired(visualRef, FileType.SceneryItemVisual, item.Name);
+      var visual = GetExact(
+        visualEntry.Archive,
+        visualEntry.File.Name,
+        visualCache,
+        decodeVisuals,
+        "SVD");
+      var staticLods = new List<ResolvedSceneryStaticLod>();
+      foreach (var lod in visual.Lods) {
+        if (lod.Type != SvdLodType.StaticShape) continue;
+        if (string.IsNullOrWhiteSpace(lod.StaticShapeRef))
+          throw new InvalidDataException(
+            $"SVD '{visual.Name}' static LOD '{lod.Name}' has no SHS reference.");
+
+        var shapeEntry = FindRequired(lod.StaticShapeRef, FileType.StaticShape, visual.Name);
+        var shape = GetExact(
+          shapeEntry.Archive,
+          shapeEntry.File.Name,
+          shapeCache,
+          decodeShapes,
+            "SHS");
+        staticLods.Add(new ResolvedSceneryStaticLod(visual, lod, shape));
+      }
+      if (staticLods.Count > 0)
+        return new ResolvedSceneryObject(item, staticLods.ToArray());
+    }
+    return new ResolvedSceneryObject(item, []);
+  }
+
+  private SceneryResourceEntry FindRequired(
+    string taggedReference,
+    FileType expectedType,
+    string ownerName
+  ) {
+    var (name, type) = ParseTaggedReference(taggedReference, ownerName);
+    if (type != expectedType)
+      throw new InvalidDataException(
+        $"Resource '{ownerName}' references '{taggedReference}', expected " +
+        $"{expectedType.ToTagString()}.");
+    return find(name, type)
+      ?? throw new InvalidDataException(
+        $"Resource '{ownerName}' references missing '{taggedReference}'.");
+  }
+
+  private static (string Name, FileType Type) ParseTaggedReference(
+    string reference,
+    string ownerName
+  ) {
+    if (string.IsNullOrWhiteSpace(reference))
+      throw new InvalidDataException($"Resource '{ownerName}' has an empty reference.");
+    var separator = reference.LastIndexOf(':');
+    if (separator <= 0 || separator == reference.Length - 1)
+      throw new InvalidDataException(
+        $"Resource '{ownerName}' has malformed reference '{reference}'.");
+
+    var name = reference[..separator];
+    var tag = reference[(separator + 1)..];
+    var type = tag.ToFileType();
+    if (type == FileType.Unknown)
+      throw new InvalidDataException(
+        $"Resource '{ownerName}' has unknown reference type '{tag}'.");
+    return (name, type);
+  }
+
+  private static T GetExact<T>(
+    Ovl archive,
+    string name,
+    Dictionary<Ovl, IReadOnlyDictionary<string, T>> cache,
+    Func<Ovl, IReadOnlyList<T>> decode,
+    string kind
+  ) where T : notnull {
+    if (!cache.TryGetValue(archive, out var resources)) {
+      var decoded = decode(archive);
+      var byName = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+      foreach (var resource in decoded) {
+        var resourceName = ResourceName(resource);
+        if (!byName.TryAdd(resourceName, resource))
+          throw new InvalidDataException(
+            $"OVL archive contains duplicate {kind} resource '{resourceName}'.");
+      }
+      cache.Add(archive, resources = byName);
+    }
+
+    return resources.TryGetValue(name, out var result)
+      ? result
+      : throw new InvalidDataException(
+        $"OVL catalog entry '{name}' has no decoded {kind} resource.");
+  }
+
+  private static string ResourceName<T>(T resource) => resource switch {
+    SceneryItem item => item.Name,
+    SceneryItemVisual visual => visual.Name,
+    StaticShape shape => shape.Name,
+    _ => throw new ArgumentException(
+      $"Unsupported scenery resource model '{typeof(T).Name}'.", nameof(resource)),
+  };
+}

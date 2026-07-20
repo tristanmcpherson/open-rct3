@@ -6,18 +6,19 @@ using OpenCobra.GDK.Meshes;
 using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
 using System.Collections.Generic;
+using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace OpenRCT3.Simulation;
 
-/// <summary>The decoded shape kind retained by one ride-car body template.</summary>
+/// <summary>The decoded shape kind retained by one ride-car visual template.</summary>
 internal enum RideCarVisualTemplateShapeKind {
   StaticShape,
   BoneShape,
 }
 
-/// <summary>One exact RIC body occurrence adapted into reusable material-preserving batches.</summary>
+/// <summary>One exact RIC visual occurrence adapted into reusable material-preserving batches.</summary>
 /// <remarks>
 /// The link, LOD, and decoded shape records are borrowed. <see cref="Batches"/> and their meshes are
 /// owned by the containing <see cref="RideCarVisualTemplateRegistry"/>.
@@ -33,7 +34,7 @@ internal sealed record RideCarVisualMeshTemplate(
   public object Shape => (object?)StaticShape ?? BoneShape!;
 }
 
-/// <summary>Owns reusable CPU mesh templates for exact resolved ride-car body occurrences.</summary>
+/// <summary>Owns reusable CPU mesh templates for exact resolved ride-car visual occurrences.</summary>
 /// <remarks>
 /// <para>
 /// RCT3 serializes SVD LODs as an ordered array. Until camera-distance LOD selection is implemented
@@ -56,6 +57,8 @@ internal sealed class RideCarVisualTemplateRegistry : IDisposable {
     IReadOnlyList<RideCarVisualMeshTemplate> templates,
     Mesh[] ownedMeshes,
     Action<Mesh> disposeMesh,
+    int visualOccurrenceCount,
+    int unresolvedVisualCount,
     int bodyVisualOccurrenceCount,
     int unresolvedBodyVisualCount,
     int distinctShapeResourceCount,
@@ -64,8 +67,13 @@ internal sealed class RideCarVisualTemplateRegistry : IDisposable {
     ulong indexCount
   ) {
     Templates = templates;
+    BodyTemplates = Array.AsReadOnly(templates
+      .Where(template => template.Link.Visual.Role == RideVisualRole.Body)
+      .ToArray());
     this.ownedMeshes = ownedMeshes;
     this.disposeMesh = disposeMesh;
+    VisualOccurrenceCount = visualOccurrenceCount;
+    UnresolvedVisualCount = unresolvedVisualCount;
     BodyVisualOccurrenceCount = bodyVisualOccurrenceCount;
     UnresolvedBodyVisualCount = unresolvedBodyVisualCount;
     DistinctShapeResourceCount = distinctShapeResourceCount;
@@ -75,6 +83,9 @@ internal sealed class RideCarVisualTemplateRegistry : IDisposable {
   }
 
   public IReadOnlyList<RideCarVisualMeshTemplate> Templates { get; }
+  public IReadOnlyList<RideCarVisualMeshTemplate> BodyTemplates { get; }
+  public int VisualOccurrenceCount { get; }
+  public int UnresolvedVisualCount { get; }
   public int BodyVisualOccurrenceCount { get; }
   public int UnresolvedBodyVisualCount { get; }
   public int DistinctShapeResourceCount { get; }
@@ -108,6 +119,8 @@ internal sealed class RideCarVisualTemplateRegistry : IDisposable {
     var selections = ValidateAndSelect(
       resources,
       limits,
+      out var visualOccurrenceCount,
+      out var unresolvedVisualCount,
       out var bodyVisualOccurrenceCount,
       out var unresolvedBodyVisualCount);
     var geometry = PreflightGeometry(selections, limits);
@@ -141,6 +154,8 @@ internal sealed class RideCarVisualTemplateRegistry : IDisposable {
         Array.AsReadOnly(templates.ToArray()),
         ownedMeshes.ToArray(),
         disposeMesh,
+        visualOccurrenceCount,
+        unresolvedVisualCount,
         bodyVisualOccurrenceCount,
         unresolvedBodyVisualCount,
         batchesByShape.Count,
@@ -167,6 +182,8 @@ internal sealed class RideCarVisualTemplateRegistry : IDisposable {
   private static List<TemplateSelection> ValidateAndSelect(
     RideCarVisualResourceBridgeResult resources,
     RideCarVisualTemplateRegistryLimits limits,
+    out int visualOccurrenceCount,
+    out int unresolvedVisualCount,
     out int bodyVisualOccurrenceCount,
     out int unresolvedBodyVisualCount
   ) {
@@ -183,6 +200,8 @@ internal sealed class RideCarVisualTemplateRegistry : IDisposable {
     var closures = new Dictionary<RideCarResourceSource, IReadOnlySet<string>>(
       ReferenceEqualityComparer.Instance);
     var unresolvedLodCount = 0ul;
+    visualOccurrenceCount = resources.Visuals.Count;
+    unresolvedVisualCount = 0;
     bodyVisualOccurrenceCount = 0;
     unresolvedBodyVisualCount = 0;
 
@@ -191,19 +210,21 @@ internal sealed class RideCarVisualTemplateRegistry : IDisposable {
       if (!seenLinks.Add(link))
         throw Invalid("visual occurrence list repeats the same link object");
       var selected = ValidateOccurrence(link, closures, limits, ref unresolvedLodCount);
-      if (link.Visual.Role != RideVisualRole.Body) continue;
-
-      var occurrence = new CarOccurrence(link.Ride, link.Train, link.Car);
-      if (!seenBodyOccurrences.Add(occurrence))
-        throw Invalid(
-          $"RIC '{link.Car.Car!.Name}' has more than one resolved body visual in one occurrence");
-      bodyVisualOccurrenceCount = checked(bodyVisualOccurrenceCount + 1);
+      if (link.Visual.Role == RideVisualRole.Body) {
+        var occurrence = new CarOccurrence(link.Ride, link.Train, link.Car);
+        if (!seenBodyOccurrences.Add(occurrence))
+          throw Invalid(
+            $"RIC '{link.Car.Car!.Name}' has more than one resolved body visual in one occurrence");
+        bodyVisualOccurrenceCount = checked(bodyVisualOccurrenceCount + 1);
+      }
       if (selected == null) {
-        unresolvedBodyVisualCount = checked(unresolvedBodyVisualCount + 1);
+        unresolvedVisualCount = checked(unresolvedVisualCount + 1);
+        if (link.Visual.Role == RideVisualRole.Body)
+          unresolvedBodyVisualCount = checked(unresolvedBodyVisualCount + 1);
         continue;
       }
       if (Convert.ToUInt64(selections.Count) >= limits.MaximumTemplates)
-        throw Invalid($"body template count exceeds the limit {limits.MaximumTemplates}");
+        throw Invalid($"visual template count exceeds the limit {limits.MaximumTemplates}");
       selections.Add(selected);
     }
 

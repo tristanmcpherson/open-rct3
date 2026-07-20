@@ -36,6 +36,11 @@ public class DatTrackedRideInstanceReaderTests {
       Assert.That(train.WhichTrain, Is.Zero);
       Assert.That(train.Length, Is.EqualTo(28.754667f));
       Assert.That(train.Mass, Is.EqualTo(10_200f));
+      Assert.That(train.HasSavedMotionState, Is.False);
+      Assert.That(train.Distance, Is.Zero);
+      Assert.That(train.Reversed, Is.False);
+      Assert.That(train.Speed, Is.Zero);
+      Assert.That(train.WhichRideCarSivVariant, Is.Null);
     }
   }
 

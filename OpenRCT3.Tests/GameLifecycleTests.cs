@@ -79,7 +79,7 @@ public class GameLifecycleTests {
   }
 
   [Test]
-  public void DisposeOwnedResources_AttemptsSceneAndWorldAndAlwaysClearsState() {
+  public void DisposeOwnedResources_AttemptsSceneTemplatesWorldAndAlwaysClearsState() {
     var released = new List<string>();
 
     var error = Assert.Throws<AggregateException>(new Action(() =>
@@ -89,14 +89,18 @@ public class GameLifecycleTests {
           throw new InvalidOperationException("Injected scene disposal failure.");
         },
         () => {
+          released.Add("templates");
+          throw new InvalidOperationException("Injected template disposal failure.");
+        },
+        () => {
           released.Add("world");
           throw new InvalidOperationException("Injected world disposal failure.");
         },
         () => released.Add("state"))));
 
     using (Assert.EnterMultipleScope()) {
-      Assert.That(error.InnerExceptions, Has.Count.EqualTo(2));
-      Assert.That(released, Is.EqualTo(new[] { "scene", "world", "state" }));
+      Assert.That(error.InnerExceptions, Has.Count.EqualTo(3));
+      Assert.That(released, Is.EqualTo(new[] { "scene", "templates", "world", "state" }));
     }
   }
 

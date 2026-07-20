@@ -16,8 +16,22 @@ public readonly record struct RideTrainConsistRoleEntry(
   string ResourceName,
   int PeepSlotCount
 ) {
+  private readonly bool? _countsTowardConfiguredCarCount;
+
   /// <summary>Whether this entry consumes one configured car-count slot.</summary>
-  public bool CountsTowardConfiguredCarCount => PeepSlotCount > 0;
+  public bool CountsTowardConfiguredCarCount =>
+    _countsTowardConfiguredCarCount ?? PeepSlotCount > 0;
+
+  internal RideTrainConsistRoleEntry(
+    int runtimeIndex,
+    int? nonLinkIndex,
+    RideTrainCarRole role,
+    string resourceName,
+    int peepSlotCount,
+    bool countsTowardConfiguredCarCount
+  ) : this(runtimeIndex, nonLinkIndex, role, resourceName, peepSlotCount) {
+    _countsTowardConfiguredCarCount = countsTowardConfiguredCarCount;
+  }
 }
 
 /// <summary>An ordered RCT3 runtime consist-role resolution.</summary>
@@ -52,6 +66,107 @@ public static class RideTrainConsistRoleResolver {
     savedCarCount,
     getPeepSlotCount,
     RideTrainConsistRoleLimits.Default);
+
+  /// <summary>
+  /// Resolves the exact saved car order by treating the RIT car fields as a resource palette.
+  /// </summary>
+  public static RideTrainConsistRoleResolution ResolveSaved(
+    RideTrainCars cars,
+    IReadOnlyList<RideTrainCarRole> savedRoles,
+    int savedConfiguredCarCount,
+    Func<string, int> getPeepSlotCount
+  ) => ResolveSaved(
+    cars,
+    savedRoles,
+    savedConfiguredCarCount,
+    getPeepSlotCount,
+    RideTrainConsistRoleLimits.Default);
+
+  internal static RideTrainConsistRoleResolution ResolveSaved(
+    RideTrainCars cars,
+    IReadOnlyList<RideTrainCarRole> savedRoles,
+    int savedConfiguredCarCount,
+    Func<string, int> getPeepSlotCount,
+    RideTrainConsistRoleLimits limits
+  ) {
+    ArgumentNullException.ThrowIfNull(cars);
+    ArgumentNullException.ThrowIfNull(savedRoles);
+    ArgumentNullException.ThrowIfNull(getPeepSlotCount);
+    if (limits.MaximumRuntimeEntryCount <= 0)
+      throw new ArgumentOutOfRangeException(nameof(limits));
+    if (cars.MaximumCount == 0 || cars.MinimumCount > cars.MaximumCount)
+      throw new InvalidDataException("RIT car-count limits are invalid.");
+    if (savedRoles.Count == 0)
+      throw new InvalidDataException("Saved ride train has no car-role selections.");
+    if (savedRoles.Count > limits.MaximumRuntimeEntryCount)
+      throw new InvalidDataException(
+        $"Saved ride-train consist entry count {savedRoles.Count} exceeds the bound " +
+        $"{limits.MaximumRuntimeEntryCount}.");
+    if (savedConfiguredCarCount <= 0)
+      throw new InvalidDataException("Saved configured car count must be positive.");
+
+    string? Reference(RideTrainCarRole role, string? resourceName) {
+      if (resourceName == null) return null;
+      if (string.IsNullOrWhiteSpace(resourceName))
+        throw new InvalidDataException($"RIT {role} car reference is empty.");
+      return resourceName;
+    }
+
+    var references = new string?[] {
+      Reference(RideTrainCarRole.Front, cars.Front),
+      Reference(RideTrainCarRole.Second, cars.Second),
+      Reference(RideTrainCarRole.Middle, cars.Middle),
+      Reference(RideTrainCarRole.Penultimate, cars.Penultimate),
+      Reference(RideTrainCarRole.Rear, cars.Rear),
+      Reference(RideTrainCarRole.Link, cars.Link),
+    };
+    if (references[Convert.ToInt32(RideTrainCarRole.Front)] == null)
+      throw new InvalidDataException("RIT Front car reference is missing.");
+
+    var peepCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+    var countedCarCount = 0;
+    var nextNonLinkIndex = 0;
+    var result = new RideTrainConsistRoleEntry[savedRoles.Count];
+    foreach (var runtimeIndex in Enumerable.Range(0, result.Length)) {
+      var role = savedRoles[runtimeIndex];
+      var roleValue = Convert.ToInt32(role);
+      if (roleValue < Convert.ToInt32(RideTrainCarRole.Front) ||
+          roleValue > Convert.ToInt32(RideTrainCarRole.Link))
+        throw new InvalidDataException(
+          $"Saved ride-train car {runtimeIndex} has unsupported RIT role {role}.");
+      var resourceName = references[roleValue]
+        ?? throw new InvalidDataException(
+          $"Saved ride-train car {runtimeIndex} selects undeclared RIT {role} role.");
+      if (!peepCounts.TryGetValue(resourceName, out var peepSlotCount)) {
+        peepSlotCount = getPeepSlotCount(resourceName);
+        if (peepSlotCount < 0)
+          throw new InvalidDataException(
+            $"RIT {role} car '{resourceName}' has a negative Peep-slot count.");
+        peepCounts.Add(resourceName, peepSlotCount);
+      }
+      var source = new RoleSource(role, resourceName, peepSlotCount);
+      int? nonLinkIndex = role == RideTrainCarRole.Link ? null : nextNonLinkIndex++;
+      result[runtimeIndex] = Entry(
+        runtimeIndex,
+        nonLinkIndex,
+        source,
+        role != RideTrainCarRole.Link);
+      // The saved DAT role is authoritative membership evidence. Some real ordinary ride cars,
+      // including Seizmic's Front car, deliberately expose no Peep markers.
+      if (role != RideTrainCarRole.Link) countedCarCount++;
+    }
+
+    if (countedCarCount != savedConfiguredCarCount)
+      throw new InvalidDataException(
+        $"Saved ride-train roles contain {countedCarCount} configured cars, but the ride " +
+        $"declares {savedConfiguredCarCount}.");
+    if (countedCarCount < cars.MinimumCount || countedCarCount > cars.MaximumCount)
+      throw new InvalidDataException(
+        $"Saved configured car count {countedCarCount} is outside RIT limits " +
+        $"{cars.MinimumCount} through {cars.MaximumCount}.");
+
+    return new(countedCarCount, result);
+  }
 
   internal static RideTrainConsistRoleResolution Resolve(
     RideTrainCars cars,
@@ -137,13 +252,26 @@ public static class RideTrainConsistRoleResolver {
   private static RideTrainConsistRoleEntry Entry(
     int runtimeIndex,
     int? nonLinkIndex,
-    RoleSource source
-  ) => new(
-    runtimeIndex,
-    nonLinkIndex,
-    source.Role,
-    source.ResourceName,
-    source.PeepSlotCount);
+    RoleSource source,
+    bool? countsTowardConfiguredCarCount = null
+  ) {
+    var inferredMembership = source.PeepSlotCount > 0;
+    if (!countsTowardConfiguredCarCount.HasValue ||
+        countsTowardConfiguredCarCount.Value == inferredMembership)
+      return new(
+        runtimeIndex,
+        nonLinkIndex,
+        source.Role,
+        source.ResourceName,
+        source.PeepSlotCount);
+    return new(
+      runtimeIndex,
+      nonLinkIndex,
+      source.Role,
+      source.ResourceName,
+      source.PeepSlotCount,
+      countsTowardConfiguredCarCount.Value);
+  }
 
   private static RoleSource SelectOrdinaryRole(
     RoleSource?[] sources,

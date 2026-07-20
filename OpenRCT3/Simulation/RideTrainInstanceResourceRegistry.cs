@@ -30,6 +30,14 @@ internal sealed record RideTrainInstanceResourceLink(
   public int WhichTrain => TrainInstance.WhichTrain;
   public float Length => TrainInstance.Length;
   public float Mass => TrainInstance.Mass;
+  public bool HasSavedMotionState => TrainInstance.HasSavedMotionState;
+  public float SavedDistance => TrainInstance.Distance;
+  public bool SavedReversed => TrainInstance.Reversed;
+  public float SavedSpeed => TrainInstance.Speed;
+  public bool HasSavedOperationalState => TrainInstance.HasSavedOperationalState;
+  public int SavedOperationalState => TrainInstance.State;
+  public float SavedOperationalStateTime => TrainInstance.StateTime;
+  public int? SavedVisualVariant => TrainInstance.WhichRideCarSivVariant;
   public bool IsResolved => Source != null;
   public RideTrain? Resource => Source?.Resource;
 }

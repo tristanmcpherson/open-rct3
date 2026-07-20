@@ -20,7 +20,31 @@ public sealed record RideCarLongitudinalGeometry(
   float Wheelbase,
   float FrontWheelSpan,
   float RearWheelSpan
-);
+) {
+  /// <summary>Signed front wheel-center projection relative to <c>CarFront</c>.</summary>
+  public float FrontWheelCenterOffsetFromCarFront =>
+    ProjectDifference(FrontWheelCenterPosition, CarFrontPosition, LongitudinalAxis);
+
+  /// <summary>Signed front wheel-center projection relative to <c>CarRear</c>.</summary>
+  public float FrontWheelCenterOffsetFromCarRear =>
+    ProjectDifference(FrontWheelCenterPosition, CarRearPosition, LongitudinalAxis);
+
+  /// <summary>Signed rear wheel-center projection relative to the front wheel center.</summary>
+  public float RearWheelCenterOffsetFromFrontWheelCenter =>
+    ProjectDifference(RearWheelCenterPosition, FrontWheelCenterPosition, LongitudinalAxis);
+
+  private static float ProjectDifference(Vector3 point, Vector3 origin, Vector3 axis) {
+    var projection =
+      ((Convert.ToDouble(point.X) - origin.X) * axis.X) +
+      ((Convert.ToDouble(point.Y) - origin.Y) * axis.Y) +
+      ((Convert.ToDouble(point.Z) - origin.Z) * axis.Z);
+    if (!double.IsFinite(projection) ||
+        projection > float.MaxValue ||
+        projection < float.MinValue)
+      return float.NaN;
+    return Convert.ToSingle(projection);
+  }
+}
 
 /// <summary>Derives ride-car longitudinal geometry from the body visual's named BSH bones.</summary>
 /// <remarks>
@@ -108,9 +132,24 @@ public static class RideCarGeometryAdapter {
     var (axis, carLength) = CreateAxis(bodyShape, carRearPosition, carFrontPosition);
     var frontProjection = Dot(frontWheels.Center, axis);
     var rearProjection = Dot(rearWheels.Center, axis);
+    var frontOffsetFromCarFront = DotDifference(frontWheels.Center, carFrontPosition, axis);
+    var frontOffsetFromCarRear = DotDifference(frontWheels.Center, carRearPosition, axis);
+    var rearOffsetFromFront = DotDifference(rearWheels.Center, frontWheels.Center, axis);
     var wheelbase = Math.Abs(frontProjection - rearProjection);
     if (!double.IsFinite(wheelbase) || wheelbase <= MinimumLongitudinalLength)
       throw Invalid(bodyShape, "front and rear wheel centers have a degenerate wheelbase");
+    _ = ToFiniteSingle(
+      bodyShape,
+      frontOffsetFromCarFront,
+      "front wheel-center offset from CarFront");
+    _ = ToFiniteSingle(
+      bodyShape,
+      frontOffsetFromCarRear,
+      "front wheel-center offset from CarRear");
+    _ = ToFiniteSingle(
+      bodyShape,
+      rearOffsetFromFront,
+      "rear wheel-center offset from front wheel center");
 
     return new RideCarLongitudinalGeometry(
       carFrontPosition,
@@ -208,6 +247,11 @@ public static class RideCarGeometryAdapter {
     (Convert.ToDouble(left.X) * right.X) +
     (Convert.ToDouble(left.Y) * right.Y) +
     (Convert.ToDouble(left.Z) * right.Z);
+
+  private static double DotDifference(Vector3 point, Vector3 origin, Vector3 axis) =>
+    ((Convert.ToDouble(point.X) - origin.X) * axis.X) +
+    ((Convert.ToDouble(point.Y) - origin.Y) * axis.Y) +
+    ((Convert.ToDouble(point.Z) - origin.Z) * axis.Z);
 
   private static float ToFiniteSingle(BoneShape shape, double value, string description) {
     if (!double.IsFinite(value) || value > float.MaxValue || value < float.MinValue)

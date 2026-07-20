@@ -58,6 +58,46 @@ public class RideCarVisualTemplateRegistryTests {
   }
 
   [Test]
+  public void Build_PreservesAllResolvedVisualRolesInExactBridgeOrder() {
+    var bodyShape = BoneShape("BodyShape", BoneMesh("body"));
+    var axleShape = StaticShape("AxleShape", StaticMesh("axle"));
+    var bodyLod = BoneLod("body", "BodyShape:bsh", 10f);
+    var missingLod = BoneLod("missing", "MissingWheel:bsh", 1f);
+    var body = VisualLink(
+      "Body",
+      RideVisualRole.Body,
+      Visual("BodyVisual", bodyLod),
+      [new RideVisualShapeLodLink(bodyLod, null, BoneSource(bodyShape))]);
+    var axleLod = StaticLod("axle", "AxleShape:shs", 5f);
+    var axle = VisualLink(
+      "Axle",
+      RideVisualRole.FrontAxle,
+      Visual("AxleVisual", axleLod),
+      [new RideVisualShapeLodLink(axleLod, StaticSource(axleShape), null)]);
+    var missing = VisualLink(
+      "Wheel",
+      RideVisualRole.FrontRightWheel,
+      Visual("WheelVisual", missingLod),
+      [new RideVisualShapeLodLink(missingLod, null, null)]);
+
+    using var registry = RideCarVisualTemplateRegistry.Build(Bridge(axle, missing, body));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(registry.VisualOccurrenceCount, Is.EqualTo(3));
+      Assert.That(registry.UnresolvedVisualCount, Is.EqualTo(1));
+      Assert.That(registry.BodyVisualOccurrenceCount, Is.EqualTo(1));
+      Assert.That(registry.UnresolvedBodyVisualCount, Is.Zero);
+      Assert.That(
+        registry.Templates.Select(template => template.Link.Visual.Role),
+        Is.EqualTo(new[] { RideVisualRole.FrontAxle, RideVisualRole.Body }));
+      Assert.That(registry.BodyTemplates, Has.Count.EqualTo(1));
+      Assert.That(registry.BodyTemplates.Single(), Is.SameAs(registry.Templates[1]));
+      Assert.That(registry.Templates[0].StaticShape, Is.SameAs(axleShape));
+      Assert.That(registry.Templates[1].BoneShape, Is.SameAs(bodyShape));
+    }
+  }
+
+  [Test]
   public void Build_CachesRepeatedDecodedShapeObjectIdentity() {
     var shape = StaticShape("SharedBody", StaticMesh("shared"));
     var firstLod = StaticLod("first", "SharedBody:shs", 100f);
@@ -368,20 +408,27 @@ public class RideCarVisualTemplateRegistryTests {
         loaded.RideResources.CarVisuals);
 
       TestContext.Progress.WriteLine(
-        $"BoxOffice ride-car body templates: " +
+        $"BoxOffice ride-car visual templates: " +
+        $"visualOccurrences={registry.VisualOccurrenceCount}, " +
         $"bodyOccurrences={registry.BodyVisualOccurrenceCount}, " +
         $"templates={registry.Templates.Count}, " +
+        $"unresolvedVisuals={registry.UnresolvedVisualCount}, " +
         $"unresolvedBodies={registry.UnresolvedBodyVisualCount}, " +
         $"shapeResources={registry.DistinctShapeResourceCount}, " +
         $"batches={registry.BatchCount}, vertices={registry.VertexCount}, " +
         $"indices={registry.IndexCount}");
+      var bodyShapes = registry.BodyTemplates
+        .DistinctBy(template => template.Shape, ReferenceEqualityComparer.Instance)
+        .ToArray();
+      var bodyBatches = bodyShapes.SelectMany(template => template.Batches).ToArray();
       Assert.That(registry.BodyVisualOccurrenceCount, Is.EqualTo(14));
-      Assert.That(registry.Templates, Has.Count.EqualTo(14));
+      Assert.That(registry.BodyTemplates, Has.Count.EqualTo(14));
+      Assert.That(registry.Templates.Count, Is.GreaterThanOrEqualTo(14));
       Assert.That(registry.UnresolvedBodyVisualCount, Is.Zero);
-      Assert.That(registry.DistinctShapeResourceCount, Is.EqualTo(13));
-      Assert.That(registry.BatchCount, Is.EqualTo(41));
-      Assert.That(registry.VertexCount, Is.EqualTo(5780));
-      Assert.That(registry.IndexCount, Is.EqualTo(12192));
+      Assert.That(bodyShapes, Has.Length.EqualTo(13));
+      Assert.That(bodyBatches, Has.Length.EqualTo(41));
+      Assert.That(bodyBatches.Sum(batch => batch.Mesh.Vertices.Count), Is.EqualTo(5780));
+      Assert.That(bodyBatches.Sum(batch => batch.Mesh.Indices.Count), Is.EqualTo(12192));
     } finally {
       terrain.TextureCatalog?.Dispose();
     }
@@ -408,12 +455,19 @@ public class RideCarVisualTemplateRegistryTests {
     string prefix,
     SceneryItemVisual visual,
     IReadOnlyList<RideVisualShapeLodLink> lods
+  ) => VisualLink(prefix, RideVisualRole.Body, visual, lods);
+
+  private static RideCarVisualShapeLink VisualLink(
+    string prefix,
+    RideVisualRole role,
+    SceneryItemVisual visual,
+    IReadOnlyList<RideVisualShapeLodLink> lods
   ) {
     var visualSource = new RideVisualResourceSource(
       new OvlFile(visual.Name, FileType.SceneryItemVisual, VisualPath),
       visual);
     var visualLink = new RideVisualLink(
-      RideVisualRole.Body,
+      role,
       $"{visual.Name}:svd",
       visualSource);
     var car = Car($"{prefix}Car", visual.Name);

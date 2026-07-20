@@ -505,6 +505,19 @@ internal static class DatTerrainReader {
     new("TrackedRideInstance", FieldKind.ManagedObjectPtr, 8),
     new("WhichTrain", FieldKind.Int32, 4),
   ];
+  private static readonly ExpectedField[] RideTrainInstanceSavedMotionFields = [
+    new("Distance", FieldKind.Float32, 4),
+    new("Reversed", FieldKind.Bool, 1),
+    new("Speed", FieldKind.Float32, 4),
+  ];
+  // Complete Edition reflection registration maps State to +0x60 and StateTime to +0x64 at
+  // 0x00AAB5EB and 0x00AAB63D respectively.
+  private static readonly ExpectedField[] RideTrainInstanceSavedOperationalStateFields = [
+    new("State", FieldKind.Int32, 4),
+    new("StateTime", FieldKind.Float32, 4),
+  ];
+  private static readonly ExpectedField RideTrainInstanceVisualVariantField =
+    new("WhichRideCarSIVVariant", FieldKind.Int32, 4);
   private static readonly ExpectedField[] RideCarStatsSchema = [
     new("AccelValid", FieldKind.Bool, 1),
     new("AngVelocity", FieldKind.Vector3, 12),
@@ -871,6 +884,62 @@ internal static class DatTerrainReader {
         throw new InvalidDataException(
           $"DAT structure '{structure.Name}' has an unsupported identity field: {mismatch}");
     }
+
+    var savedMotionFieldCount = RideTrainInstanceSavedMotionFields.Count(expected =>
+      structure.Fields.Any(field => field.Name == expected.Name));
+    if (savedMotionFieldCount != 0) {
+      if (savedMotionFieldCount != RideTrainInstanceSavedMotionFields.Length)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' must declare Distance, Reversed, and Speed together.");
+      foreach (var expected in RideTrainInstanceSavedMotionFields) {
+        var matches = structure.Fields.Where(field => field.Name == expected.Name).ToArray();
+        if (matches.Length != 1)
+          throw new InvalidDataException(
+            $"DAT structure '{structure.Name}' must declare exactly one " +
+            $"'{expected.Name}' field; found {matches.Length}.");
+        var mismatch = DescribeSchemaMismatch(matches, [expected], structure.Name);
+        if (mismatch != null)
+          throw new InvalidDataException(
+            $"DAT structure '{structure.Name}' has an unsupported saved-motion field: {mismatch}");
+      }
+    }
+
+    var operationalStateFieldCount = RideTrainInstanceSavedOperationalStateFields.Count(
+      expected => structure.Fields.Any(field => field.Name == expected.Name));
+    if (operationalStateFieldCount != 0) {
+      if (operationalStateFieldCount != RideTrainInstanceSavedOperationalStateFields.Length)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' must declare State and StateTime together.");
+      foreach (var expected in RideTrainInstanceSavedOperationalStateFields) {
+        var matches = structure.Fields.Where(field => field.Name == expected.Name).ToArray();
+        if (matches.Length != 1)
+          throw new InvalidDataException(
+            $"DAT structure '{structure.Name}' must declare exactly one " +
+            $"'{expected.Name}' field; found {matches.Length}.");
+        var mismatch = DescribeSchemaMismatch(matches, [expected], structure.Name);
+        if (mismatch != null)
+          throw new InvalidDataException(
+            $"DAT structure '{structure.Name}' has an unsupported operational-state field: " +
+            mismatch);
+      }
+    }
+
+    var variantFields = structure.Fields
+      .Where(field => field.Name == RideTrainInstanceVisualVariantField.Name)
+      .ToArray();
+    if (variantFields.Length > 1)
+      throw new InvalidDataException(
+        $"DAT structure '{structure.Name}' must declare at most one " +
+        $"'{RideTrainInstanceVisualVariantField.Name}' field; found {variantFields.Length}.");
+    if (variantFields.Length == 0) return;
+    var variantMismatch = DescribeSchemaMismatch(
+      variantFields,
+      [RideTrainInstanceVisualVariantField],
+      structure.Name);
+    if (variantMismatch != null)
+      throw new InvalidDataException(
+        $"DAT structure '{structure.Name}' has an unsupported visual-variant field: " +
+        variantMismatch);
   }
 
   private static void ValidateRideCarInstanceStructureSchema(DataStructure structure) {
@@ -1196,12 +1265,18 @@ internal static class DatTerrainReader {
     ulong entryId,
     ValueReadState state
   ) {
+    float? distance = null;
     float? length = null;
     float? mass = null;
+    bool? reversed = null;
     string? rideTrainOverlayName = null;
     string? rideTrainSymbolName = null;
     ulong? trackedRideInstance = null;
+    float? speed = null;
+    int? operationalState = null;
+    float? stateTime = null;
     int? whichTrain = null;
+    int? whichRideCarSivVariant = null;
     ulong[]? cars = null;
 
     foreach (var field in structure.Fields) {
@@ -1210,6 +1285,10 @@ internal static class DatTerrainReader {
           state.AddValue();
           cars = ReadReferenceCollection(reader, state, "RideTrainInstance Cars");
           break;
+        case "Distance":
+          state.AddValue();
+          distance = ReadFiniteSingle(reader, "RideTrainInstance Distance");
+          break;
         case "Length":
           state.AddValue();
           length = ReadFiniteSingle(reader, "RideTrainInstance Length");
@@ -1217,6 +1296,10 @@ internal static class DatTerrainReader {
         case "Mass":
           state.AddValue();
           mass = ReadFiniteSingle(reader, "RideTrainInstance Mass");
+          break;
+        case "Reversed":
+          state.AddValue();
+          reversed = ReadBoolean(reader, "RideTrainInstance Reversed");
           break;
         case "RideTrainOverlayName":
           state.AddValue();
@@ -1234,9 +1317,25 @@ internal static class DatTerrainReader {
           state.AddValue();
           trackedRideInstance = reader.ReadUInt64();
           break;
+        case "Speed":
+          state.AddValue();
+          speed = ReadFiniteSingle(reader, "RideTrainInstance Speed");
+          break;
+        case "State":
+          state.AddValue();
+          operationalState = reader.ReadInt32();
+          break;
+        case "StateTime":
+          state.AddValue();
+          stateTime = ReadFiniteSingle(reader, "RideTrainInstance StateTime");
+          break;
         case "WhichTrain":
           state.AddValue();
           whichTrain = reader.ReadInt32();
+          break;
+        case "WhichRideCarSIVVariant":
+          state.AddValue();
+          whichRideCarSivVariant = reader.ReadInt32();
           break;
         default:
           ReadFieldValue(reader, field, state);
@@ -1244,15 +1343,45 @@ internal static class DatTerrainReader {
       }
     }
 
+    var overlayName = rideTrainOverlayName
+      ?? throw MissingRideTrainInstanceValue("RideTrainOverlayName");
+    var symbolName = rideTrainSymbolName
+      ?? throw MissingRideTrainInstanceValue("RideTrainSymbolName");
+    var owner = trackedRideInstance
+      ?? throw MissingRideTrainInstanceValue("TrackedRideInstance");
+    var ordinal = whichTrain ?? throw MissingRideTrainInstanceValue("WhichTrain");
+    var trainLength = length ?? throw MissingRideTrainInstanceValue("Length");
+    var trainMass = mass ?? throw MissingRideTrainInstanceValue("Mass");
+    var trainCars = cars ?? throw MissingRideTrainInstanceValue("Cars");
+    var hasSavedMotionState = distance.HasValue || reversed.HasValue || speed.HasValue;
+    if (!hasSavedMotionState)
+      return new DatRideTrainInstanceData(
+        entryId,
+        overlayName,
+        symbolName,
+        owner,
+        ordinal,
+        trainLength,
+        trainMass,
+        trainCars,
+        whichRideCarSivVariant,
+        operationalState,
+        stateTime);
     return new DatRideTrainInstanceData(
       entryId,
-      rideTrainOverlayName ?? throw MissingRideTrainInstanceValue("RideTrainOverlayName"),
-      rideTrainSymbolName ?? throw MissingRideTrainInstanceValue("RideTrainSymbolName"),
-      trackedRideInstance ?? throw MissingRideTrainInstanceValue("TrackedRideInstance"),
-      whichTrain ?? throw MissingRideTrainInstanceValue("WhichTrain"),
-      length ?? throw MissingRideTrainInstanceValue("Length"),
-      mass ?? throw MissingRideTrainInstanceValue("Mass"),
-      cars ?? throw MissingRideTrainInstanceValue("Cars"));
+      overlayName,
+      symbolName,
+      owner,
+      ordinal,
+      trainLength,
+      trainMass,
+      distance ?? throw MissingRideTrainInstanceValue("Distance"),
+      reversed ?? throw MissingRideTrainInstanceValue("Reversed"),
+      speed ?? throw MissingRideTrainInstanceValue("Speed"),
+      trainCars,
+      whichRideCarSivVariant,
+      operationalState,
+      stateTime);
   }
 
   private static InvalidDataException MissingRideTrainInstanceValue(string name) =>
@@ -1335,7 +1464,10 @@ internal static class DatTerrainReader {
       saved.RearTrackPiece,
       saved.Distance,
       saved.Reversed,
-      saved.Speed);
+      saved.Speed,
+      saved.Length,
+      saved.Mass,
+      saved.PositionValid);
   }
 
   private static RideCarResumeState ReadRideCarResumeState(
@@ -1346,6 +1478,9 @@ internal static class DatTerrainReader {
     state.AddValue();
     ReadSizedValueLength(reader, field.FixedSize, "RideCarInstance Stats payload");
     float? distance = null;
+    float? length = null;
+    float? mass = null;
+    bool? positionValid = null;
     ulong? rearTrackPiece = null;
     bool? reversed = null;
     float? speed = null;
@@ -1356,6 +1491,18 @@ internal static class DatTerrainReader {
         case "Distance":
           state.AddValue();
           distance = ReadFiniteSingle(reader, "RideCarInstance Stats.Distance");
+          break;
+        case "Length":
+          state.AddValue();
+          length = ReadFiniteSingle(reader, "RideCarInstance Stats.Length");
+          break;
+        case "Mass":
+          state.AddValue();
+          mass = ReadFiniteSingle(reader, "RideCarInstance Stats.Mass");
+          break;
+        case "PosValid":
+          state.AddValue();
+          positionValid = ReadBoolean(reader, "RideCarInstance Stats.PosValid");
           break;
         case "RearTrackPiece":
           state.AddValue();
@@ -1381,6 +1528,9 @@ internal static class DatTerrainReader {
 
     return new RideCarResumeState(
       distance ?? throw MissingRideCarInstanceValue("Stats.Distance"),
+      length ?? throw MissingRideCarInstanceValue("Stats.Length"),
+      mass ?? throw MissingRideCarInstanceValue("Stats.Mass"),
+      positionValid ?? throw MissingRideCarInstanceValue("Stats.PosValid"),
       reversed ?? throw MissingRideCarInstanceValue("Stats.Reversed"),
       speed ?? throw MissingRideCarInstanceValue("Stats.Speed"),
       trackPiece ?? throw MissingRideCarInstanceValue("Stats.TrackPiece"),
@@ -2510,6 +2660,9 @@ internal static class DatTerrainReader {
 
   private readonly record struct RideCarResumeState(
     float Distance,
+    float Length,
+    float Mass,
+    bool PositionValid,
     bool Reversed,
     float Speed,
     ulong TrackPiece,

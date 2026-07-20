@@ -56,6 +56,10 @@ internal sealed record RideCarInstanceRuntimeEntry(
   public ulong TrainInstanceEntryId => TrainRuntime.TrainInstanceEntryId;
   public int WhichCar => CarInstance.WhichCar;
   public float SavedDistance => CarInstance.Distance;
+  public bool HasSavedPhysicalState => CarInstance.HasSavedPhysicalState;
+  public float SavedLength => CarInstance.Length;
+  public float SavedMass => CarInstance.Mass;
+  public bool SavedPositionValid => CarInstance.PositionValid;
   public bool SavedReversed => CarInstance.Reversed;
   public float SavedSpeed => CarInstance.Speed;
   public RideTrackGeometryStatus TrackStatus => TrainRuntime.TrackRuntime.Status;
@@ -69,8 +73,8 @@ internal sealed record RideCarInstanceRuntimeEntry(
 /// </summary>
 /// <remarks>
 /// Entries follow the authoritative train-to-car reference order. Saved track-piece references,
-/// distance, direction, and speed remain resume evidence only; this registry does not create a
-/// cursor, seed motion, sample geometry, or infer vehicle state.
+/// distance, dimensions, mass, validity, direction, and speed remain resume evidence only; this
+/// registry does not create a cursor, seed motion, sample geometry, or infer vehicle state.
 /// </remarks>
 internal sealed class RideCarInstanceRuntimeRegistry {
   public IReadOnlyList<RideCarInstanceRuntimeEntry> Entries { get; }
@@ -219,8 +223,12 @@ internal sealed class RideCarInstanceRuntimeRegistry {
       if (car.WhichCar < 0)
         throw Invalid($"saved car {car.EntryId} has negative WhichCar {car.WhichCar}");
       _ = SavedRole(car);
-      if (!float.IsFinite(car.Distance) || !float.IsFinite(car.Speed))
+      if (!float.IsFinite(car.Distance) || !float.IsFinite(car.Length) ||
+          !float.IsFinite(car.Mass) || !float.IsFinite(car.Speed))
         throw Invalid($"saved car {car.EntryId} has non-finite resume state");
+      if (!car.HasSavedPhysicalState &&
+          (car.Length != 0f || car.Mass != 0f || car.PositionValid))
+        throw Invalid($"saved car {car.EntryId} has unadvertised physical state");
     }
     return result;
   }

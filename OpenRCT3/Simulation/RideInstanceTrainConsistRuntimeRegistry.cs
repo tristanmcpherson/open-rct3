@@ -4,6 +4,7 @@
 
 using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
+using OpenRCT3.Serialization;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -69,9 +70,40 @@ internal sealed class RideInstanceTrainConsistRuntimeRegistry {
     RideCarPeepSlotEvidenceIndex.Build(resources.CarVisuals),
     RideInstanceTrainConsistRuntimeRegistryLimits.Default);
 
+  /// <summary>
+  /// Composes exact runtime consists from the saved train car order and each saved car's selected
+  /// RIT role. The RIT car fields remain the resource palette, not an inferred train layout.
+  /// </summary>
+  public static RideInstanceTrainConsistRuntimeRegistry Build(
+    RideInstanceTrainRuntimeRegistry trainRuntime,
+    RideInstanceResourceLoadResult resources,
+    IReadOnlyList<DatRideCarInstanceData> carInstances
+  ) => Build(
+    trainRuntime,
+    resources,
+    carInstances,
+    RideCarPeepSlotEvidenceIndex.Build(resources.CarVisuals),
+    RideInstanceTrainConsistRuntimeRegistryLimits.Default);
+
   internal static RideInstanceTrainConsistRuntimeRegistry Build(
     RideInstanceTrainRuntimeRegistry trainRuntime,
     RideInstanceResourceLoadResult resources,
+    RideCarPeepSlotEvidenceIndex peepSlots,
+    RideInstanceTrainConsistRuntimeRegistryLimits limits
+  ) => BuildCore(trainRuntime, resources, null, peepSlots, limits);
+
+  internal static RideInstanceTrainConsistRuntimeRegistry Build(
+    RideInstanceTrainRuntimeRegistry trainRuntime,
+    RideInstanceResourceLoadResult resources,
+    IReadOnlyList<DatRideCarInstanceData> carInstances,
+    RideCarPeepSlotEvidenceIndex peepSlots,
+    RideInstanceTrainConsistRuntimeRegistryLimits limits
+  ) => BuildCore(trainRuntime, resources, carInstances, peepSlots, limits);
+
+  private static RideInstanceTrainConsistRuntimeRegistry BuildCore(
+    RideInstanceTrainRuntimeRegistry trainRuntime,
+    RideInstanceResourceLoadResult resources,
+    IReadOnlyList<DatRideCarInstanceData>? carInstances,
     RideCarPeepSlotEvidenceIndex peepSlots,
     RideInstanceTrainConsistRuntimeRegistryLimits limits
   ) {
@@ -86,6 +118,8 @@ internal sealed class RideInstanceTrainConsistRuntimeRegistry {
     var savedRides = IndexSavedRides(resources.Instances);
     var savedTrains = IndexSavedTrains(resources.TrainInstances.Links);
     var graphRides = IndexGraphRides(resources.Graph.Rides);
+    var savedCars = carInstances == null ? null : IndexSavedCars(carInstances);
+    var linkedSavedCarIds = savedCars == null ? null : new HashSet<ulong>();
     var entries = new RideInstanceTrainConsistRuntimeEntry[trainRuntime.Entries.Count];
     var seenRuntimeTrains = new HashSet<ulong>();
     foreach (var index in Enumerable.Range(0, entries.Length)) {
@@ -104,8 +138,17 @@ internal sealed class RideInstanceTrainConsistRuntimeRegistry {
         throw Invalid(
           $"runtime train {runtime.TrainInstanceEntryId} changed exact ride-instance identity");
 
-      entries[index] = Compose(runtime, savedRide, graphRides, peepSlots, limits);
+      entries[index] = Compose(
+        runtime,
+        savedRide,
+        graphRides,
+        savedCars,
+        linkedSavedCarIds,
+        peepSlots,
+        limits);
     }
+    if (savedCars != null)
+      ValidateUnlistedSavedCars(carInstances!, seenRuntimeTrains, linkedSavedCarIds!);
     return new(entries);
   }
 
@@ -113,9 +156,14 @@ internal sealed class RideInstanceTrainConsistRuntimeRegistry {
     RideInstanceTrainRuntimeEntry runtime,
     RideInstanceResourceLink savedRide,
     IReadOnlyDictionary<TrackedRide, TrackedRideResourceLink> graphRides,
+    IReadOnlyDictionary<ulong, DatRideCarInstanceData>? savedCars,
+    ISet<ulong>? linkedSavedCarIds,
     RideCarPeepSlotEvidenceIndex peepSlots,
     RideInstanceTrainConsistRuntimeRegistryLimits limits
   ) {
+    var savedRoles = savedCars == null
+      ? null
+      : ResolveSavedRoles(runtime, savedCars, linkedSavedCarIds!, limits);
     if (!savedRide.IsResolved)
       return Unresolved(
         runtime,
@@ -148,15 +196,15 @@ internal sealed class RideInstanceTrainConsistRuntimeRegistry {
         RideInstanceTrainConsistRuntimeStatus.MissingRideTrainGraph);
 
     var carsByRole = ValidateAndIndexCars(trainGraph, limits);
-    foreach (var pair in carsByRole) {
-      if (pair.Key == RideTrainCarRole.WildUnknown) continue;
-      if (!pair.Value.IsResolved)
+    var requiredCars = RequiredCars(trainGraph, carsByRole, savedRoles);
+    foreach (var car in requiredCars) {
+      if (!car.IsResolved)
         return Unresolved(
           runtime,
           rideGraph,
           trainGraph,
           RideInstanceTrainConsistRuntimeStatus.UnresolvedRideCarResource);
-      if (!peepSlots.TryGet(pair.Value, out _))
+      if (!peepSlots.TryGet(car, out _))
         return Unresolved(
           runtime,
           rideGraph,
@@ -165,8 +213,7 @@ internal sealed class RideInstanceTrainConsistRuntimeRegistry {
     }
 
     var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-    foreach (var car in carsByRole.Values) {
-      if (car.Role == RideTrainCarRole.WildUnknown) continue;
+    foreach (var car in requiredCars) {
       if (!peepSlots.TryGet(car, out var evidence))
         throw Invalid($"RIC '{car.Reference}' lost Peep-slot evidence while composing");
       if (counts.TryGetValue(car.Reference, out var existing) &&
@@ -176,13 +223,22 @@ internal sealed class RideInstanceTrainConsistRuntimeRegistry {
       counts[car.Reference] = evidence.PeepSlotCount;
     }
 
-    var roles = RideTrainConsistRoleResolver.Resolve(
-      trainGraph.Train!.Cars,
-      runtime.TrackRuntime.Instance.NCarsPerTrain,
-      reference => counts.TryGetValue(reference, out var count)
-        ? count
-        : throw Invalid($"consist role references absent RIC '{reference}'"),
-      new RideTrainConsistRoleLimits(limits.MaximumRuntimeCarCount));
+    int PeepSlotCount(string reference) => counts.TryGetValue(reference, out var count)
+      ? count
+      : throw Invalid($"consist role references absent RIC '{reference}'");
+    var roleLimits = new RideTrainConsistRoleLimits(limits.MaximumRuntimeCarCount);
+    var roles = savedRoles == null
+      ? RideTrainConsistRoleResolver.Resolve(
+        trainGraph.Train!.Cars,
+        runtime.TrackRuntime.Instance.NCarsPerTrain,
+        PeepSlotCount,
+        roleLimits)
+      : RideTrainConsistRoleResolver.ResolveSaved(
+        trainGraph.Train!.Cars,
+        savedRoles,
+        runtime.TrackRuntime.Instance.NCarsPerTrain,
+        PeepSlotCount,
+        roleLimits);
     var cars = new RideInstanceTrainConsistCarRuntimeEntry[roles.Entries.Count];
     foreach (var index in Enumerable.Range(0, cars.Length)) {
       var role = roles.Entries[index];
@@ -204,6 +260,61 @@ internal sealed class RideInstanceTrainConsistRuntimeRegistry {
       roles,
       Array.AsReadOnly(cars),
       RideInstanceTrainConsistRuntimeStatus.Resolved);
+  }
+
+  private static IReadOnlyList<RideTrainCarRole> ResolveSavedRoles(
+    RideInstanceTrainRuntimeEntry runtime,
+    IReadOnlyDictionary<ulong, DatRideCarInstanceData> savedCars,
+    ISet<ulong> linkedSavedCarIds,
+    RideInstanceTrainConsistRuntimeRegistryLimits limits
+  ) {
+    var savedTrain = runtime.TrainResource.TrainInstance;
+    ValidateCount(
+      savedTrain.Cars.Count,
+      limits.MaximumRuntimeCarCount,
+      $"saved train {savedTrain.EntryId} car");
+    if (savedTrain.Cars.Count == 0)
+      throw Invalid($"saved train {savedTrain.EntryId} has no car instances");
+
+    var roles = new RideTrainCarRole[savedTrain.Cars.Count];
+    foreach (var ordinal in Enumerable.Range(0, roles.Length)) {
+      var carId = savedTrain.Cars[ordinal];
+      if (carId == 0 || !linkedSavedCarIds.Add(carId))
+        throw Invalid($"saved car instance ID {carId} is missing or listed more than once");
+      if (!savedCars.TryGetValue(carId, out var car))
+        throw Invalid($"saved train {savedTrain.EntryId} references missing car {carId}");
+      if (car.RideTrainInstance != savedTrain.EntryId)
+        throw Invalid(
+          $"saved train {savedTrain.EntryId} references car {carId}, whose reciprocal owner " +
+          $"is {car.RideTrainInstance}");
+      if (car.WhichCar != ordinal)
+        throw Invalid(
+          $"saved train {savedTrain.EntryId} lists car {carId} at index {ordinal}, but its " +
+          $"WhichCar value is {car.WhichCar}");
+      roles[ordinal] = SavedRole(car);
+    }
+    return Array.AsReadOnly(roles);
+  }
+
+  private static IReadOnlyList<RideCarLink> RequiredCars(
+    RideTrainLink train,
+    IReadOnlyDictionary<RideTrainCarRole, RideCarLink> carsByRole,
+    IReadOnlyList<RideTrainCarRole>? savedRoles
+  ) {
+    if (savedRoles == null)
+      return carsByRole
+        .Where(pair => pair.Key != RideTrainCarRole.WildUnknown)
+        .Select(pair => pair.Value)
+        .ToArray();
+
+    var seenRoles = new HashSet<RideTrainCarRole>();
+    var required = new List<RideCarLink>(savedRoles.Count);
+    foreach (var role in savedRoles) {
+      if (!carsByRole.TryGetValue(role, out var car))
+        throw Invalid($"saved consist selects undeclared RIT '{train.Reference}' {role} role");
+      if (seenRoles.Add(role)) required.Add(car);
+    }
+    return Array.AsReadOnly(required.ToArray());
   }
 
   private static RideTrainLink? FindTrainGraph(
@@ -406,6 +517,48 @@ internal sealed class RideInstanceTrainConsistRuntimeRegistry {
     }
     return result;
   }
+
+  private static IReadOnlyDictionary<ulong, DatRideCarInstanceData> IndexSavedCars(
+    IReadOnlyList<DatRideCarInstanceData> cars
+  ) {
+    var result = new Dictionary<ulong, DatRideCarInstanceData>(cars.Count);
+    foreach (var car in cars) {
+      if (car == null)
+        throw new ArgumentException("Saved car instances cannot contain null.", nameof(cars));
+      if (car.EntryId == 0 || !result.TryAdd(car.EntryId, car))
+        throw Invalid($"saved car instance ID {car.EntryId} is missing or duplicated");
+      if (car.RideTrainInstance == 0)
+        throw Invalid($"saved car {car.EntryId} has no owning train");
+      if (car.WhichCar < 0)
+        throw Invalid($"saved car {car.EntryId} has negative WhichCar {car.WhichCar}");
+      _ = SavedRole(car);
+    }
+    return result;
+  }
+
+  private static void ValidateUnlistedSavedCars(
+    IReadOnlyList<DatRideCarInstanceData> cars,
+    ISet<ulong> linkedTrainIds,
+    ISet<ulong> linkedCarIds
+  ) {
+    foreach (var car in cars)
+      if (linkedTrainIds.Contains(car.RideTrainInstance) && !linkedCarIds.Contains(car.EntryId))
+        throw Invalid(
+          $"saved car {car.EntryId} names linked train {car.RideTrainInstance} but is not " +
+          "listed by that train");
+  }
+
+  private static RideTrainCarRole SavedRole(DatRideCarInstanceData car) =>
+    car.WhichRideTrainCar switch {
+      0 => RideTrainCarRole.Front,
+      1 => RideTrainCarRole.Second,
+      2 => RideTrainCarRole.Middle,
+      3 => RideTrainCarRole.Penultimate,
+      4 => RideTrainCarRole.Rear,
+      5 => RideTrainCarRole.Link,
+      _ => throw Invalid(
+        $"saved car {car.EntryId} has unsupported RIT role {car.WhichRideTrainCar}"),
+    };
 
   private static IReadOnlyDictionary<TrackedRide, TrackedRideResourceLink> IndexGraphRides(
     IReadOnlyList<TrackedRideResourceLink> rides

@@ -26,7 +26,10 @@ public class RideCarInstanceRuntimeRegistryTests {
       rearTrackPiece: 711,
       distance: 4.25f,
       reversed: true,
-      speed: -2.5f);
+      speed: -2.5f,
+      length: 6.75f,
+      mass: 1_600f,
+      positionValid: true);
     var rear = Car(
       2_001,
       train.EntryId,
@@ -61,7 +64,12 @@ public class RideCarInstanceRuntimeRegistryTests {
       Assert.That(registry.Entries[0].CarInstance, Is.SameAs(front));
       Assert.That(registry.Entries[0].TrainRuntime.TrainResource.TrainInstance,
         Is.SameAs(train));
+      Assert.That(registry.Entries[0].TrainRuntime.SavedMotionState, Is.Null);
       Assert.That(registry.Entries[0].SavedDistance, Is.EqualTo(4.25f));
+      Assert.That(registry.Entries[0].HasSavedPhysicalState, Is.True);
+      Assert.That(registry.Entries[0].SavedLength, Is.EqualTo(6.75f));
+      Assert.That(registry.Entries[0].SavedMass, Is.EqualTo(1_600f));
+      Assert.That(registry.Entries[0].SavedPositionValid, Is.True);
       Assert.That(registry.Entries[0].SavedReversed, Is.True);
       Assert.That(registry.Entries[0].SavedSpeed, Is.EqualTo(-2.5f));
       Assert.That(registry.Entries[0].TrackStatus,
@@ -73,6 +81,7 @@ public class RideCarInstanceRuntimeRegistryTests {
       Assert.That(registry.Entries[0].ResourceStatus,
         Is.EqualTo(RideCarResourceRuntimeStatus.UnresolvedTrainResource));
       Assert.That(registry.Entries[0].CarResource, Is.Null);
+      Assert.That(registry.Entries[1].HasSavedPhysicalState, Is.False);
     }
   }
 
@@ -433,17 +442,40 @@ public class RideCarInstanceRuntimeRegistryTests {
     ulong rearTrackPiece = 0,
     float distance = 0f,
     bool reversed = false,
-    float speed = 0f
-  ) => new(
-    entryId,
-    trainId,
-    whichCar,
-    Convert.ToInt32(role),
-    trackPiece,
-    rearTrackPiece,
-    distance,
-    reversed,
-    speed);
+    float speed = 0f,
+    float length = 0f,
+    float mass = 0f,
+    bool positionValid = false
+  ) {
+    if (length == 0f && mass == 0f && !positionValid)
+      return new(
+        entryId,
+        trainId,
+        whichCar,
+        Convert.ToInt32(role),
+        0f,
+        0f,
+        trackPiece,
+        rearTrackPiece,
+        distance,
+        reversed,
+        speed);
+    return new(
+      entryId,
+      trainId,
+      whichCar,
+      Convert.ToInt32(role),
+      0f,
+      0f,
+      trackPiece,
+      rearTrackPiece,
+      distance,
+      reversed,
+      speed,
+      length,
+      mass,
+      positionValid);
+  }
 
   private static RideTrack Track(DatTrackedRideInstanceData instance) => new(
     instance.Track,

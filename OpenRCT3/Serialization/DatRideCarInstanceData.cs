@@ -10,9 +10,10 @@ namespace OpenRCT3.Serialization;
 /// </summary>
 /// <remarks>
 /// The wheel distances are saved global track positions, not the RIC resource's axle or wheel
-/// geometry. All track-piece references, distances, direction, and speed are retained as saved
-/// state. They are not inferred from resource geometry and do not by themselves authorize motion
-/// playback.
+/// geometry. All track-piece references, distances, physical values, validity, direction, and
+/// speed are retained as saved state. They are not inferred from resource geometry and do not by
+/// themselves authorize motion playback. <see cref="HasSavedPhysicalState"/> distinguishes parsed
+/// length/mass/validity values from compatibility-constructor defaults.
 /// </remarks>
 internal sealed class DatRideCarInstanceData {
   public ulong EntryId { get; }
@@ -26,6 +27,10 @@ internal sealed class DatRideCarInstanceData {
   public ulong TrackPiece { get; }
   public ulong RearTrackPiece { get; }
   public float Distance { get; }
+  public bool HasSavedPhysicalState { get; }
+  public float Length { get; }
+  public float Mass { get; }
+  public bool PositionValid { get; }
   public bool Reversed { get; }
   public float Speed { get; }
 
@@ -50,7 +55,11 @@ internal sealed class DatRideCarInstanceData {
     rearTrackPiece,
     distance,
     reversed,
-    speed) { }
+    speed,
+    0f,
+    0f,
+    false,
+    false) { }
 
   public DatRideCarInstanceData(
     ulong entryId,
@@ -64,6 +73,71 @@ internal sealed class DatRideCarInstanceData {
     float distance,
     bool reversed,
     float speed
+  ) : this(
+    entryId,
+    rideTrainInstance,
+    whichCar,
+    whichRideTrainCar,
+    frontWheelDistance,
+    rearWheelDistance,
+    trackPiece,
+    rearTrackPiece,
+    distance,
+    reversed,
+    speed,
+    0f,
+    0f,
+    false,
+    false) { }
+
+  public DatRideCarInstanceData(
+    ulong entryId,
+    ulong rideTrainInstance,
+    int whichCar,
+    int whichRideTrainCar,
+    float frontWheelDistance,
+    float rearWheelDistance,
+    ulong trackPiece,
+    ulong rearTrackPiece,
+    float distance,
+    bool reversed,
+    float speed,
+    float length,
+    float mass,
+    bool positionValid
+  ) : this(
+    entryId,
+    rideTrainInstance,
+    whichCar,
+    whichRideTrainCar,
+    frontWheelDistance,
+    rearWheelDistance,
+    trackPiece,
+    rearTrackPiece,
+    distance,
+    reversed,
+    speed,
+    length,
+    mass,
+    positionValid,
+    true) { }
+
+  private DatRideCarInstanceData(
+    ulong entryId,
+    ulong rideTrainInstance,
+    int whichCar,
+    int whichRideTrainCar,
+    float frontWheelDistance,
+    float rearWheelDistance,
+    ulong trackPiece,
+    ulong rearTrackPiece,
+    float distance,
+    bool reversed,
+    float speed,
+    float length,
+    float mass,
+    bool positionValid,
+    bool hasSavedPhysicalState
   ) {
     if (entryId == 0)
       throw new ArgumentOutOfRangeException(nameof(entryId), "Ride-car ID must be nonzero.");
@@ -87,6 +161,10 @@ internal sealed class DatRideCarInstanceData {
       throw new ArgumentOutOfRangeException(nameof(distance), "Ride-car distance must be finite.");
     if (!float.IsFinite(speed))
       throw new ArgumentOutOfRangeException(nameof(speed), "Ride-car speed must be finite.");
+    if (!float.IsFinite(length))
+      throw new ArgumentOutOfRangeException(nameof(length), "Ride-car length must be finite.");
+    if (!float.IsFinite(mass))
+      throw new ArgumentOutOfRangeException(nameof(mass), "Ride-car mass must be finite.");
 
     EntryId = entryId;
     RideTrainInstance = rideTrainInstance;
@@ -97,6 +175,10 @@ internal sealed class DatRideCarInstanceData {
     TrackPiece = trackPiece;
     RearTrackPiece = rearTrackPiece;
     Distance = distance;
+    HasSavedPhysicalState = hasSavedPhysicalState;
+    Length = length;
+    Mass = mass;
+    PositionValid = positionValid;
     Reversed = reversed;
     Speed = speed;
   }

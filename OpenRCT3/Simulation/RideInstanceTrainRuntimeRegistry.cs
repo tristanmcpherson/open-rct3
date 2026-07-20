@@ -19,6 +19,17 @@ internal sealed record RideInstanceTrainRuntimeEntry(
   public ulong TrackEntryId => TrackRuntime.TrackEntryId;
   public ulong TrainInstanceEntryId => TrainResource.TrainInstanceEntryId;
   public int TrainOrdinal => TrainResource.Ordinal;
+  public bool HasSavedMotionState => TrainResource.HasSavedMotionState;
+  public float SavedDistance => TrainResource.SavedDistance;
+  public bool SavedReversed => TrainResource.SavedReversed;
+  public float SavedSpeed => TrainResource.SavedSpeed;
+  public bool HasSavedOperationalState => TrainResource.HasSavedOperationalState;
+  public int SavedOperationalState => TrainResource.SavedOperationalState;
+  public float SavedOperationalStateTime => TrainResource.SavedOperationalStateTime;
+  public int? SavedVisualVariant => TrainResource.SavedVisualVariant;
+  public RideTrainMotionState? SavedMotionState => HasSavedMotionState
+    ? new(SavedDistance, SavedSpeed, SavedReversed)
+    : null;
   public bool HasResolvedTrack => TrackRuntime.IsResolved;
   public bool HasResolvedResource => TrainResource.IsResolved;
   public bool HasResolvedCircuit => TrackRuntime.CircuitTraversal != null;
@@ -29,8 +40,8 @@ internal sealed record RideInstanceTrainRuntimeEntry(
 /// their owning ride-instance runtime tracks.
 /// </summary>
 /// <remarks>
-/// This registry deliberately does not infer a train cursor, speed, consist layout, or car role.
-/// Those values require additional saved-state or executable-backed evidence.
+/// This registry preserves saved train motion fields but deliberately does not advance them or infer
+/// consist spacing and car roles. Those behaviors require the separate executable-backed layers.
 /// </remarks>
 internal sealed class RideInstanceTrainRuntimeRegistry {
   public IReadOnlyList<RideInstanceTrainRuntimeEntry> Entries { get; }

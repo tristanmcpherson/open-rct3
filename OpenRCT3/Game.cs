@@ -51,6 +51,7 @@ public class Game : IGame {
   private IRenderer? renderer = ResolveRenderer(Game.IoC);
   private Scene? ownedScene;
   private Simulation.World? ownedWorld;
+  private readonly List<IDisposable> ownedRideCarVisualTemplateOwners = [];
   private readonly object cameraControllerGate = new();
   private IInputContext? cameraInput;
   private CameraController? cameraController;
@@ -307,6 +308,22 @@ public class Game : IGame {
           carVisuals.Visuals.Count,
           carVisuals.ResolvedShapeLodCount,
           carVisuals.UnresolvedShapeReferenceCount);
+        try {
+          var carVisualHierarchy = RideCarVisualHierarchyResolver.Resolve(
+            loadedTrackResources.RideResources.Graph,
+            carVisuals);
+          World.Park.RideCarVisualHierarchy = carVisualHierarchy;
+          logger.Debug(
+            "Resolved {ResolvedPartCount} of {PartCount} ride-car axle/wheel hierarchy parts " +
+            "with {AmbiguousPartCount} ambiguous anchors",
+            carVisualHierarchy.ResolvedPartCount,
+            carVisualHierarchy.Cars.Count * 6,
+            carVisualHierarchy.AmbiguousPartCount);
+        }
+        catch (Exception error) when (
+          error is InvalidDataException or ArgumentException or InvalidOperationException) {
+          logger.Warn(error, "Ride-car visual hierarchy could not be resolved");
+        }
 
         try {
           var instanceTracks = RideInstanceTrackGraph.Build(
@@ -343,7 +360,8 @@ public class Game : IGame {
 
             var consistRuntime = RideInstanceTrainConsistRuntimeRegistry.Build(
               trainRuntime,
-              loadedTrackResources.RideResources);
+              loadedTrackResources.RideResources,
+              World.Park.RideCarInstances);
             World.Park.RideTrainConsistRuntime = consistRuntime;
             logger.Debug(
               "Composed {ResolvedConsistCount} of {ConsistCount} saved train consists from " +
@@ -365,6 +383,22 @@ public class Game : IGame {
               carRuntime.ResolvedTrackPieceCarCount,
               carRuntime.ResolvedResourceCarCount);
 
+            RideCarVisualVariantSelectionRegistry? carVisualVariants = null;
+            try {
+              carVisualVariants = RideCarVisualVariantSelector.Build(carRuntime, carVisuals);
+              World.Park.RideCarVisualVariants = carVisualVariants;
+              logger.Debug(
+                "Selected exact visual variants for {SelectedCarCount} of {CarCount} saved cars " +
+                "with {BodyFallbackCount} body-control fallbacks",
+                carVisualVariants.SelectedCount,
+                carVisualVariants.Entries.Count,
+                carVisualVariants.BodyControlFallbackCount);
+            }
+            catch (Exception error) when (
+              error is InvalidDataException or ArgumentException or InvalidOperationException) {
+              logger.Warn(error, "Saved ride-car visual variants could not be selected");
+            }
+
             var wheelCursors = RideCarSavedWheelCursorRegistry.Build(
               carRuntime,
               World.Park.RideTrackPieceRecords);
@@ -376,20 +410,94 @@ public class Game : IGame {
               wheelCursors.CarCount,
               wheelCursors.ResolvedContactCount);
 
-            using var visualTemplates = RideCarVisualTemplateRegistry.Build(carVisuals);
-            var staticCars = RideCarStaticInstanceRegistry.Build(
-              carRuntime,
-              wheelCursors,
-              visualTemplates);
             using var visualMaterials = new RideCarVisualMaterialResolver(
               loadedTrackResources.Context);
-            var carScene = RideCarStaticSceneBuilder.Build(
-              staticCars,
-              visualMaterials.ResolveMaterial);
+            RideCarStaticSceneBuildResult carScene;
+            RideCarVisualHierarchySceneBuildResult? hierarchyScene = null;
+            if (carVisualVariants != null) {
+              RideCarVariantVisualTemplateRegistry? variantTemplates =
+                RideCarVariantVisualTemplateRegistry.Build(carVisualVariants);
+              try {
+                var variantCars = RideCarVariantStaticInstanceRegistry.Build(
+                  carRuntime,
+                  wheelCursors,
+                  carVisualVariants,
+                  variantTemplates);
+                carScene = RideCarStaticSceneBuilder.Build(
+                  variantCars,
+                  (entry, batch) => ResolveRideCarVariantMaterial(
+                    visualMaterials,
+                    entry,
+                    batch));
+                if (World.Park.RideCarVisualHierarchy != null) {
+                  try {
+                    RideCarVisualTemplateRegistry? hierarchyTemplates =
+                      RideCarVisualTemplateRegistry.Build(carVisuals);
+                    try {
+                      var hierarchyInstances =
+                        RideCarVisualHierarchyStaticInstanceRegistry.Build(
+                          variantCars,
+                          World.Park.RideCarVisualHierarchy,
+                          hierarchyTemplates);
+                      hierarchyScene = RideCarVisualHierarchySceneBuilder.Build(
+                        hierarchyInstances,
+                        visualMaterials.ResolveMaterial);
+                      RetainRideCarVisualTemplateOwner(hierarchyTemplates);
+                      hierarchyTemplates = null;
+                      World.Park.PublishRideCarVisualHierarchyScene(
+                        hierarchyInstances,
+                        hierarchyScene);
+                    }
+                    finally {
+                      hierarchyTemplates?.Dispose();
+                    }
+                  }
+                  catch (Exception error) when (
+                    error is InvalidDataException or ArgumentException or
+                      InvalidOperationException or AggregateException) {
+                    logger.Warn(error, "Ride-car axle/wheel scene could not be built");
+                  }
+                }
+                RetainRideCarVisualTemplateOwner(variantTemplates);
+                variantTemplates = null;
+              }
+              finally {
+                variantTemplates?.Dispose();
+              }
+            } else {
+              RideCarVisualTemplateRegistry? visualTemplates =
+                RideCarVisualTemplateRegistry.Build(carVisuals);
+              try {
+                var staticCars = RideCarStaticInstanceRegistry.Build(
+                  carRuntime,
+                  wheelCursors,
+                  visualTemplates);
+                carScene = RideCarStaticSceneBuilder.Build(
+                  staticCars,
+                  visualMaterials.ResolveMaterial);
+                RetainRideCarVisualTemplateOwner(visualTemplates);
+                visualTemplates = null;
+              }
+              finally {
+                visualTemplates?.Dispose();
+              }
+            }
+            World.Park.RideCarScene = carScene;
             Scene.Models.AddRange(carScene.Models);
-            var renderedCarCenters = staticCars.Entries
-              .Where(entry => entry.IsResolved)
-              .Select(entry => entry.Pose!.ContactMidpoint)
+            if (hierarchyScene != null) {
+              Scene.Models.AddRange(hierarchyScene.Models);
+              logger.Debug(
+                "Added {ModelCount} axle/wheel models for {BuiltPartCount} of " +
+                "{SourcePartCount} resolved hierarchy parts; skipped " +
+                "{MissingMaterialBatchCount} missing-material batches",
+                hierarchyScene.ModelCount,
+                hierarchyScene.BuiltPartCount,
+                hierarchyScene.SourcePartCount,
+                hierarchyScene.MissingMaterialBatchCount);
+            }
+            var renderedCarCenters = carScene.ModelBindings
+              .GroupBy(binding => binding.RegistryIndex)
+              .Select(bindings => bindings.First().Entry.Pose!.ContactMidpoint)
               .ToArray();
             if (renderedCarCenters.Length > 0) {
               rideCarDiagnosticTarget = renderedCarCenters.Aggregate(
@@ -400,10 +508,11 @@ public class Game : IGame {
               rideCarDiagnosticDistance = Math.Clamp((trainRadius * 2f) + 8f, 18f, 80f);
             }
             logger.Debug(
-              "Added {ModelCount} static ride-car models for {BuiltCarCount} of " +
+              "Added {ModelCount} {BuildMode} ride-car models for {BuiltCarCount} of " +
               "{SourceCarCount} saved cars; skipped {MissingMaterialBatchCount} " +
               "missing-material batches",
               carScene.ModelCount,
+              carScene.BuildMode,
               carScene.BuiltCarCount,
               carScene.SourceCarCount,
               carScene.MissingMaterialBatchCount);
@@ -565,6 +674,30 @@ public class Game : IGame {
     return isRunning();
   }
 
+  private static Material? ResolveRideCarVariantMaterial(
+    RideCarVisualMaterialResolver resolver,
+    RideCarVariantStaticInstanceEntry car,
+    StaticShapeMeshBatch batch
+  ) {
+    if (!car.IsResolved || car.BodyTemplate?.Link?.Car?.Source == null ||
+        car.MaterialBatches == null)
+      throw new InvalidDataException("Selected ride-car variant is not render-resolved.");
+    if (!ReferenceEquals(car.CarRuntime.CarResource, car.BodyTemplate.Link.Car) ||
+        !car.MaterialBatches.Any(candidate => ReferenceEquals(candidate, batch)))
+      throw new InvalidDataException("Selected ride-car variant changed exact body identity.");
+
+    var track = car.CarRuntime.TrainRuntime.TrackRuntime.Track
+      ?? throw new InvalidDataException("Selected ride-car variant has no owning ride track.");
+    var colours = SceneryFlexiColours.FromSerialized(
+      track.FlexiColour0,
+      track.FlexiColour1,
+      track.FlexiColour2);
+    return resolver.Resolve(
+      batch,
+      car.BodyTemplate.Link.Car.Source.AllowedArchivePaths,
+      colours).Material;
+  }
+
   public void Pause() {
     isPaused = true;
     resumeSignal.Reset();
@@ -592,14 +725,17 @@ public class Game : IGame {
     CameraController? controller;
     Scene? scene;
     Simulation.World? world;
+    IDisposable[] rideCarVisualTemplateOwners;
     lock (cameraControllerGate) {
       if (disposed) return;
       disposed = true;
       scene = ownedScene;
       world = ownedWorld;
+      rideCarVisualTemplateOwners = ownedRideCarVisualTemplateOwners?.ToArray() ?? [];
       controller = cameraController;
       ownedScene = null;
       ownedWorld = null;
+      ownedRideCarVisualTemplateOwners?.Clear();
       cameraInput = null;
       cameraController = null;
     }
@@ -612,6 +748,9 @@ public class Game : IGame {
     finally {
       DisposeOwnedResources(
         scene == null ? null : scene.Dispose,
+        rideCarVisualTemplateOwners.Length == 0
+          ? null
+          : () => DisposeRideCarVisualTemplateOwners(rideCarVisualTemplateOwners),
         world == null ? null : world.Dispose,
         () => {
           lifecycle.Stop();
@@ -648,12 +787,15 @@ public class Game : IGame {
 
   internal static void DisposeOwnedResources(
     Action? disposeScene,
+    Action? disposeRideCarVisualTemplates,
     Action? disposeWorld,
     Action clearState
   ) {
     try {
       var releases = new List<Action>();
       if (disposeScene != null) releases.Add(disposeScene);
+      if (disposeRideCarVisualTemplates != null)
+        releases.Add(disposeRideCarVisualTemplates);
       if (disposeWorld != null) releases.Add(disposeWorld);
       ResourceReleaser.Run(releases);
     }
@@ -661,6 +803,19 @@ public class Game : IGame {
       clearState();
     }
   }
+
+  private void RetainRideCarVisualTemplateOwner(IDisposable owner) {
+    ArgumentNullException.ThrowIfNull(owner);
+    lock (cameraControllerGate) {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      ownedRideCarVisualTemplateOwners.Add(owner);
+    }
+  }
+
+  private static void DisposeRideCarVisualTemplateOwners(
+    IEnumerable<IDisposable> owners
+  ) => ResourceReleaser.Run(
+    owners.Reverse().Select(owner => new Action(owner.Dispose)));
 
   /// <summary>
   /// Advances the simulation.

@@ -46,6 +46,93 @@ public class RideTrainConsistRoleResolverTests {
   }
 
   [Test]
+  public void ResolveSaved_PreservesExactBoxOfficeAndSingleFrontOrders() {
+    var cars = Cars(
+      front: "front",
+      middle: "middle",
+      rear: "rear",
+      link: "link",
+      minimum: 1,
+      maximum: 8,
+      @default: 4);
+    var peepSlots = new[] {
+      ("front", 3), ("middle", 12), ("rear", 3), ("link", 0),
+    };
+
+    var boxOffice = ResolveSaved(cars, [
+      RideTrainCarRole.Front,
+      RideTrainCarRole.Link,
+      RideTrainCarRole.Middle,
+      RideTrainCarRole.Link,
+      RideTrainCarRole.Middle,
+      RideTrainCarRole.Link,
+      RideTrainCarRole.Rear,
+    ], 4, peepSlots);
+    var single = ResolveSaved(
+      cars,
+      [RideTrainCarRole.Front],
+      1,
+      ("front", 0));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(boxOffice.EffectiveCarCount, Is.EqualTo(4));
+      Assert.That(boxOffice.Entries.Select(entry => entry.Role), Is.EqualTo(new[] {
+        RideTrainCarRole.Front,
+        RideTrainCarRole.Link,
+        RideTrainCarRole.Middle,
+        RideTrainCarRole.Link,
+        RideTrainCarRole.Middle,
+        RideTrainCarRole.Link,
+        RideTrainCarRole.Rear,
+      }));
+      Assert.That(boxOffice.Entries.Select(entry => entry.NonLinkIndex),
+        Is.EqualTo(new int?[] { 0, null, 1, null, 2, null, 3 }));
+      Assert.That(boxOffice.Entries.Select(entry => entry.CountsTowardConfiguredCarCount),
+        Is.EqualTo(new[] { true, false, true, false, true, false, true }));
+      Assert.That(single.EffectiveCarCount, Is.EqualTo(1));
+      Assert.That(single.Entries.Select(entry => entry.Role),
+        Is.EqualTo(new[] { RideTrainCarRole.Front }));
+      Assert.That(single.Entries.Single().CountsTowardConfiguredCarCount, Is.True);
+    }
+  }
+
+  [Test]
+  public void ResolveSaved_RejectsUndeclaredOutOfRangeAndInconsistentSelections() {
+    var cars = Cars("front", middle: "middle", rear: "rear");
+    var counts = new Dictionary<string, int>(StringComparer.Ordinal) {
+      ["front"] = 1,
+      ["middle"] = 1,
+      ["rear"] = 1,
+    };
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrainConsistRoleResolver.ResolveSaved(
+        cars,
+        [RideTrainCarRole.Second],
+        1,
+        name => counts[name])));
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrainConsistRoleResolver.ResolveSaved(
+        cars,
+        [RideTrainCarRole.WildUnknown],
+        1,
+        name => counts[name])));
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrainConsistRoleResolver.ResolveSaved(
+        cars,
+        [RideTrainCarRole.Front],
+        2,
+        name => counts[name])));
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrainConsistRoleResolver.ResolveSaved(
+        cars,
+        [RideTrainCarRole.Front, RideTrainCarRole.Middle],
+        2,
+        name => counts[name],
+        new RideTrainConsistRoleLimits(1))));
+  }
+
+  [Test]
   public void Resolve_UsesEveryDistinctOrdinaryRoleForFiveCars() {
     var cars = Cars("front", "second", "middle", "penultimate", "rear");
 
@@ -161,6 +248,21 @@ public class RideTrainConsistRoleResolverTests {
     var counts = peepSlots.ToDictionary(item => item.ResourceName,
       item => item.PeepSlotCount, StringComparer.Ordinal);
     return RideTrainConsistRoleResolver.Resolve(cars, savedCount, name => counts[name]);
+  }
+
+  private static RideTrainConsistRoleResolution ResolveSaved(
+    RideTrainCars cars,
+    IReadOnlyList<RideTrainCarRole> savedRoles,
+    int savedConfiguredCarCount,
+    params (string ResourceName, int PeepSlotCount)[] peepSlots
+  ) {
+    var counts = peepSlots.ToDictionary(item => item.ResourceName,
+      item => item.PeepSlotCount, StringComparer.Ordinal);
+    return RideTrainConsistRoleResolver.ResolveSaved(
+      cars,
+      savedRoles,
+      savedConfiguredCarCount,
+      name => counts[name]);
   }
 
   private static RideTrainCars Cars(

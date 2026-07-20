@@ -67,6 +67,22 @@ public class RideInstanceTrainRuntimeRegistryTests {
   }
 
   [Test]
+  public void Build_PreservesSavedOperationalStateWithoutInterpretingIt() {
+    var ride = Instance(900, 700, [1_000]);
+    var train = Train(1_000, ride, 0, state: 45, stateTime: 6.5f);
+    var trainResources = RideTrainInstanceResourceRegistry.Build([ride], [train], []);
+
+    var entry = RideInstanceTrainRuntimeRegistry.Build(
+      Runtime([ride]), trainResources).Entries.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(entry.HasSavedOperationalState, Is.True);
+      Assert.That(entry.SavedOperationalState, Is.EqualTo(45));
+      Assert.That(entry.SavedOperationalStateTime, Is.EqualTo(6.5f));
+    }
+  }
+
+  [Test]
   public void Build_RejectsRideObjectSubstitutionEvenWhenIdsMatch() {
     var runtimeRide = Instance(900, 700, [1_000]);
     var substitutedRide = Instance(900, 700, [1_000]);
@@ -139,7 +155,9 @@ public class RideInstanceTrainRuntimeRegistryTests {
   private static DatRideTrainInstanceData Train(
     ulong entryId,
     DatTrackedRideInstanceData owner,
-    int ordinal
+    int ordinal,
+    int? state = null,
+    float? stateTime = null
   ) => new(
     entryId,
     @"Cars\Synthetic\SyntheticTrain",
@@ -148,7 +166,9 @@ public class RideInstanceTrainRuntimeRegistryTests {
     ordinal,
     length: 12.5f,
     mass: 1_000f,
-    cars: []);
+    cars: [],
+    state: state,
+    stateTime: stateTime);
 
   private static RideTrack Track(ulong entryId, ulong instanceReference) => new(
     entryId,

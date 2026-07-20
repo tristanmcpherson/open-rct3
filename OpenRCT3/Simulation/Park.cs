@@ -11,6 +11,11 @@ using OpenRCT3.Serialization;
 
 namespace OpenRCT3.Simulation;
 
+internal sealed record RideCarVisualHierarchySceneState(
+  RideCarVisualHierarchyStaticInstanceRegistry Instances,
+  RideCarVisualHierarchySceneBuildResult Scene
+);
+
 /// <summary>
 /// Represents a park within the game world.
 /// </summary>
@@ -25,6 +30,8 @@ namespace OpenRCT3.Simulation;
 /// </para>
 /// </remarks>
 public class Park {
+  private RideCarVisualHierarchySceneState? rideCarVisualHierarchySceneState;
+
   /// <summary>
   /// The size of a single grid square in meters.
   /// </summary>
@@ -136,8 +143,48 @@ public class Park {
   /// <summary>Exact saved car identities composed with train, track-piece, and RIC outcomes.</summary>
   internal RideCarInstanceRuntimeRegistry? RideCarRuntime { get; set; }
 
+  /// <summary>Decoded axle and wheel hierarchy evidence for exact RIC visual occurrences.</summary>
+  internal RideCarVisualHierarchyRegistry? RideCarVisualHierarchy { get; set; }
+
+  /// <summary>
+  /// Selected saved cars composed with exact static axle and wheel instances. The active game keeps
+  /// their borrowed visual-template owner alive until scene teardown.
+  /// </summary>
+  internal RideCarVisualHierarchyStaticInstanceRegistry?
+    RideCarVisualHierarchyInstances => rideCarVisualHierarchySceneState?.Instances;
+
+  /// <summary>
+  /// Scene-owned axle and wheel models plus exact source bindings whose visual-template owner is
+  /// retained by the active game.
+  /// </summary>
+  internal RideCarVisualHierarchySceneBuildResult? RideCarVisualHierarchyScene =>
+    rideCarVisualHierarchySceneState?.Scene;
+
+  /// <summary>
+  /// Saved train variants composed with each exact saved car's body visual pair; null authorizes
+  /// the legacy normal-body scene fallback.
+  /// </summary>
+  internal RideCarVisualVariantSelectionRegistry? RideCarVisualVariants { get; set; }
+
   /// <summary>Validated static-load front/rear wheel cursors from exact saved car state.</summary>
   internal RideCarSavedWheelCursorRegistry? RideCarWheelCursors { get; set; }
+
+  /// <summary>
+  /// Borrowed exact model and selected-variant bindings for the current ride-car scene; the scene
+  /// owns the models, the active game retains their visual-template owner, and the result records
+  /// whether variant selection or the base fallback ran.
+  /// </summary>
+  internal RideCarStaticSceneBuildResult? RideCarScene { get; set; }
+
+  /// <summary>Publishes one complete hierarchy instance and scene pair after construction.</summary>
+  internal void PublishRideCarVisualHierarchyScene(
+    RideCarVisualHierarchyStaticInstanceRegistry instances,
+    RideCarVisualHierarchySceneBuildResult scene
+  ) {
+    ArgumentNullException.ThrowIfNull(instances);
+    ArgumentNullException.ThrowIfNull(scene);
+    rideCarVisualHierarchySceneState = new(instances, scene);
+  }
 
   /// <summary>Exact point-to-track bounds queries mapped back to ride-instance runtime entries.</summary>
   internal RideInstanceTrackSpatialQuery? RideTrackSpatialQuery { get; set; }
@@ -151,10 +198,10 @@ public class Park {
   /// <summary>Decoded DAT ride-instance identities awaiting the semantic ride graph.</summary>
   internal List<DatTrackedRideInstanceData> TrackedRideInstances { get; } = [];
 
-  /// <summary>Exact saved ride-train resource provenance and seed dimensions.</summary>
+  /// <summary>Exact saved ride-train provenance, dimensions, motion state, and visual variant.</summary>
   internal List<DatRideTrainInstanceData> RideTrainInstances { get; } = [];
 
-  /// <summary>Exact saved ride-car ownership, resource roles, and resume state.</summary>
+  /// <summary>Exact saved ride-car ownership, resource roles, physical values, and resume state.</summary>
   internal List<DatRideCarInstanceData> RideCarInstances { get; } = [];
 
   public Park(int buildableWidth = DefaultMapSize, int buildableHeight = DefaultMapSize) {

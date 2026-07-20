@@ -11,15 +11,46 @@ using System.Numerics;
 
 namespace OpenRCT3.Simulation;
 
-/// <summary>Caller-owned static ride-car models plus explicit source and skip counts.</summary>
+/// <summary>The exact body source used for one static ride-car scene model.</summary>
+internal enum RideCarStaticSceneModelSource {
+  BaseWithoutVariantSelection,
+  SelectedVariant,
+}
+
+/// <summary>The registry policy used to build one static ride-car scene.</summary>
+internal enum RideCarStaticSceneBuildMode {
+  BaseWithoutVariantSelection,
+  SelectedVariants,
+}
+
+/// <summary>One exact, borrowed source binding for a scene-owned static ride-car model.</summary>
+/// <remarks>
+/// The binding owns and disposes nothing. <see cref="Model"/> remains owned by the receiving scene
+/// or caller. <see cref="Entry"/> is either the exact legacy entry or an immutable managed snapshot
+/// of the selected variant entry. <see cref="VariantEntry"/> retains the exact selector evidence for
+/// variant and fallback models. All referenced templates and renderer resources remain borrowed.
+/// </remarks>
+internal sealed record RideCarStaticSceneModelBinding(
+  Model Model,
+  RideCarStaticInstanceEntry Entry,
+  int RegistryIndex,
+  int MaterialBatchIndex,
+  RideCarStaticSceneModelSource Source =
+    RideCarStaticSceneModelSource.BaseWithoutVariantSelection,
+  RideCarVariantStaticInstanceEntry? VariantEntry = null
+);
+
+/// <summary>Caller-owned static ride-car models plus exact source bindings and counts.</summary>
 /// <remarks>
 /// Models preserve saved-car order followed by source material-batch order. Every returned model
 /// owns a fresh CPU mesh clone and the fresh material produced for that exact car and batch. The
 /// caller may transfer the models to a <see cref="Scene"/> or must dispose them directly. Template
 /// meshes remain owned by <see cref="RideCarVisualTemplateRegistry"/> and are never transferred.
+/// Model bindings are immutable borrowed identity records and own no resources.
 /// </remarks>
 internal sealed record RideCarStaticSceneBuildResult(
   IReadOnlyList<Model> Models,
+  IReadOnlyList<RideCarStaticSceneModelBinding> ModelBindings,
   int SourceCarCount,
   int BuiltCarCount,
   int SkippedCarCount,
@@ -31,7 +62,12 @@ internal sealed record RideCarStaticSceneBuildResult(
   int UnresolvedSavedCursorCount,
   int MissingBodyTemplateCount,
   int UnavailableModelGeometryCount,
-  int UnavailableStaticPoseCount
+  int UnavailableStaticPoseCount,
+  RideCarStaticSceneBuildMode BuildMode =
+    RideCarStaticSceneBuildMode.BaseWithoutVariantSelection,
+  int VariantBuiltCarCount = 0,
+  int BaseFallbackBuiltCarCount = 0,
+  int UnavailableVisualSelectionCount = 0
 );
 
 /// <summary>Resource construction and release seams used to prove transactional ownership.</summary>
@@ -61,6 +97,13 @@ internal static class RideCarStaticSceneBuilder {
     RideCarStaticInstanceIssue.MissingBodyTemplate |
     RideCarStaticInstanceIssue.UnavailableModelGeometry |
     RideCarStaticInstanceIssue.UnavailableStaticPose;
+  private const RideCarVariantStaticInstanceIssue KnownVariantIssues =
+    RideCarVariantStaticInstanceIssue.UnresolvedCarResource |
+    RideCarVariantStaticInstanceIssue.UnresolvedSavedCursor |
+    RideCarVariantStaticInstanceIssue.UnavailableVisualSelection |
+    RideCarVariantStaticInstanceIssue.UnavailableBodyTemplate |
+    RideCarVariantStaticInstanceIssue.UnavailableModelGeometry |
+    RideCarVariantStaticInstanceIssue.UnavailableStaticPose;
 
   public static RideCarStaticSceneBuildResult Build(
     RideCarStaticInstanceRegistry instances,
@@ -84,11 +127,79 @@ internal static class RideCarStaticSceneBuilder {
     ValidateLimits(limits);
 
     var plan = Preflight(instances, limits);
+    var summary = new SceneSummary(
+      RideCarStaticSceneBuildMode.BaseWithoutVariantSelection,
+      instances.CarCount,
+      instances.UnresolvedCarResourceCount,
+      instances.UnresolvedSavedCursorCount,
+      instances.MissingBodyTemplateCount,
+      instances.UnavailableModelGeometryCount,
+      instances.UnavailableStaticPoseCount,
+      UnavailableVisualSelectionCount: 0);
+    return Build(
+      plan,
+      item => createMaterial(item.Entry, item.Batch),
+      summary,
+      operations);
+  }
+
+  /// <summary>
+  /// Builds selected normal or Wild bodies directly from the exact variant registry.
+  /// </summary>
+  public static RideCarStaticSceneBuildResult Build(
+    RideCarVariantStaticInstanceRegistry variants,
+    Func<RideCarVariantStaticInstanceEntry, StaticShapeMeshBatch, Material?>
+      createMaterial
+  ) => Build(
+    variants,
+    createMaterial,
+    RideCarStaticSceneBuilderLimits.Default,
+    RideCarStaticSceneBuilderOperations.Default);
+
+  internal static RideCarStaticSceneBuildResult Build(
+    RideCarVariantStaticInstanceRegistry variants,
+    Func<RideCarVariantStaticInstanceEntry, StaticShapeMeshBatch, Material?>
+      createMaterial,
+    RideCarStaticSceneBuilderLimits limits,
+    RideCarStaticSceneBuilderOperations operations
+  ) {
+    ArgumentNullException.ThrowIfNull(variants);
+    ArgumentNullException.ThrowIfNull(createMaterial);
+    ArgumentNullException.ThrowIfNull(operations);
+    ValidateOperations(operations);
+    ValidateLimits(limits);
+
+    var plan = PreflightVariants(variants, limits);
+    var summary = new SceneSummary(
+      RideCarStaticSceneBuildMode.SelectedVariants,
+      variants.CarCount,
+      variants.UnresolvedCarResourceCount,
+      variants.UnresolvedSavedCursorCount,
+      variants.UnavailableVisualSelectionCount + variants.UnavailableBodyTemplateCount,
+      variants.UnavailableModelGeometryCount,
+      variants.UnavailableStaticPoseCount,
+      variants.UnavailableVisualSelectionCount);
+    return Build(
+      plan,
+      item => createMaterial(item.VariantEntry!, item.Batch),
+      summary,
+      operations);
+  }
+
+  private static RideCarStaticSceneBuildResult Build(
+    BuildPlan plan,
+    Func<PlannedBatch, Material?> createMaterial,
+    SceneSummary summary,
+    RideCarStaticSceneBuilderOperations operations
+  ) {
     var models = new List<Model>(plan.Batches.Count);
+    var bindings = new List<RideCarStaticSceneModelBinding>(plan.Batches.Count);
     var clonedMeshes = new HashSet<Mesh>(ReferenceEqualityComparer.Instance);
     var materials = new HashSet<Material>(ReferenceEqualityComparer.Instance);
     var modelSet = new HashSet<Model>(ReferenceEqualityComparer.Instance);
     var builtCars = new HashSet<int>();
+    var variantBuiltCars = new HashSet<int>();
+    var fallbackBuiltCars = new HashSet<int>();
     var missingMaterialBatchCount = 0;
     var clonedVertexCount = 0ul;
     var clonedIndexCount = 0ul;
@@ -98,7 +209,7 @@ internal static class RideCarStaticSceneBuilder {
 
     try {
       foreach (var item in plan.Batches) {
-        var createdMaterial = createMaterial(item.Entry, item.Batch);
+        var createdMaterial = createMaterial(item);
         if (createdMaterial == null) {
           missingMaterialBatchCount++;
           continue;
@@ -150,27 +261,48 @@ internal static class RideCarStaticSceneBuilder {
           throw Invalid(
             $"car {item.Entry.RegistryIndex} batch {item.BatchIndex} model changed exact " +
             "resource or transform identity");
+        var binding = new RideCarStaticSceneModelBinding(
+          createdModel,
+          item.Entry,
+          item.Entry.RegistryIndex,
+          item.BatchIndex,
+          item.Source,
+          item.VariantEntry);
         models.Add(createdModel);
+        pendingModel = null;
+        bindings.Add(binding);
         builtCars.Add(item.Entry.RegistryIndex);
+        if (item.Source == RideCarStaticSceneModelSource.SelectedVariant)
+          variantBuiltCars.Add(item.Entry.RegistryIndex);
+        else
+          fallbackBuiltCars.Add(item.Entry.RegistryIndex);
         clonedVertexCount += Convert.ToUInt64(createdMesh.Vertices.Count);
         clonedIndexCount += Convert.ToUInt64(createdMesh.Indices.Count);
-        pendingModel = null;
       }
 
+      ValidateBindings(plan, models, bindings);
+      if (summary.BuildMode == RideCarStaticSceneBuildMode.SelectedVariants &&
+          builtCars.Count != variantBuiltCars.Count)
+        throw Invalid("variant built-car count does not cover the rendered cars");
       return new(
         Array.AsReadOnly(models.ToArray()),
-        instances.CarCount,
+        Array.AsReadOnly(bindings.ToArray()),
+        summary.SourceCarCount,
         builtCars.Count,
-        instances.CarCount - builtCars.Count,
+        summary.SourceCarCount - builtCars.Count,
         models.Count,
         missingMaterialBatchCount,
         clonedVertexCount,
         clonedIndexCount,
-        instances.UnresolvedCarResourceCount,
-        instances.UnresolvedSavedCursorCount,
-        instances.MissingBodyTemplateCount,
-        instances.UnavailableModelGeometryCount,
-        instances.UnavailableStaticPoseCount);
+        summary.UnresolvedCarResourceCount,
+        summary.UnresolvedSavedCursorCount,
+        summary.MissingBodyTemplateCount,
+        summary.UnavailableModelGeometryCount,
+        summary.UnavailableStaticPoseCount,
+        summary.BuildMode,
+        variantBuiltCars.Count,
+        fallbackBuiltCars.Count,
+        summary.UnavailableVisualSelectionCount);
     } catch (Exception primaryError) {
       var cleanupErrors = ReleasePending(
         ref pendingModel,
@@ -265,8 +397,101 @@ internal static class RideCarStaticSceneBuilder {
       unavailableStaticPoseCount);
     return new(
       Array.AsReadOnly(batches.ToArray()),
-      templateMeshes);
+      templateMeshes,
+      Array.AsReadOnly(
+        instances.Entries.Cast<RideCarStaticInstanceEntry?>().ToArray()));
   }
+
+  private static BuildPlan PreflightVariants(
+    RideCarVariantStaticInstanceRegistry variants,
+    RideCarStaticSceneBuilderLimits limits
+  ) {
+    if (variants.Entries == null || variants.CarCount != variants.Entries.Count)
+      throw Invalid("variant car count changed from its immutable entry list");
+    if (variants.CarCount > limits.MaximumCarCount)
+      throw Limit("car", Convert.ToUInt64(limits.MaximumCarCount));
+
+    var batches = new List<PlannedBatch>();
+    var templateMeshes = new HashSet<Mesh>(ReferenceEqualityComparer.Instance);
+    var bindingEntries = new RideCarStaticInstanceEntry?[variants.CarCount];
+    var vertexCount = 0ul;
+    var indexCount = 0ul;
+    foreach (var index in Enumerable.Range(0, variants.CarCount)) {
+      var variant = variants.Entries[index]
+        ?? throw Invalid($"variant instance list contains null at index {index}");
+      ValidateVariantEntry(variant, index);
+      if (!variant.IsResolved) continue;
+
+      var entry = SnapshotVariantEntry(variant);
+      bindingEntries[index] = entry;
+      foreach (var batchIndex in Enumerable.Range(0, entry.MaterialBatches!.Count)) {
+        var batch = entry.MaterialBatches[batchIndex]
+          ?? throw Invalid($"resolved variant car {index} batch {batchIndex} is null");
+        ValidateTemplateBatch(entry, batch, batchIndex);
+        templateMeshes.Add(batch.Mesh);
+        Reserve(ref vertexCount, Convert.ToUInt64(batch.Mesh.Vertices.Count),
+          limits.MaximumVertices, "vertex");
+        Reserve(ref indexCount, Convert.ToUInt64(batch.Mesh.Indices.Count),
+          limits.MaximumIndices, "index");
+        if (Convert.ToUInt64(batches.Count) >= limits.MaximumModels)
+          throw Limit("model", limits.MaximumModels);
+        batches.Add(new(
+          entry,
+          batchIndex,
+          batch,
+          entry.Pose!.Transform,
+          RideCarStaticSceneModelSource.SelectedVariant,
+          variant));
+      }
+    }
+    return new(
+      Array.AsReadOnly(batches.ToArray()),
+      templateMeshes,
+      Array.AsReadOnly(bindingEntries));
+  }
+
+  private static void ValidateVariantEntry(
+    RideCarVariantStaticInstanceEntry entry,
+    int index
+  ) {
+    if (entry.RegistryIndex != index || (entry.Issues & ~KnownVariantIssues) != 0)
+      throw Invalid($"variant car {index} changed order or contains unknown issue flags");
+    if (entry.CarRuntime == null || entry.SavedCursor == null ||
+        entry.VisualSelection == null || entry.VisualTemplate == null ||
+        entry.VisualSelection.RegistryIndex != index ||
+        entry.VisualTemplate.RegistryIndex != index ||
+        !ReferenceEquals(entry.VisualSelection.CarRuntime, entry.CarRuntime) ||
+        !ReferenceEquals(entry.VisualTemplate.Selection, entry.VisualSelection) ||
+        !ReferenceEquals(entry.SavedCursor.CarRuntime, entry.CarRuntime))
+      throw Invalid($"variant car {index} changed exact runtime, selector, or template identity");
+    if (!entry.IsResolved) {
+      if (entry.Pose != null)
+        throw Invalid($"skipped variant car {index} unexpectedly retains a static pose");
+      return;
+    }
+    if (!entry.VisualSelection.IsSelected || !entry.VisualTemplate.IsResolved ||
+        entry.SelectedVariant == null || entry.VisualSelection.Body == null ||
+        entry.BodyTemplate == null || entry.Geometry == null || entry.Pose == null ||
+        entry.MaterialBatches == null || entry.MaterialBatches.Count == 0 ||
+        !ReferenceEquals(entry.VisualTemplate.Template, entry.BodyTemplate) ||
+        !ReferenceEquals(entry.BodyTemplate.Link, entry.VisualSelection.Body) ||
+        !ReferenceEquals(entry.MaterialBatches, entry.BodyTemplate.Batches) ||
+        !IsFinite(entry.Pose.Transform))
+      throw Invalid($"resolved variant car {index} changed exact selected render evidence");
+  }
+
+  private static RideCarStaticInstanceEntry SnapshotVariantEntry(
+    RideCarVariantStaticInstanceEntry variant
+  ) => new(
+    variant.RegistryIndex,
+    variant.CarRuntime,
+    variant.SavedCursor,
+    RideCarStaticInstanceIssue.None,
+    variant.BodyTemplate,
+    variant.Geometry,
+    variant.Pose,
+    variant.GeometryUnavailableDetail,
+    variant.StaticPoseUnavailableDetail);
 
   private static void ValidateTemplateBatch(
     RideCarStaticInstanceEntry entry,
@@ -345,6 +570,43 @@ internal static class RideCarStaticSceneBuilder {
         instances.UnavailableModelGeometryCount != unavailableModelGeometryCount ||
         instances.UnavailableStaticPoseCount != unavailableStaticPoseCount)
       throw Invalid("typed skipped-car counts changed from their entry outcomes");
+  }
+
+  private static void ValidateBindings(
+    BuildPlan plan,
+    IReadOnlyList<Model> models,
+    IReadOnlyList<RideCarStaticSceneModelBinding> bindings
+  ) {
+    if (bindings.Count != models.Count)
+      throw Invalid("model and exact source-binding counts differ");
+
+    foreach (var index in Enumerable.Range(0, models.Count)) {
+      var binding = bindings[index]
+        ?? throw Invalid($"model binding {index} is null");
+      if (!ReferenceEquals(binding.Model, models[index]))
+        throw Invalid($"model binding {index} changed exact model identity");
+      if (binding.RegistryIndex < 0 || binding.RegistryIndex >= plan.BindingEntries.Count)
+        throw Invalid($"model binding {index} has an out-of-range registry index");
+      if (!ReferenceEquals(binding.Entry, plan.BindingEntries[binding.RegistryIndex]) ||
+          binding.Entry.RegistryIndex != binding.RegistryIndex)
+        throw Invalid($"model binding {index} changed exact saved-car identity");
+      if (binding.Source == RideCarStaticSceneModelSource.SelectedVariant) {
+        if (binding.VariantEntry == null || !binding.VariantEntry.IsResolved ||
+            !ReferenceEquals(binding.Entry.CarRuntime, binding.VariantEntry.CarRuntime) ||
+            !ReferenceEquals(binding.Entry.BodyTemplate, binding.VariantEntry.BodyTemplate) ||
+            !ReferenceEquals(binding.Entry.Pose, binding.VariantEntry.Pose))
+          throw Invalid($"model binding {index} changed exact selected-variant identity");
+      } else if (binding.VariantEntry != null) {
+        throw Invalid($"base model binding {index} unexpectedly retains variant evidence");
+      }
+      if (!binding.Entry.IsResolved || binding.Entry.MaterialBatches == null)
+        throw Invalid($"model binding {index} references an unresolved saved car");
+      if (binding.MaterialBatchIndex < 0 ||
+          binding.MaterialBatchIndex >= binding.Entry.MaterialBatches.Count)
+        throw Invalid($"model binding {index} has an out-of-range material-batch index");
+      if (binding.Model.Material == null || binding.Model.Mesh == null)
+        throw Invalid($"model binding {index} references an incomplete model");
+    }
   }
 
   private static void ValidateOperations(RideCarStaticSceneBuilderOperations operations) {
@@ -453,12 +715,27 @@ internal static class RideCarStaticSceneBuilder {
     RideCarStaticInstanceEntry Entry,
     int BatchIndex,
     StaticShapeMeshBatch Batch,
-    Matrix4x4 Transform
+    Matrix4x4 Transform,
+    RideCarStaticSceneModelSource Source =
+      RideCarStaticSceneModelSource.BaseWithoutVariantSelection,
+    RideCarVariantStaticInstanceEntry? VariantEntry = null
   );
 
   private sealed record BuildPlan(
     IReadOnlyList<PlannedBatch> Batches,
-    IReadOnlySet<Mesh> TemplateMeshes
+    IReadOnlySet<Mesh> TemplateMeshes,
+    IReadOnlyList<RideCarStaticInstanceEntry?> BindingEntries
+  );
+
+  private sealed record SceneSummary(
+    RideCarStaticSceneBuildMode BuildMode,
+    int SourceCarCount,
+    int UnresolvedCarResourceCount,
+    int UnresolvedSavedCursorCount,
+    int MissingBodyTemplateCount,
+    int UnavailableModelGeometryCount,
+    int UnavailableStaticPoseCount,
+    int UnavailableVisualSelectionCount
   );
 }
 

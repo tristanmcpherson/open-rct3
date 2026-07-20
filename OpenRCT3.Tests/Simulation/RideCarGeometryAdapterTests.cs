@@ -14,6 +14,65 @@ namespace OpenRCT3.Tests.Simulation;
 [TestFixture]
 public class RideCarGeometryAdapterTests {
   [Test]
+  public void RideCarLongitudinalGeometry_PreservesOriginalPositionalContract() {
+    var geometry = new RideCarLongitudinalGeometry(
+      CarFrontPosition: new Vector3(2f, 0f, 0f),
+      CarRearPosition: Vector3.Zero,
+      FrontWheelCenterPosition: new Vector3(1.5f, 0f, 0f),
+      RearWheelCenterPosition: new Vector3(0.5f, 0f, 0f),
+      LongitudinalAxis: Vector3.UnitX,
+      CarLength: 2f,
+      FrontWheelCenterLongitudinalPosition: 1.5f,
+      RearWheelCenterLongitudinalPosition: 0.5f,
+      Wheelbase: 1f,
+      FrontWheelSpan: 2f,
+      RearWheelSpan: 1.5f);
+
+    var (_, _, _, _, _, _, _, _, wheelbase, frontSpan, rearSpan) = geometry;
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(wheelbase, Is.EqualTo(1f));
+      Assert.That(frontSpan, Is.EqualTo(2f));
+      Assert.That(rearSpan, Is.EqualTo(1.5f));
+      Assert.That(geometry.FrontWheelCenterOffsetFromCarFront, Is.EqualTo(-0.5f));
+      Assert.That(geometry.FrontWheelCenterOffsetFromCarRear, Is.EqualTo(1.5f));
+      Assert.That(geometry.RearWheelCenterOffsetFromFrontWheelCenter, Is.EqualTo(-1f));
+    }
+  }
+
+  [Test]
+  public void RideCarLongitudinalGeometry_WithCopyRecomputesSignedOffsets() {
+    var geometry = new RideCarLongitudinalGeometry(
+      new Vector3(2f, 0f, 0f),
+      Vector3.Zero,
+      new Vector3(1.5f, 0f, 0f),
+      new Vector3(0.5f, 0f, 0f),
+      Vector3.UnitX,
+      2f,
+      1.5f,
+      0.5f,
+      1f,
+      2f,
+      1.5f);
+
+    var updated = geometry with {
+      CarFrontPosition = new Vector3(4f, 0f, 0f),
+      FrontWheelCenterPosition = new Vector3(3f, 0f, 0f),
+      RearWheelCenterPosition = new Vector3(1f, 0f, 0f),
+      CarLength = 4f,
+      FrontWheelCenterLongitudinalPosition = 3f,
+      RearWheelCenterLongitudinalPosition = 1f,
+      Wheelbase = 2f,
+    };
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(updated.FrontWheelCenterOffsetFromCarFront, Is.EqualTo(-1f));
+      Assert.That(updated.FrontWheelCenterOffsetFromCarRear, Is.EqualTo(3f));
+      Assert.That(updated.RearWheelCenterOffsetFromFrontWheelCenter, Is.EqualTo(-2f));
+    }
+  }
+
+  [Test]
   public void CreateLongitudinalGeometry_UsesNativeLookupAndPairedWheelMidpoints() {
     var shape = Shape(
       Bone("carfront", new Vector3(6f, 8f, 0f)),
@@ -38,6 +97,15 @@ public class RideCarGeometryAdapterTests {
       Assert.That(
         geometry.RearWheelCenterLongitudinalPosition,
         Is.EqualTo(6f).Within(0.0001f));
+      Assert.That(
+        geometry.FrontWheelCenterOffsetFromCarFront,
+        Is.EqualTo(-1f).Within(0.0001f));
+      Assert.That(
+        geometry.FrontWheelCenterOffsetFromCarRear,
+        Is.EqualTo(4f).Within(0.0001f));
+      Assert.That(
+        geometry.RearWheelCenterOffsetFromFrontWheelCenter,
+        Is.EqualTo(-3f).Within(0.0001f));
       Assert.That(geometry.Wheelbase, Is.EqualTo(3f).Within(0.0001f));
       Assert.That(geometry.FrontWheelSpan, Is.EqualTo(2f).Within(0.0001f));
       Assert.That(geometry.RearWheelSpan, Is.EqualTo(1.5f).Within(0.0001f));
@@ -60,6 +128,9 @@ public class RideCarGeometryAdapterTests {
     using (Assert.EnterMultipleScope()) {
       AssertVector(geometry.FrontWheelCenterPosition, new Vector3(1.5f, 0f, 0f));
       AssertVector(geometry.RearWheelCenterPosition, new Vector3(0.5f, 0f, 0f));
+      Assert.That(geometry.FrontWheelCenterOffsetFromCarFront, Is.EqualTo(-0.5f));
+      Assert.That(geometry.FrontWheelCenterOffsetFromCarRear, Is.EqualTo(1.5f));
+      Assert.That(geometry.RearWheelCenterOffsetFromFrontWheelCenter, Is.EqualTo(-1f));
       Assert.That(geometry.Wheelbase, Is.EqualTo(1f));
     }
   }

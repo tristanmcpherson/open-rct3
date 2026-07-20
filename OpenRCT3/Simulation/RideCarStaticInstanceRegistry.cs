@@ -115,7 +115,10 @@ internal sealed class RideCarStaticInstanceRegistry {
 
     ValidateCount(carRuntime.Entries.Count, limits.MaximumCarCount, "car");
     ValidateCount(savedCursors.Entries.Count, limits.MaximumCarCount, "saved cursor");
-    ValidateCount(visualTemplates.Templates.Count, limits.MaximumTemplateCount, "template");
+    ValidateCount(
+      visualTemplates.BodyTemplates.Count,
+      limits.MaximumTemplateCount,
+      "template");
     ValidateRegistryCounts(carRuntime, savedCursors, visualTemplates);
 
     var templatesByCar = IndexTemplates(visualTemplates, limits);
@@ -210,7 +213,7 @@ internal sealed class RideCarStaticInstanceRegistry {
     var result = new Dictionary<RideCarLink, RideCarVisualMeshTemplate>(
       ReferenceEqualityComparer.Instance);
     var batchReferences = 0ul;
-    foreach (var template in registry.Templates) {
+    foreach (var template in registry.BodyTemplates) {
       ValidateTemplate(template);
       if (!result.TryAdd(template.Link.Car, template))
         throw Invalid(
@@ -397,9 +400,9 @@ internal sealed class RideCarStaticInstanceRegistry {
         cursors.ResolvedContactCount != cursors.Entries.Sum(entry =>
           Convert.ToInt32(entry.Front.IsResolved) + Convert.ToInt32(entry.Rear.IsResolved)))
       throw Invalid("saved wheel-cursor counts or car conservation have drifted");
-    if (templates.BodyVisualOccurrenceCount < templates.Templates.Count ||
+    if (templates.BodyVisualOccurrenceCount < templates.BodyTemplates.Count ||
         templates.UnresolvedBodyVisualCount !=
-          templates.BodyVisualOccurrenceCount - templates.Templates.Count)
+          templates.BodyVisualOccurrenceCount - templates.BodyTemplates.Count)
       throw Invalid("visual-template body occurrence counts have drifted");
   }
 

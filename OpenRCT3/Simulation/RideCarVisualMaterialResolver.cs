@@ -95,6 +95,36 @@ internal sealed class RideCarVisualMaterialResolver : IDisposable {
     StaticShapeMeshBatch batch
   ) => Resolve(car, batch).Material;
 
+  /// <summary>Resolves one axle or wheel material from its exact saved car and RIC closure.</summary>
+  internal RideCarVisualMaterialResolution Resolve(
+    RideCarVisualHierarchyStaticPartInstance part,
+    StaticShapeMeshBatch batch
+  ) {
+    ArgumentNullException.ThrowIfNull(part);
+    ArgumentNullException.ThrowIfNull(batch);
+    var car = part.SavedCar;
+    var source = part.Visual.Car.Source;
+    if (!car.IsResolved || source == null ||
+        !ReferenceEquals(car.CarRuntime.CarResource, part.Visual.Car) ||
+        !ReferenceEquals(part.Template.Link, part.Visual) ||
+        !ReferenceEquals(part.MaterialBatches, part.Template.Batches) ||
+        !ContainsReference(part.MaterialBatches, batch))
+      throw Invalid("hierarchy part changed exact saved-car, template, or batch identity");
+
+    var track = car.CarRuntime.TrainRuntime.TrackRuntime.Track
+      ?? throw Invalid("hierarchy part has no owning ride track");
+    var colours = SceneryFlexiColours.FromSerialized(
+      track.FlexiColour0,
+      track.FlexiColour1,
+      track.FlexiColour2);
+    return Resolve(batch, source.AllowedArchivePaths, colours);
+  }
+
+  internal Material? ResolveMaterial(
+    RideCarVisualHierarchyStaticPartInstance part,
+    StaticShapeMeshBatch batch
+  ) => Resolve(part, batch).Material;
+
   internal RideCarVisualMaterialResolution Resolve(
     StaticShapeMeshBatch batch,
     IReadOnlyList<string> allowedArchivePaths,

@@ -14,7 +14,8 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
 
     var registry = RideInstanceTrainConsistRuntimeRegistry.Build(
       fixture.TrainRuntime,
-      fixture.Resources);
+      fixture.Resources,
+      fixture.SavedCars);
 
     Assert.That(registry.Entries, Has.Count.EqualTo(1));
     var entry = registry.Entries[0];
@@ -49,12 +50,55 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
   }
 
   [Test]
+  public void Build_SavedSingleFrontCarOverridesResourceDerivedPaletteLayout() {
+    var fixture = Create(
+      savedCarRoles: [RideTrainCarRole.Front],
+      savedConfiguredCarCount: 1);
+
+    var entry = RideInstanceTrainConsistRuntimeRegistry.Build(
+      fixture.TrainRuntime,
+      fixture.Resources,
+      fixture.SavedCars).Entries.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(entry.Status, Is.EqualTo(RideInstanceTrainConsistRuntimeStatus.Resolved));
+      Assert.That(entry.Roles!.EffectiveCarCount, Is.EqualTo(1));
+      Assert.That(entry.Cars, Has.Count.EqualTo(1));
+      Assert.That(entry.Cars.Single().Role.Role, Is.EqualTo(RideTrainCarRole.Front));
+      Assert.That(entry.Cars.Single().CarResource,
+        Is.SameAs(fixture.Cars[RideTrainCarRole.Front]));
+    }
+  }
+
+  [Test]
+  public void Build_SavedCarsRejectUndeclaredRoleAndDuplicateIdentity() {
+    var undeclared = Create(
+      savedCarRoles: [RideTrainCarRole.Second],
+      savedConfiguredCarCount: 1);
+    var valid = Create(
+      savedCarRoles: [RideTrainCarRole.Front],
+      savedConfiguredCarCount: 1);
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      RideInstanceTrainConsistRuntimeRegistry.Build(
+        undeclared.TrainRuntime,
+        undeclared.Resources,
+        undeclared.SavedCars)));
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      RideInstanceTrainConsistRuntimeRegistry.Build(
+        valid.TrainRuntime,
+        valid.Resources,
+        [valid.SavedCars[0], valid.SavedCars[0]])));
+  }
+
+  [Test]
   public void Build_UnresolvedSavedRitRemainsExplicit() {
     var fixture = Create(resolveSavedTrain: false);
 
     var entry = RideInstanceTrainConsistRuntimeRegistry.Build(
       fixture.TrainRuntime,
-      fixture.Resources).Entries.Single();
+      fixture.Resources,
+      fixture.SavedCars).Entries.Single();
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(
@@ -64,6 +108,22 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
       Assert.That(entry.Roles, Is.Null);
       Assert.That(entry.Cars, Is.Empty);
     }
+  }
+
+  [Test]
+  public void Build_UnresolvedSavedRitStillRejectsMissingSavedCar() {
+    var fixture = Create(
+      resolveSavedTrain: false,
+      savedCarRoles: [RideTrainCarRole.Front],
+      savedConfiguredCarCount: 1);
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideInstanceTrainConsistRuntimeRegistry.Build(
+        fixture.TrainRuntime,
+        fixture.Resources,
+        [])));
+
+    Assert.That(error!.Message, Does.Contain("references missing car 2000"));
   }
 
   [Test]
@@ -156,7 +216,9 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
     bool cloneGraphTrain = false,
     bool duplicateGraphTrain = false,
     bool cloneGraphTrainClosure = false,
-    bool differentGraphTrainClosure = false
+    bool differentGraphTrainClosure = false,
+    RideTrainCarRole[]? savedCarRoles = null,
+    int savedConfiguredCarCount = 4
   ) {
     var archiveClosure = new[] {
       "ride.unique.ovl",
@@ -172,8 +234,30 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
     var rideFile = new OvlFile(ride.Name, FileType.TrackedRide, archiveClosure[0]);
     var train = Train("StreamlinedMono");
     var trainFile = new OvlFile(train.Name, FileType.RideTrain, archiveClosure[1]);
-    var savedRide = Instance(900, 700, [1_000]);
-    var savedTrain = TrainInstance(1_000, savedRide);
+    savedCarRoles ??= [
+      RideTrainCarRole.Front,
+      RideTrainCarRole.Link,
+      RideTrainCarRole.Middle,
+      RideTrainCarRole.Link,
+      RideTrainCarRole.Middle,
+      RideTrainCarRole.Link,
+      RideTrainCarRole.Rear,
+    ];
+    var savedCarIds = Enumerable.Range(0, savedCarRoles.Length)
+      .Select(index => Convert.ToUInt64(2_000 + index))
+      .ToArray();
+    var savedRide = Instance(900, 700, [1_000], savedConfiguredCarCount);
+    var savedTrain = TrainInstance(1_000, savedRide, savedCarIds);
+    var savedCars = savedCarRoles.Select((role, index) => new DatRideCarInstanceData(
+      savedCarIds[index],
+      savedTrain.EntryId,
+      index,
+      Convert.ToInt32(role),
+      trackPiece: 0,
+      rearTrackPiece: 0,
+      distance: 0f,
+      reversed: false,
+      speed: 0f)).ToArray();
     var instanceLink = new RideInstanceResourceLink(
       savedRide,
       new RideInstanceResourceSource("BoxOffice", rideFile, ride));
@@ -236,7 +320,8 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
       rideGraph,
       trainGraph,
       cars,
-      archiveClosure);
+      archiveClosure,
+      savedCars);
 
     void AddCar(RideTrainCarRole role, string name, int peepCount) {
       var reference = $"{name}:ric";
@@ -313,7 +398,8 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
   private static DatTrackedRideInstanceData Instance(
     ulong entryId,
     ulong trackId,
-    ulong[] trains
+    ulong[] trains,
+    int nCarsPerTrain
   ) => new(
     entryId,
     "Box Office Monorail",
@@ -321,13 +407,14 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
     "BoxOffice",
     "BoxOfficeRide:trr",
     nTrains: trains.Length,
-    nCarsPerTrain: 4,
+    nCarsPerTrain,
     trainSelection: 0,
     trains);
 
   private static DatRideTrainInstanceData TrainInstance(
     ulong entryId,
-    DatTrackedRideInstanceData owner
+    DatTrackedRideInstanceData owner,
+    ulong[] cars
   ) => new(
     entryId,
     "BoxOffice",
@@ -336,7 +423,7 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
     whichTrain: 0,
     length: 12.5f,
     mass: 1_000f,
-    cars: []);
+    cars: cars);
 
   private static RideTrack Track(ulong entryId, ulong instanceReference) => new(
     entryId,
@@ -482,5 +569,6 @@ public class RideInstanceTrainConsistRuntimeRegistryTests {
     TrackedRideResourceLink RideGraph,
     RideTrainLink TrainGraph,
     IReadOnlyDictionary<RideTrainCarRole, RideCarLink> Cars,
-    IReadOnlyList<string> ArchiveClosure);
+    IReadOnlyList<string> ArchiveClosure,
+    IReadOnlyList<DatRideCarInstanceData> SavedCars);
 }

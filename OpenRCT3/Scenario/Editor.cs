@@ -47,6 +47,10 @@ public class Editor : IWindow {
       // TODO: Open objectives dialog
     }
 
+    ImGui.Separator();
+    ImGui.TextDisabled("Camera controls");
+    ImGui.TextWrapped("WASD or arrows: pan\nQ/E or right-drag: orbit\nMouse wheel: zoom");
+
     ImGui.End();
     if (open != Open) Open = open;
   }

@@ -70,6 +70,23 @@ public class RideTrackGunslingerInstalledPipelineTests {
         [targetRide],
         targetTrains);
       var resources = loaded.Catalog.ResolveAll(park.RideTrackPlacements);
+      var trackVisuals = RideTrackVisualResourceBridge.Resolve(
+        loaded.TrackVisualResources);
+      var chainVisuals = trackVisuals.Visuals.Where(visual =>
+        visual.Section.Source.Resource.Name.Equals(
+          "Medslope2steepslopechain",
+          StringComparison.OrdinalIgnoreCase)).ToArray();
+      var expectedTrackDirectory = Path.Combine(
+        installRoot!,
+        "Tracks",
+        "Coasters",
+        "Track21");
+      var expectedTrackUniquePath = Path.Combine(
+        expectedTrackDirectory,
+        "Track21.unique.ovl");
+      var expectedVisualUniquePath = Path.Combine(
+        expectedTrackDirectory,
+        "Medslope2steepslopechain_data.unique.ovl");
       var operatingTrain = targetTrains.Single(train =>
         train.HasSavedOperationalState &&
         train.State == 13 &&
@@ -87,8 +104,30 @@ public class RideTrackGunslingerInstalledPipelineTests {
       TestContext.Progress.WriteLine(
         $"Gunslinger WoodenWildMine: placements={resources.Placements.Count}, " +
         $"archives={loaded.Context.LoadedCommonPaths.Count}, " +
+        $"trackVisuals={trackVisuals.Visuals.Count}, " +
+        $"trackStaticLods={trackVisuals.StaticLodCount}, " +
+        $"trackBoneLods={trackVisuals.BoneLodCount}, " +
+        $"trackMeshes={trackVisuals.MeshCount}, " +
+        $"chainVisuals={chainVisuals.Length}, " +
+        $"chainLods={chainVisuals.Sum(visual => visual.Lods.Count)}, " +
+        $"chainMeshes={chainVisuals.Sum(visual => visual.Lods.Sum(lod => lod.Materials.Count))}, " +
         $"train={operatingTrain.EntryId}, " +
         $"state={operatingTrain.State}, speed={operatingTrain.Speed:R}");
+      foreach (var visual in chainVisuals) {
+        TestContext.Progress.WriteLine(
+          $"Chain visual: tks={visual.Section.Source.File.Path}|" +
+          $"{visual.Section.Source.Resource.Name}, sid={visual.Scenery.Source?.File.Path}|" +
+          $"{visual.Scenery.Source?.Resource.Name}, svd={visual.VisualSource.File.Path}|" +
+          $"{visual.VisualSource.Resource.Name}");
+        foreach (var lod in visual.Lods)
+          TestContext.Progress.WriteLine(
+            $"Chain LOD: name={lod.Lod.Name}, type={lod.Lod.Type}, " +
+            $"shape={lod.StaticShapeSource?.File.Path}|{lod.StaticShape?.Name}, " +
+            $"meshes={lod.Materials.Count}, materials=[" +
+            string.Join(",", lod.Materials.Select(material =>
+              $"{material.MeshName}:{material.FlexibleTextureReference}:" +
+              $"{material.TextureStyleReference}")) + "]");
+      }
       using (Assert.EnterMultipleScope()) {
         Assert.That(configuredEmptyRide.NTrains, Is.EqualTo(1));
         Assert.That(configuredEmptyRide.Trains, Is.Empty);
@@ -97,6 +136,57 @@ public class RideTrackGunslingerInstalledPipelineTests {
           Has.Count.EqualTo(data.TrackedRideInstances.Sum(ride => ride.Trains.Count)));
         Assert.That(loaded.IsComplete, Is.True);
         Assert.That(resources.UnresolvedPlacementCount, Is.Zero);
+        Assert.That(loaded.Context.LoadedCommonPaths, Has.Count.EqualTo(39));
+        Assert.That(trackVisuals.Visuals, Has.Count.EqualTo(22));
+        Assert.That(trackVisuals.StaticLodCount, Is.EqualTo(66));
+        Assert.That(trackVisuals.BoneLodCount, Is.Zero);
+        Assert.That(trackVisuals.MeshCount, Is.EqualTo(122));
+        Assert.That(chainVisuals, Has.Length.EqualTo(1));
+        var chainVisual = chainVisuals.Single();
+        Assert.That(chainVisual.Section.Source.File.Path,
+          Is.EqualTo(expectedTrackUniquePath).IgnoreCase);
+        Assert.That(chainVisual.Section.Source.Resource.Name,
+          Is.EqualTo("Medslope2steepslopechain").IgnoreCase);
+        Assert.That(chainVisual.Scenery.Reference,
+          Is.EqualTo("Medslope2steepslopechain:sid").IgnoreCase);
+        Assert.That(chainVisual.Scenery.Source!.File.Path,
+          Is.EqualTo(expectedTrackUniquePath).IgnoreCase);
+        Assert.That(chainVisual.Scenery.Source.Resource.Name,
+          Is.EqualTo("Medslope2steepslopechain").IgnoreCase);
+        Assert.That(chainVisual.Scenery.Source.Resource.VisualRefs,
+          Is.EqualTo(new[] { "Medslope2steepslopechain:svd" }).IgnoreCase);
+        Assert.That(chainVisual.VisualSource.File.Path,
+          Is.EqualTo(expectedVisualUniquePath).IgnoreCase);
+        Assert.That(chainVisual.VisualSource.Resource.Name,
+          Is.EqualTo("Medslope2steepslopechain").IgnoreCase);
+        Assert.That(chainVisual.Lods, Has.Count.EqualTo(3));
+        Assert.That(chainVisual.Lods.Select(lod => lod.Lod.Name), Is.EqualTo(new[] {
+          "Medslope2steepslopechain_HI",
+          "Medslope2steepslopechain_ME",
+          "Medslope2steepslopechain_LO",
+        }).IgnoreCase);
+        Assert.That(chainVisual.Lods.Select(lod => lod.Lod.Type),
+          Is.All.EqualTo(SvdLodType.StaticShape));
+        Assert.That(chainVisual.Lods.Select(lod => lod.StaticShapeSource!.File.Path),
+          Is.All.EqualTo(expectedVisualUniquePath).IgnoreCase);
+        Assert.That(chainVisual.Lods.Select(lod => lod.StaticShape!.Name),
+          Is.EqualTo(chainVisual.Lods.Select(lod => lod.Lod.Name)).IgnoreCase);
+        Assert.That(chainVisual.Lods.Select(lod => lod.Materials.Count),
+          Is.EqualTo(new[] { 3, 3, 1 }));
+        Assert.That(chainVisual.Lods.Sum(lod => lod.Materials.Count),
+          Is.EqualTo(7));
+        Assert.That(chainVisual.Lods.SelectMany(lod => lod.Materials).Select(material =>
+          material.FlexibleTextureReference), Is.EqualTo(new[] {
+            "woodwild1:ftx", "chain:ftx", "ts2:ftx",
+            "woodwild1:ftx", "chain:ftx", "ts2:ftx",
+            "coaster_LO_textures05:ftx",
+          }).IgnoreCase);
+        Assert.That(chainVisual.Lods.SelectMany(lod => lod.Materials).Select(material =>
+          material.TextureStyleReference), Is.EqualTo(new[] {
+            "SIOpaqueSpecular50:txs", "SIOpaque:txs", "SIOpaque:txs",
+            "SIOpaqueSpecular50:txs", "SIOpaque:txs", "SIOpaque:txs",
+            "SIAlphaMaskLow:txs",
+          }).IgnoreCase);
         Assert.That(chainResource, Is.Not.Null);
         Assert.That(chainResource?.File.Name,
           Is.EqualTo("Medslope2steepslopechain").IgnoreCase);

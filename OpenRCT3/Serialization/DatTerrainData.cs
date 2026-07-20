@@ -33,6 +33,11 @@ internal sealed class DatTerrainData {
   public IReadOnlyList<DatTrackedRideInstanceData> TrackedRideInstances { get; }
   public IReadOnlyList<DatRideTrainInstanceData> RideTrainInstances { get; }
   public IReadOnlyList<DatRideCarInstanceData> RideCarInstances { get; }
+  public IReadOnlyList<DatWildAnimalSpeciesDatabaseEntryData>
+    WildAnimalSpeciesDatabaseEntries { get; }
+  public IReadOnlyList<DatWildAnimalVisualData> WildAnimalVisuals { get; }
+  public IReadOnlyList<DatWildAnimalData> WildAnimals { get; }
+  public IReadOnlyList<DatWildAnimalPlacementData> WildAnimalPlacements { get; }
 
   public DatTerrainData(
     int width,
@@ -51,7 +56,11 @@ internal sealed class DatTerrainData {
     DatPathSurfaceEntryData[]? pathSurfaceEntries = null,
     DatTrackedRideInstanceData[]? trackedRideInstances = null,
     DatRideTrainInstanceData[]? rideTrainInstances = null,
-    DatRideCarInstanceData[]? rideCarInstances = null) {
+    DatRideCarInstanceData[]? rideCarInstances = null,
+    DatWildAnimalSpeciesDatabaseEntryData[]? wildAnimalSpeciesDatabaseEntries = null,
+    DatWildAnimalVisualData[]? wildAnimalVisuals = null,
+    DatWildAnimalData[]? wildAnimals = null,
+    DatWildAnimalPlacementData[]? wildAnimalPlacements = null) {
     if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
     if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
     ArgumentNullException.ThrowIfNull(cells);
@@ -132,5 +141,20 @@ internal sealed class DatTerrainData {
     var rawRideCarInstances = (DatRideCarInstanceData[])(
       rideCarInstances?.Clone() ?? Array.Empty<DatRideCarInstanceData>());
     RideCarInstances = Array.AsReadOnly(rawRideCarInstances);
+    var rawWildAnimalSpeciesDatabaseEntries =
+      (DatWildAnimalSpeciesDatabaseEntryData[])(
+        wildAnimalSpeciesDatabaseEntries?.Clone() ??
+        Array.Empty<DatWildAnimalSpeciesDatabaseEntryData>());
+    WildAnimalSpeciesDatabaseEntries = Array.AsReadOnly(
+      rawWildAnimalSpeciesDatabaseEntries);
+    var rawWildAnimalVisuals = (DatWildAnimalVisualData[])(
+      wildAnimalVisuals?.Clone() ?? Array.Empty<DatWildAnimalVisualData>());
+    WildAnimalVisuals = Array.AsReadOnly(rawWildAnimalVisuals);
+    var rawWildAnimals = (DatWildAnimalData[])(
+      wildAnimals?.Clone() ?? Array.Empty<DatWildAnimalData>());
+    WildAnimals = Array.AsReadOnly(rawWildAnimals);
+    var rawWildAnimalPlacements = (DatWildAnimalPlacementData[])(
+      wildAnimalPlacements?.Clone() ?? Array.Empty<DatWildAnimalPlacementData>());
+    WildAnimalPlacements = Array.AsReadOnly(rawWildAnimalPlacements);
   }
 }

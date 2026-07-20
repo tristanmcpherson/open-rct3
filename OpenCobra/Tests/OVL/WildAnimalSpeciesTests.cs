@@ -27,6 +27,26 @@ public class WildAnimalSpeciesTests {
   }
 
   [Test]
+  public void Decode_ReadsExactCompactPackageAndFourVariantReferences() {
+    var fixture = new WildAnimalSpeciesFixture(WildAnimalSpeciesFixtureLayout.Compact);
+
+    var species = fixture.Decode();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(species.Name, Is.EqualTo("ostrich"));
+      Assert.That(
+        species.PackagePath,
+        Is.EqualTo(@"WildAnimals\Ostrich\Ostrich_data"));
+      Assert.That(species.Variants, Is.EqualTo(new[] {
+        new WildAnimalSpeciesVariant("MaleOstrich:mdl", "MaleOstrich:wad"),
+        new WildAnimalSpeciesVariant("FemaleOstrich:mdl", "MaleOstrich:wad"),
+        new WildAnimalSpeciesVariant("BabyOstrich:mdl", "BabyOstrich:wad"),
+        new WildAnimalSpeciesVariant("BabyOstrich:mdl", "BabyOstrich:wad"),
+      }));
+    }
+  }
+
+  [Test]
   public void Decode_UsesImmediateInterleavedNonWasLoaderAsRecordBoundary() {
     var fixture = new WildAnimalSpeciesFixture();
     fixture.UseInterleavedNonWasBoundary();
@@ -62,6 +82,14 @@ public class WildAnimalSpeciesTests {
   [TestCase(MalformedWildAnimalSpecies.WrongReferenceOwner)]
   [TestCase(MalformedWildAnimalSpecies.ConflictingReferencePointer)]
   [TestCase(MalformedWildAnimalSpecies.AmbiguousOwnedModelReference)]
+  [TestCase(MalformedWildAnimalSpecies.WrongArchiveVersion)]
+  [TestCase(MalformedWildAnimalSpecies.UnsupportedSoundSlotCount)]
+  [TestCase(MalformedWildAnimalSpecies.MismatchedLayoutSoundSlotCount)]
+  [TestCase(MalformedWildAnimalSpecies.DriftedVariantSoundSlotCount)]
+  [TestCase(MalformedWildAnimalSpecies.MissingSoundSlotRelocation)]
+  [TestCase(MalformedWildAnimalSpecies.MisplacedSoundSlotPointer)]
+  [TestCase(MalformedWildAnimalSpecies.MissingSoundReference)]
+  [TestCase(MalformedWildAnimalSpecies.WrongSoundTag)]
   public void Decode_RejectsMalformedOrUnprovenData(MalformedWildAnimalSpecies malformed) {
     var fixture = new WildAnimalSpeciesFixture();
     fixture.MakeMalformed(malformed);
@@ -78,6 +106,7 @@ public class WildAnimalSpeciesTests {
     Assert.That(path, Does.Exist, $"Installed WildAnimals OVL not found: {path}");
 
     using var ovl = Ovl.Load(path);
+    Assert.That(ovl.Version, Is.EqualTo(OpenCobra.OVL.Version.Five));
     // Loading the common path ingests both halves. The symbol's exact resolved block provenance is
     // retained on OvlFile.Path, and installed WAS data is serialized in the unique half.
     var file = ovl.Keys.Single(candidate =>
@@ -114,57 +143,133 @@ public class WildAnimalSpeciesTests {
     }
   }
 
+  [Test]
+  [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
+  public void Extract_FromInstalledOstrichReadsExactCompactFourVariantLayout() {
+    var rct3Path = Environment.GetEnvironmentVariable("RCT3_PATH")!;
+    Assert.That(rct3Path, Is.Not.Null.And.Not.Empty, "RCT3_PATH is not configured.");
+    var path = Path.Combine(rct3Path, "WildAnimals", "WildAnimals.common.ovl");
+    Assert.That(path, Does.Exist, $"Installed WildAnimals OVL not found: {path}");
+
+    using var ovl = Ovl.Load(path);
+    var file = ovl.Keys.Single(candidate =>
+      candidate.Type == FileType.WildAnimalSpecies &&
+      string.Equals(candidate.Name, "ostrich", StringComparison.OrdinalIgnoreCase));
+    Assert.That(
+      file.Path.EndsWith(".unique.ovl", StringComparison.OrdinalIgnoreCase),
+      Is.True,
+      $"Installed Ostrich WAS source was not unique: {file.Path}");
+    Assert.That(ovl.Version, Is.EqualTo(OpenCobra.OVL.Version.Five));
+    Assert.That(ovl.TryGetDataPointer(file, out var address), Is.True);
+    var owner = ovl.LoaderEntriesInOrder.Single(entry =>
+      entry.DataAddress == address &&
+      entry.Tag.ToFileType() == FileType.WildAnimalSpecies &&
+      string.Equals(entry.SourcePath, file.Path, StringComparison.OrdinalIgnoreCase));
+    Assert.That(owner.SourcePath, Is.EqualTo(file.Path));
+
+    var species = WildAnimalSpecies.Extract(ovl, "Ostrich:WAS");
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(species.Name, Is.EqualTo("Ostrich"));
+      Assert.That(
+        species.PackagePath,
+        Is.EqualTo(@"WildAnimals\Ostrich\Ostrich_data"));
+      Assert.That(species.Variants, Is.EqualTo(new[] {
+        new WildAnimalSpeciesVariant("MaleOstrich:mdl", "MaleOstrich:wad"),
+        new WildAnimalSpeciesVariant("FemaleOstrich:mdl", "MaleOstrich:wad"),
+        new WildAnimalSpeciesVariant("BabyOstrich:mdl", "BabyOstrich:wad"),
+        new WildAnimalSpeciesVariant("BabyOstrich:mdl", "BabyOstrich:wad"),
+      }));
+    }
+  }
+
   private sealed class WildAnimalSpeciesFixture {
     private const uint HeaderAddress = 1_000;
     private const int HeaderSize = 0x40;
-    private const int VariantSize = 0x478;
+    private const int VariantPrefixSize = 0x58;
+    private const int SoundSlotSize = 0x2C;
     private const int VariantCount = 4;
-    private const int RecordSize = HeaderSize + VariantCount * VariantSize;
     private const string SourcePath = "fixture.unique.ovl";
 
-    private readonly byte[] record = new byte[RecordSize];
+    private readonly string name;
+    private readonly int soundSlotCount;
+    private readonly int variantSize;
+    private readonly int recordSize;
+    private readonly byte[] record;
     private readonly FakeWildAnimalSpeciesDataSource source = new();
+    private OpenCobra.OVL.Version archiveVersion = OpenCobra.OVL.Version.Five;
     private OvlLoaderEntry owner = new("was", HeaderAddress, SourcePath, 900);
 
-    public WildAnimalSpeciesFixture() {
+    public WildAnimalSpeciesFixture(
+      WildAnimalSpeciesFixtureLayout layout = WildAnimalSpeciesFixtureLayout.Expanded
+    ) {
+      var compact = layout == WildAnimalSpeciesFixtureLayout.Compact;
+      name = compact ? "ostrich" : "elephant";
+      soundSlotCount = compact ? 10 : 24;
+      variantSize = checked(VariantPrefixSize + soundSlotCount * SoundSlotSize);
+      recordSize = checked(HeaderSize + VariantCount * variantSize);
+      record = new byte[recordSize];
       source.AddBytes(HeaderAddress, record);
       source.RegionLoaders.Add(owner);
       source.RegionLoaders.Add(new OvlLoaderEntry(
         "was",
-        HeaderAddress + RecordSize,
+        HeaderAddress + Convert.ToUInt32(recordSize),
         SourcePath,
         920));
 
-      AddString(0x14, @"WildAnimals\elephant\Elephant_data");
+      AddString(
+        0x14,
+        compact
+          ? @"WildAnimals\Ostrich\Ostrich_data"
+          : @"WildAnimals\elephant\Elephant_data");
       foreach (var index in Enumerable.Range(0, VariantCount)) {
-        var variantOffset = HeaderSize + index * VariantSize;
+        var variantOffset = HeaderSize + index * variantSize;
         AddPointer(
           0x18 + index * sizeof(uint),
           HeaderAddress + Convert.ToUInt32(variantOffset));
-        var adult = index < 2;
+        var modelReference = compact
+          ? index switch {
+            0 => "MaleOstrich:mdl",
+            1 => "FemaleOstrich:mdl",
+            _ => "BabyOstrich:mdl",
+          }
+          : index < 2 ? "AdultElephant:mdl" : "BabyElephant:mdl";
+        var animationReference = compact
+          ? index < 2 ? "MaleOstrich:wad" : "BabyOstrich:wad"
+          : index < 2 ? "Elephant:wad" : "babyElephant:wad";
         AddReference(
           variantOffset,
-          adult ? "AdultElephant:mdl" : "BabyElephant:mdl");
+          modelReference);
         AddReference(
           variantOffset + sizeof(uint),
-          adult ? "Elephant:wad" : "babyElephant:wad");
+          animationReference);
+        WriteUInt32(
+          variantOffset + 0x50,
+          Convert.ToUInt32(soundSlotCount));
+        AddPointer(
+          variantOffset + 0x54,
+          HeaderAddress + Convert.ToUInt32(variantOffset + VariantPrefixSize));
+        foreach (var slotIndex in Enumerable.Range(0, soundSlotCount))
+          AddReference(
+            variantOffset + VariantPrefixSize + slotIndex * SoundSlotSize,
+            $"{name}Sound{slotIndex}:snd");
       }
     }
 
     public WildAnimalSpeciesDefinition Decode() =>
-      WildAnimalSpecies.Decode("elephant", owner, source);
+      WildAnimalSpecies.Decode(name, archiveVersion, owner, source);
 
     public void UseInterleavedNonWasBoundary() {
       source.RegionLoaders.Clear();
       source.RegionLoaders.Add(owner);
       source.RegionLoaders.Add(new OvlLoaderEntry(
         "tex",
-        HeaderAddress + RecordSize,
+        HeaderAddress + Convert.ToUInt32(recordSize),
         SourcePath,
         920));
       source.RegionLoaders.Add(new OvlLoaderEntry(
         "was",
-        HeaderAddress + RecordSize + 100,
+        HeaderAddress + Convert.ToUInt32(recordSize) + 100,
         SourcePath,
         940));
     }
@@ -205,7 +310,7 @@ public class WildAnimalSpeciesTests {
           AddPointer(0x1C, HeaderAddress + HeaderSize);
           break;
         case MalformedWildAnimalSpecies.OutOfRangeVariantPointer:
-          AddPointer(0x18, HeaderAddress + RecordSize);
+          AddPointer(0x18, HeaderAddress + Convert.ToUInt32(recordSize));
           break;
         case MalformedWildAnimalSpecies.MissingModelReference:
           source.ResourceReferences.Remove(HeaderAddress + HeaderSize);
@@ -229,6 +334,34 @@ public class WildAnimalSpeciesTests {
           source.ResourceReferences.Add(
             HeaderAddress + 0x30,
             new OvlSymbolReference("Unexpected:mdl", owner));
+          break;
+        case MalformedWildAnimalSpecies.WrongArchiveVersion:
+          archiveVersion = OpenCobra.OVL.Version.Four;
+          break;
+        case MalformedWildAnimalSpecies.UnsupportedSoundSlotCount:
+          WriteUInt32(HeaderSize + 0x50, 11);
+          break;
+        case MalformedWildAnimalSpecies.MismatchedLayoutSoundSlotCount:
+          WriteUInt32(HeaderSize + 0x50, 10);
+          break;
+        case MalformedWildAnimalSpecies.DriftedVariantSoundSlotCount:
+          WriteUInt32(HeaderSize + variantSize + 0x50, 10);
+          break;
+        case MalformedWildAnimalSpecies.MissingSoundSlotRelocation:
+          source.Relocations.Remove(HeaderAddress + HeaderSize + 0x54);
+          break;
+        case MalformedWildAnimalSpecies.MisplacedSoundSlotPointer:
+          AddPointer(
+            HeaderSize + 0x54,
+            HeaderAddress + HeaderSize + VariantPrefixSize + sizeof(uint));
+          break;
+        case MalformedWildAnimalSpecies.MissingSoundReference:
+          source.ResourceReferences.Remove(
+            HeaderAddress + HeaderSize + VariantPrefixSize);
+          break;
+        case MalformedWildAnimalSpecies.WrongSoundTag:
+          source.ResourceReferences[HeaderAddress + HeaderSize + VariantPrefixSize] =
+            new OvlSymbolReference("elephantSound0:txt", owner);
           break;
         default:
           throw new ArgumentOutOfRangeException(nameof(malformed));
@@ -343,6 +476,11 @@ public class WildAnimalSpeciesTests {
       return false;
     }
   }
+
+  private enum WildAnimalSpeciesFixtureLayout {
+    Expanded,
+    Compact,
+  }
 }
 
 public enum MalformedWildAnimalSpecies {
@@ -361,4 +499,12 @@ public enum MalformedWildAnimalSpecies {
   WrongReferenceOwner,
   ConflictingReferencePointer,
   AmbiguousOwnedModelReference,
+  WrongArchiveVersion,
+  UnsupportedSoundSlotCount,
+  MismatchedLayoutSoundSlotCount,
+  DriftedVariantSoundSlotCount,
+  MissingSoundSlotRelocation,
+  MisplacedSoundSlotPointer,
+  MissingSoundReference,
+  WrongSoundTag,
 }

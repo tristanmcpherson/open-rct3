@@ -49,6 +49,36 @@ public class SceneryResourceCatalogTests {
   }
 
   [Test]
+  public void FindInSiblingOwnerPair_LoadsOnlyExactOwnerAndPreservesTypedEntries() {
+    var source = new FakeCatalogSource();
+    var exact = PairPath("Style", "Vanilla", "style");
+    var owner = PairPath("Style", "Vanilla", "PathOwner");
+    var fallback = PairPath("Style", "Vanilla", "fallback");
+    source.AddPair(exact);
+    source.AddPair(
+      owner,
+      Resource("PathOwner", FileType.SceneryItemVisual),
+      Resource("OtherVisual", FileType.SceneryItemVisual),
+      Resource("PathOwner", FileType.StaticShape));
+    source.AddPair(fallback, Resource("FallbackVisual", FileType.SceneryItemVisual));
+    source.EnumeratedPaths.Add(fallback);
+    using var catalog = Catalog(source);
+
+    var entries = catalog.FindInSiblingOwnerPair(
+      "PathOwner",
+      FileType.SceneryItemVisual);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(entries.Select(entry => entry.File.Name),
+        Is.EqualTo(new[] { "PathOwner", "OtherVisual" }));
+      Assert.That(entries.Select(entry => entry.File.Type),
+        Is.All.EqualTo(FileType.SceneryItemVisual));
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { owner }));
+      Assert.That(source.EnumerationCount, Is.Zero);
+    }
+  }
+
+  [Test]
   public void Find_LoadsSiblingPairsAsOneUnambiguousSetAndCachesThem() {
     var source = new FakeCatalogSource();
     var exact = PairPath("Style", "Vanilla", "style");

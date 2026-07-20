@@ -210,6 +210,25 @@ public class Park {
   /// <summary>Exact saved ride-car ownership, resource roles, physical values, and resume state.</summary>
   internal List<DatRideCarInstanceData> RideCarInstances { get; } = [];
 
+  /// <summary>Ordered saved Wild-animal species database identities.</summary>
+  internal List<DatWildAnimalSpeciesDatabaseEntryData>
+    WildAnimalSpeciesDatabaseEntries { get; } = [];
+
+  /// <summary>Ordered saved Wild-animal visual states, including unreferenced retained visuals.</summary>
+  internal List<DatWildAnimalVisualData> WildAnimalVisuals { get; } = [];
+
+  /// <summary>
+  /// Ordered saved Wild animals linked to their exact species and visual records without choosing
+  /// a WAS variant or converting their native matrices.
+  /// </summary>
+  internal List<DatWildAnimalPlacementData> WildAnimalPlacements { get; } = [];
+
+  /// <summary>Exact installed WAS and MDL resources used by the saved Wild-animal scene.</summary>
+  internal WildAnimalParkResourceRegistry? WildAnimalResources { get; set; }
+
+  /// <summary>Borrowed exact bindings for the scene-owned static Wild-animal models.</summary>
+  internal WildAnimalStaticSceneBuildResult? WildAnimalScene { get; set; }
+
   public Park(int buildableWidth = DefaultMapSize, int buildableHeight = DefaultMapSize) {
     float halfWidth = (buildableWidth * TileSize) / 2.0f;
     float borderOffset = OutOfBoundsBorder * TileSize;

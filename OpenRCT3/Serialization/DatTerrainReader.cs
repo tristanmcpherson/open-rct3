@@ -5,6 +5,7 @@
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 using System.Text;
 
 namespace OpenRCT3.Serialization;
@@ -558,6 +559,32 @@ internal static class DatTerrainReader {
     new("WhichCar", FieldKind.Int32, 4),
     new("WhichRideTrainCar", FieldKind.Int32, 4),
   ];
+  private static readonly ExpectedField[] WildAnimalSpeciesDatabaseEntrySchema = [
+    new("ISUNLOCKED", FieldKind.Bool, 1),
+    new("OVERLAYFILENAME", FieldKind.String, 0),
+    new("SYMBOLNAME", FieldKind.String, 0),
+  ];
+  private static readonly ExpectedField[] WildAnimalVisualSchema = [
+    new(
+      "AnimData",
+      FieldKind.Array,
+      0,
+      [
+        new("Time", FieldKind.Float32, 4),
+        new("Type", FieldKind.Int32, 4),
+        new("Weight", FieldKind.Float32, 4),
+      ]),
+    new("DoShadows", FieldKind.Bool, 1),
+    new("Visible", FieldKind.Bool, 1),
+    new("WorldMatrix", FieldKind.Matrix44, 64),
+  ];
+  private static readonly ExpectedField[] WildAnimalIdentityFields = [
+    new("Entry", FieldKind.ManagedObjectPtr, 8),
+    new("IsAdult", FieldKind.Bool, 1),
+    new("IsMale", FieldKind.Bool, 1),
+    new("Type", FieldKind.Int32, 4),
+    new("Visual", FieldKind.ManagedObjectPtr, 8),
+  ];
 
   public static DatTerrainData Read(string path) {
     if (string.IsNullOrWhiteSpace(path))
@@ -584,7 +611,14 @@ internal static class DatTerrainReader {
 
       var entryId = reader.ReadUInt64();
       var structure = structures[Convert.ToInt32(structureIndex)];
-      if (structure.Name == "RideCarInstance")
+      if (structure.Name == "WASDatabaseEntry")
+        state.CaptureWildAnimalSpeciesDatabaseEntry(
+          ReadWildAnimalSpeciesDatabaseEntry(reader, entryId, state));
+      else if (structure.Name == "WildAnimalVisual")
+        state.CaptureWildAnimalVisual(ReadWildAnimalVisual(reader, entryId, state));
+      else if (structure.Name == "WildAnimal")
+        state.CaptureWildAnimal(ReadWildAnimal(reader, structure, entryId, state));
+      else if (structure.Name == "RideCarInstance")
         state.CaptureRideCarInstance(
           ReadRideCarInstance(reader, structure, entryId, state));
       else if (structure.Name == "RideTrainInstance")
@@ -622,6 +656,7 @@ internal static class DatTerrainReader {
     DatPathSurfaceResolver.Resolve(state.Paths, state.PathSurfaceEntries);
     state.ResolveSceneryDatabaseEntries();
     state.ValidateRideInstanceReferences();
+    state.ResolveWildAnimalPlacements();
     return AttachDecodedData(
       terrain,
       state.WaterManager,
@@ -633,7 +668,11 @@ internal static class DatTerrainReader {
       state.PathSurfaceEntries,
       state.TrackedRideInstances,
       state.RideTrainInstances,
-      state.RideCarInstances);
+      state.RideCarInstances,
+      state.WildAnimalSpeciesDatabaseEntries,
+      state.WildAnimalVisuals,
+      state.WildAnimals,
+      state.WildAnimalPlacements);
   }
 
   private static int ReadStructureCount(DatBinaryReader reader) {
@@ -672,7 +711,13 @@ internal static class DatTerrainReader {
     for (var index = 0; index < fieldCount; index++)
       fields[index] = ReadFieldDefinition(reader, state, depth: 1);
     var structure = new DataStructure(name, fields);
-    if (name == "RideCarInstance")
+    if (name == "WASDatabaseEntry")
+      ValidateExactStructureSchema(structure, WildAnimalSpeciesDatabaseEntrySchema);
+    else if (name == "WildAnimalVisual")
+      ValidateExactStructureSchema(structure, WildAnimalVisualSchema);
+    else if (name == "WildAnimal")
+      ValidateWildAnimalStructureSchema(structure);
+    else if (name == "RideCarInstance")
       ValidateRideCarInstanceStructureSchema(structure);
     else if (name == "RideTrainInstance")
       ValidateRideTrainInstanceStructureSchema(structure);
@@ -966,6 +1011,21 @@ internal static class DatTerrainReader {
     }
   }
 
+  private static void ValidateWildAnimalStructureSchema(DataStructure structure) {
+    foreach (var expected in WildAnimalIdentityFields) {
+      var matches = structure.Fields.Where(field => field.Name == expected.Name).ToArray();
+      if (matches.Length != 1)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' must declare exactly one " +
+          $"'{expected.Name}' field; found {matches.Length}.");
+
+      var mismatch = DescribeSchemaMismatch(matches, [expected], structure.Name);
+      if (mismatch != null)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' has an unsupported identity field: {mismatch}");
+    }
+  }
+
   private static void ValidateExactStructureSchema(
     DataStructure structure,
     ExpectedField[] expected
@@ -1189,6 +1249,122 @@ internal static class DatTerrainReader {
     foreach (var child in field.Children)
       ReadFieldValue(reader, child, state);
   }
+
+  private static DatWildAnimalSpeciesDatabaseEntryData
+    ReadWildAnimalSpeciesDatabaseEntry(
+      DatBinaryReader reader,
+      ulong entryId,
+      ValueReadState state
+    ) {
+    state.AddValues(WildAnimalSpeciesDatabaseEntrySchema.Length);
+    var isUnlocked = ReadBoolean(reader, "WASDatabaseEntry ISUNLOCKED");
+    var overlayFilename = ReadDatString(reader, "WASDatabaseEntry OVERLAYFILENAME");
+    var symbolName = ReadDatString(reader, "WASDatabaseEntry SYMBOLNAME");
+    return new DatWildAnimalSpeciesDatabaseEntryData(
+      entryId,
+      isUnlocked,
+      overlayFilename,
+      symbolName);
+  }
+
+  private static DatWildAnimalVisualData ReadWildAnimalVisual(
+    DatBinaryReader reader,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    state.AddValue();
+    ReadBoundedSize(reader.ReadUInt32(), MaxPayloadBytes, "WildAnimalVisual AnimData payload");
+    var animationCount = ReadBoundedCount(
+      reader.ReadUInt32(),
+      MaxCollectionLength,
+      "WildAnimalVisual AnimData length");
+    state.AddCollectionElements(animationCount);
+    state.AddValues(checked(animationCount * 3));
+    var animationData = new DatWildAnimalAnimationData[animationCount];
+    foreach (var index in Enumerable.Range(0, animationCount)) {
+      animationData[index] = new DatWildAnimalAnimationData(
+        ReadFiniteSingle(reader, $"WildAnimalVisual AnimData {index} Time"),
+        reader.ReadInt32(),
+        ReadFiniteSingle(reader, $"WildAnimalVisual AnimData {index} Weight"));
+    }
+
+    state.AddValues(3);
+    var doShadows = ReadBoolean(reader, "WildAnimalVisual DoShadows");
+    var visible = ReadBoolean(reader, "WildAnimalVisual Visible");
+    var worldMatrix = ReadFiniteMatrix44(reader, "WildAnimalVisual WorldMatrix");
+    return new DatWildAnimalVisualData(
+      entryId,
+      Array.AsReadOnly(animationData),
+      doShadows,
+      visible,
+      worldMatrix);
+  }
+
+  private static DatWildAnimalData ReadWildAnimal(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    ulong? speciesDatabaseEntryId = null;
+    ulong? visualEntryId = null;
+    bool? isAdult = null;
+    bool? isMale = null;
+    int? type = null;
+
+    foreach (var field in structure.Fields) {
+      switch (field.Name) {
+        case "Entry":
+          state.AddValue();
+          speciesDatabaseEntryId = reader.ReadUInt64();
+          break;
+        case "Visual":
+          state.AddValue();
+          visualEntryId = reader.ReadUInt64();
+          break;
+        case "IsAdult":
+          state.AddValue();
+          isAdult = ReadBoolean(reader, "WildAnimal IsAdult");
+          break;
+        case "IsMale":
+          state.AddValue();
+          isMale = ReadBoolean(reader, "WildAnimal IsMale");
+          break;
+        case "Type":
+          state.AddValue();
+          type = reader.ReadInt32();
+          break;
+        default:
+          ReadFieldValue(reader, field, state);
+          break;
+      }
+    }
+
+    return new DatWildAnimalData(
+      entryId,
+      speciesDatabaseEntryId ?? throw MissingWildAnimalValue("Entry"),
+      visualEntryId ?? throw MissingWildAnimalValue("Visual"),
+      isAdult ?? throw MissingWildAnimalValue("IsAdult"),
+      isMale ?? throw MissingWildAnimalValue("IsMale"),
+      type ?? throw MissingWildAnimalValue("Type"));
+  }
+
+  private static Matrix4x4 ReadFiniteMatrix44(
+    DatBinaryReader reader,
+    string description
+  ) {
+    var values = new float[16];
+    foreach (var index in Enumerable.Range(0, values.Length))
+      values[index] = ReadFiniteSingle(reader, $"{description}[{index}]");
+    return new Matrix4x4(
+      values[0], values[1], values[2], values[3],
+      values[4], values[5], values[6], values[7],
+      values[8], values[9], values[10], values[11],
+      values[12], values[13], values[14], values[15]);
+  }
+
+  private static InvalidDataException MissingWildAnimalValue(string name) =>
+    new($"WildAnimal schema validation did not provide '{name}'.");
 
   private static DatTrackedRideInstanceData ReadTrackedRideInstance(
     DatBinaryReader reader,
@@ -2440,7 +2616,12 @@ internal static class DatTerrainReader {
     IReadOnlyList<DatPathSurfaceEntryData> pathSurfaceEntries,
     IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
     IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
-    IReadOnlyList<DatRideCarInstanceData> rideCarInstances
+    IReadOnlyList<DatRideCarInstanceData> rideCarInstances,
+    IReadOnlyList<DatWildAnimalSpeciesDatabaseEntryData>
+      wildAnimalSpeciesDatabaseEntries,
+    IReadOnlyList<DatWildAnimalVisualData> wildAnimalVisuals,
+    IReadOnlyList<DatWildAnimalData> wildAnimals,
+    IReadOnlyList<DatWildAnimalPlacementData> wildAnimalPlacements
   ) {
     if (waterManager != null
       && (waterManager.Width != terrain.Width || waterManager.Height != terrain.Height))
@@ -2455,8 +2636,10 @@ internal static class DatTerrainReader {
 
     if (waterManager == null && paths.Count == 0 && sceneryEntries.Count == 0 &&
         trackPieces.Count == 0 && rideTracks.Count == 0 && trackSegments.Count == 0 &&
-        pathSurfaceEntries.Count == 0 && trackedRideInstances.Count == 0 &&
-        rideTrainInstances.Count == 0 && rideCarInstances.Count == 0)
+         pathSurfaceEntries.Count == 0 && trackedRideInstances.Count == 0 &&
+         rideTrainInstances.Count == 0 && rideCarInstances.Count == 0 &&
+         wildAnimalSpeciesDatabaseEntries.Count == 0 && wildAnimalVisuals.Count == 0 &&
+         wildAnimals.Count == 0 && wildAnimalPlacements.Count == 0)
       return terrain;
 
     var cells = new DatTerrainCell[terrain.Cells.Count];
@@ -2479,7 +2662,11 @@ internal static class DatTerrainReader {
       [.. pathSurfaceEntries],
       [.. trackedRideInstances],
       [.. rideTrainInstances],
-      [.. rideCarInstances]);
+      [.. rideCarInstances],
+      [.. wildAnimalSpeciesDatabaseEntries],
+      [.. wildAnimalVisuals],
+      [.. wildAnimals],
+      [.. wildAnimalPlacements]);
   }
 
   private static DatTerrainData ReadTerrain(DatBinaryReader reader, int payloadSize) {
@@ -2705,6 +2892,11 @@ internal static class DatTerrainReader {
     private readonly List<DatTrackedRideInstanceData> _trackedRideInstances = [];
     private readonly List<DatRideTrainInstanceData> _rideTrainInstances = [];
     private readonly List<DatRideCarInstanceData> _rideCarInstances = [];
+    private readonly List<DatWildAnimalSpeciesDatabaseEntryData>
+      _wildAnimalSpeciesDatabaseEntries = [];
+    private readonly List<DatWildAnimalVisualData> _wildAnimalVisuals = [];
+    private readonly List<DatWildAnimalData> _wildAnimals = [];
+    private readonly List<DatWildAnimalPlacementData> _wildAnimalPlacements = [];
 
     public DatTerrainData? Terrain { get; private set; }
     public DatWaterManagerData? WaterManager { get; private set; }
@@ -2720,6 +2912,12 @@ internal static class DatTerrainReader {
       _rideTrainInstances;
     public IReadOnlyList<DatRideCarInstanceData> RideCarInstances =>
       _rideCarInstances;
+    public IReadOnlyList<DatWildAnimalSpeciesDatabaseEntryData>
+      WildAnimalSpeciesDatabaseEntries => _wildAnimalSpeciesDatabaseEntries;
+    public IReadOnlyList<DatWildAnimalVisualData> WildAnimalVisuals => _wildAnimalVisuals;
+    public IReadOnlyList<DatWildAnimalData> WildAnimals => _wildAnimals;
+    public IReadOnlyList<DatWildAnimalPlacementData> WildAnimalPlacements =>
+      _wildAnimalPlacements;
 
     public void AddCollectionElements(int count) {
       if (count > MaxTotalCollectionElements - _collectionElementCount)
@@ -2770,6 +2968,51 @@ internal static class DatTerrainReader {
 
     public void CaptureRideCarInstance(DatRideCarInstanceData rideCarInstance) =>
       _rideCarInstances.Add(rideCarInstance);
+
+    public void CaptureWildAnimalSpeciesDatabaseEntry(
+      DatWildAnimalSpeciesDatabaseEntryData entry
+    ) => _wildAnimalSpeciesDatabaseEntries.Add(entry);
+
+    public void CaptureWildAnimalVisual(DatWildAnimalVisualData visual) =>
+      _wildAnimalVisuals.Add(visual);
+
+    public void CaptureWildAnimal(DatWildAnimalData animal) => _wildAnimals.Add(animal);
+
+    public void ResolveWildAnimalPlacements() {
+      var speciesById = new Dictionary<ulong, DatWildAnimalSpeciesDatabaseEntryData>();
+      foreach (var species in _wildAnimalSpeciesDatabaseEntries) {
+        if (species.EntryId == 0 || !speciesById.TryAdd(species.EntryId, species))
+          throw new InvalidDataException(
+            $"DAT contains a missing or duplicate WASDatabaseEntry ID {species.EntryId}.");
+      }
+
+      var visualsById = new Dictionary<ulong, DatWildAnimalVisualData>();
+      foreach (var visual in _wildAnimalVisuals) {
+        if (visual.EntryId == 0 || !visualsById.TryAdd(visual.EntryId, visual))
+          throw new InvalidDataException(
+            $"DAT contains a missing or duplicate WildAnimalVisual ID {visual.EntryId}.");
+      }
+
+      var animalIds = new HashSet<ulong>();
+      foreach (var animal in _wildAnimals) {
+        if (animal.EntryId == 0 || !animalIds.Add(animal.EntryId))
+          throw new InvalidDataException(
+            $"DAT contains a missing or duplicate WildAnimal ID {animal.EntryId}.");
+        if (!speciesById.TryGetValue(animal.SpeciesDatabaseEntryId, out var species))
+          throw new InvalidDataException(
+            $"DAT WildAnimal {animal.EntryId} references missing WASDatabaseEntry " +
+            $"{animal.SpeciesDatabaseEntryId}.");
+        if (!visualsById.TryGetValue(animal.VisualEntryId, out var visual))
+          throw new InvalidDataException(
+            $"DAT WildAnimal {animal.EntryId} references missing WildAnimalVisual " +
+            $"{animal.VisualEntryId}.");
+        _wildAnimalPlacements.Add(new DatWildAnimalPlacementData(
+          animal,
+          species,
+          visual,
+          DatWildAnimalVariantSelectionStatus.Unsupported));
+      }
+    }
 
     public void ValidateRideInstanceReferences() {
       var rideTrainInstancesById = new Dictionary<ulong, DatRideTrainInstanceData>();

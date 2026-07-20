@@ -182,6 +182,74 @@ public class PathSurfaceResourceResolverTests {
     }
   }
 
+  [Test]
+  public void SelectFirstSerializedStaticLod_PreservesExactSameNameSvdIdentity() {
+    var high = Lod("high", "Owner:shs");
+    var medium = Lod("medium", "Owner_Med:shs");
+    var owner = Visual("Owner", high, medium);
+    var unrelated = Visual("Other", Lod("other", "Other:shs"));
+
+    var (visual, lod) = PathSurfaceResourceResolver.SelectFirstSerializedStaticLod(
+      "owner",
+      [unrelated, owner]);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(visual, Is.SameAs(owner));
+      Assert.That(lod, Is.SameAs(high));
+      Assert.That(lod.StaticShapeRef, Is.EqualTo("Owner:shs"));
+    }
+  }
+
+  [Test]
+  public void SelectFirstSerializedStaticLod_RejectsAmbiguousSameNameSvds() {
+    var first = Visual("Owner", Lod("high", "Owner:shs"));
+    var second = Visual("OWNER", Lod("other", "Other:shs"));
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      PathSurfaceResourceResolver.SelectFirstSerializedStaticLod(
+        "owner",
+        [first, second])));
+  }
+
+  [Test]
+  public void SelectFirstSerializedStaticLod_RejectsNonStaticHighestDetailLod() {
+    var billboard = Lod("billboard", null, SvdLodType.Billboard);
+    var staticLod = Lod("lower", "Owner_Low:shs");
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      PathSurfaceResourceResolver.SelectFirstSerializedStaticLod(
+        "Owner",
+        [Visual("Owner", billboard, staticLod)])));
+  }
+
+  [Test]
+  [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
+  public void LoadInstalled_ResolvesOwnerThroughSameNameSvdFirstSerializedShsLod() {
+    var root = Environment.GetEnvironmentVariable("RCT3_PATH");
+    Assert.That(root, Is.Not.Null.And.Not.Empty,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    Assert.That(Directory.Exists(root), Is.True,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    var tile = new PathTile { SurfaceSystemName = "Asphalt" };
+    using var resolver = PathSurfaceResourceResolver.LoadInstalled(root!, [tile]);
+
+    var found = resolver.TryResolveShape(tile, "Asphalt_Straight_A", out var resolved);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(found, Is.True);
+      Assert.That(resolved, Is.Not.Null);
+      Assert.That(resolved!.Visual.Name, Is.EqualTo("Asphalt_Straight_A").IgnoreCase);
+      Assert.That(resolved.Lod, Is.SameAs(resolved.Visual.Lods[0]));
+      Assert.That(resolved.Lod.StaticShapeRef,
+        Is.EqualTo("Asphalt_Straight_A:shs").IgnoreCase);
+      Assert.That(resolved.Shape.Name, Is.EqualTo("Asphalt_Straight_A").IgnoreCase);
+      Assert.That(resolved.VisualSource.File.Name,
+        Is.EqualTo("Asphalt_Straight_A").IgnoreCase);
+      Assert.That(resolved.ShapeSource.File.Name,
+        Is.EqualTo("Asphalt_Straight_A").IgnoreCase);
+    }
+  }
+
   private static PathType PathResource(
     string name = "Asphalt",
     string internalName = "Asphalt"
@@ -214,4 +282,32 @@ public class PathSurfaceResourceResolverTests {
     SlopeStraight1: "SlopeStraight1",
     SlopeStraight2: "SlopeStraight2",
     ResearchCategories: []);
+
+  private static SceneryItemVisual Visual(
+    string name,
+    params SceneryItemVisualLod[] lods
+  ) => new(
+    name,
+    (SvdFlags)0,
+    0f,
+    1f,
+    0f,
+    0f,
+    lods,
+    null);
+
+  private static SceneryItemVisualLod Lod(
+    string name,
+    string? shapeReference,
+    SvdLodType type = SvdLodType.StaticShape
+  ) => new(
+    name,
+    type,
+    shapeReference,
+    null,
+    null,
+    null,
+    new SceneryVisualBillboardSettings(0f, 0f, 0f, 0f, 0f, 0f),
+    10f,
+    []);
 }

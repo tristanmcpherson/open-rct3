@@ -73,6 +73,90 @@ public class RideTrackResourceCatalogLoaderTests {
   }
 
   [Test]
+  public void Load_AttachesInferredTrackVisualPairToCrossPairSidOwner() {
+    var source = new FakeLoaderSource();
+    var root = PairPath("Tracks", "Exact", "Synthetic");
+    var sidOwner = PairPath("Tracks", "Shared", "TrackSid");
+    var visualOwner = PairPath("Tracks", "Shared", "SyntheticVisual_data");
+    source.AddPair(
+      root,
+      references: [@"..\Shared\TrackSid"],
+      sections: [Section("Straight")]);
+    source.AddPair(
+      sidOwner,
+      sceneryItems: [Scenery(
+        "StraightScenery",
+        ["SyntheticVisual:svd"],
+        SidType.RideTrack)],
+      rides: [Ride("SidOwnerRide")]);
+    source.AddPair(
+      visualOwner,
+      visuals: [Visual("SyntheticVisual")]);
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [Placement()],
+      source);
+
+    var rootClosure = result.TrackVisualResources.DependencyClosures.Single(closure =>
+      string.Equals(
+        closure.SourcePath,
+        UniquePath(root),
+        StringComparison.OrdinalIgnoreCase));
+    var sidOwnerClosure = result.TrackVisualResources.DependencyClosures.Single(closure =>
+      string.Equals(
+        closure.SourcePath,
+        UniquePath(sidOwner),
+        StringComparison.OrdinalIgnoreCase));
+    var bridge = RideTrackVisualResourceBridge.Resolve(result.TrackVisualResources);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.IsComplete, Is.True);
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { root, sidOwner, visualOwner }));
+      Assert.That(rootClosure.AllowedTargetPaths,
+        Does.Contain(UniquePath(visualOwner)).IgnoreCase);
+      Assert.That(sidOwnerClosure.AllowedTargetPaths,
+        Does.Contain(UniquePath(visualOwner)).IgnoreCase);
+      Assert.That(bridge.Visuals, Has.Count.EqualTo(1));
+      Assert.That(bridge.Visuals.Single().Section.Scenery.Source!.File.Path,
+        Is.EqualTo(UniquePath(sidOwner)).IgnoreCase);
+      Assert.That(bridge.Visuals.Single().VisualSource.File.Path,
+        Is.EqualTo(UniquePath(visualOwner)).IgnoreCase);
+    }
+  }
+
+  [Test]
+  public void Load_UsesExactSamePairSvdWithoutProbingSiblingConvention() {
+    var source = new FakeLoaderSource();
+    var root = PairPath("Tracks", "Exact", "Synthetic");
+    var inferred = PairPath("Tracks", "Exact", "SyntheticVisual_data");
+    source.AddPair(
+      root,
+      sections: [Section("Straight")],
+      sceneryItems: [Scenery(
+        "StraightScenery",
+        ["SyntheticVisual:svd"],
+        SidType.RideTrack)],
+      visuals: [Visual("SyntheticVisual")]);
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [Placement()],
+      source);
+    var bridge = RideTrackVisualResourceBridge.Resolve(result.TrackVisualResources);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.IsComplete, Is.True);
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { root }));
+      Assert.That(source.ProbedPaths, Does.Not.Contain(inferred).IgnoreCase);
+      Assert.That(source.ProbedPaths, Does.Not.Contain(UniquePath(inferred)).IgnoreCase);
+      Assert.That(bridge.Visuals, Has.Count.EqualTo(1));
+      Assert.That(bridge.Visuals.Single().VisualSource.File.Path,
+        Is.EqualTo(UniquePath(root)).IgnoreCase);
+    }
+  }
+
+  [Test]
   public void Load_ReturnsTypedMissingDependencyAndAnExactPartialCatalog() {
     var source = new FakeLoaderSource();
     var root = PairPath("Tracks", "Exact", "Synthetic");
@@ -775,7 +859,11 @@ public class RideTrackResourceCatalogLoaderTests {
     Expansion: null,
     Wild: null);
 
-  private static SceneryItem Scenery(string name) => new(
+  private static SceneryItem Scenery(
+    string name,
+    IReadOnlyList<string>? visualRefs = null,
+    SidType type = default
+  ) => new(
     name,
     Flags: default,
     PositionType: default,
@@ -788,8 +876,8 @@ public class RideTrackResourceCatalogLoaderTests {
     SizeX: 0,
     SizeY: 0,
     SizeZ: 0,
-    Type: default,
-    VisualRefs: []);
+    Type: type,
+    VisualRefs: visualRefs ?? []);
 
   private static Spline Spline(string name) => new(
     name,

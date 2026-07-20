@@ -179,6 +179,39 @@ public sealed class SceneryResourceCatalog : IDisposable {
   }
 
   /// <summary>
+  /// Loads one exact sibling owner pair and returns every resource of <paramref name="type"/> from
+  /// that pair. PTD/QTD shape fields name these owner pairs, not necessarily the contained SHS.
+  /// </summary>
+  internal IReadOnlyList<SceneryResourceEntry> FindInSiblingOwnerPair(
+    string ownerName,
+    FileType type
+  ) {
+    ArgumentException.ThrowIfNullOrWhiteSpace(ownerName);
+    if (type == FileType.Unknown || !Enum.IsDefined(type))
+      throw new ArgumentOutOfRangeException(nameof(type), type, "A known resource type is required.");
+    if (!CanProbeAsFileName(ownerName) ||
+        !string.Equals(ownerName, ownerName.Trim(), StringComparison.Ordinal))
+      throw new ArgumentException(
+        "An OVL owner name must be one safe filename without an extension.",
+        nameof(ownerName));
+
+    lock (syncRoot) {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      var commonPath = Path.GetFullPath(Path.Combine(exactDirectory, ownerName + CommonSuffix));
+      if (!IsInsideInstallRoot(commonPath) || !IsInsideOverlayTree(commonPath))
+        throw new ArgumentException(
+          "The OVL owner name must stay inside the catalog overlay tree.",
+          nameof(ownerName));
+      var archive = GetOrLoadPair(commonPath, required: true)
+        ?? throw new InvalidOperationException($"The required owner pair '{ownerName}' was not loaded.");
+      return archive.Keys
+        .Where(file => file.Type == type)
+        .Select(file => new SceneryResourceEntry(archive, file))
+        .ToArray();
+    }
+  }
+
+  /// <summary>
   /// Finds an exact resource name and a case-insensitive enum name or OVL type tag.
   /// </summary>
   public SceneryResourceEntry? Find(string resourceName, string type) =>

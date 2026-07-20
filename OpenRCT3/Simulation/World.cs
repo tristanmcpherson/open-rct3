@@ -37,7 +37,10 @@ public class World : GDK.Game.World {
           out var trackSegments,
           out var trackedRideInstances,
           out var rideTrainInstances,
-          out var rideCarInstances);
+          out var rideCarInstances,
+          out var wildAnimalSpeciesDatabaseEntries,
+          out var wildAnimalVisuals,
+          out var wildAnimalPlacements);
         try {
           var park = BuildPark(
             terrain,
@@ -50,7 +53,10 @@ public class World : GDK.Game.World {
             trackSegments,
             trackedRideInstances,
             rideTrainInstances,
-            rideCarInstances);
+            rideCarInstances,
+            wildAnimalSpeciesDatabaseEntries,
+            wildAnimalVisuals,
+            wildAnimalPlacements);
           Terrain = terrain;
           Park = park;
         } catch {
@@ -141,6 +147,38 @@ public class World : GDK.Game.World {
     IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
     IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
     IReadOnlyList<DatRideCarInstanceData> rideCarInstances
+  ) => BuildPark(
+    terrain,
+    waterManager,
+    paths,
+    sceneryItems,
+    sceneryItemPlacements,
+    trackPieces,
+    rideTracks,
+    trackSegments,
+    trackedRideInstances,
+    rideTrainInstances,
+    rideCarInstances,
+    Array.Empty<DatWildAnimalSpeciesDatabaseEntryData>(),
+    Array.Empty<DatWildAnimalVisualData>(),
+    Array.Empty<DatWildAnimalPlacementData>());
+
+  internal static Park BuildPark(
+    Terrain terrain,
+    DatWaterManagerData? waterManager,
+    IReadOnlyList<DatPathData> paths,
+    IReadOnlyList<DatSceneryItemData> sceneryItems,
+    IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    IReadOnlyList<DatTrackPieceData> trackPieces,
+    IReadOnlyList<DatRideTrackData> rideTracks,
+    IReadOnlyList<DatTrackSegmentData> trackSegments,
+    IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
+    IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
+    IReadOnlyList<DatRideCarInstanceData> rideCarInstances,
+    IReadOnlyList<DatWildAnimalSpeciesDatabaseEntryData>
+      wildAnimalSpeciesDatabaseEntries,
+    IReadOnlyList<DatWildAnimalVisualData> wildAnimalVisuals,
+    IReadOnlyList<DatWildAnimalPlacementData> wildAnimalPlacements
   ) {
     var park = new Park(terrain);
     if (waterManager != null) WaterManagerLoader.Load(park, terrain, waterManager);
@@ -151,6 +189,9 @@ public class World : GDK.Game.World {
     park.TrackedRideInstances.AddRange(trackedRideInstances);
     park.RideTrainInstances.AddRange(rideTrainInstances);
     park.RideCarInstances.AddRange(rideCarInstances);
+    park.WildAnimalSpeciesDatabaseEntries.AddRange(wildAnimalSpeciesDatabaseEntries);
+    park.WildAnimalVisuals.AddRange(wildAnimalVisuals);
+    park.WildAnimalPlacements.AddRange(wildAnimalPlacements);
     return park;
   }
 

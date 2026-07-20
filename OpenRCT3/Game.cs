@@ -207,27 +207,19 @@ public class Game : IGame {
       using var pathSurfaces = PathSurfaceResourceResolver.LoadInstalled(
         installPath,
         World.Park.PathPlacements.Select(placement => placement.Tile).ToArray());
-      foreach (var batch in PathMeshBuilder.BuildBatches(
-        World.Park,
-        World.Terrain,
-        new Vector4(0.72f, 0.64f, 0.50f, 1f),
-        new Vector4(0.28f, 0.48f, 0.70f, 1f))) {
-        var materialTile = new PathTile {
-          IsQueue = batch.Kind == PathMaterialKind.Queue,
-          SurfaceSystemName = batch.SurfaceSystemName,
-          SurfaceColours = batch.MaterialColours,
-        };
-        Material material;
-        if (pathSurfaces.TryResolveTexture(materialTile, out var texture)) {
-          material = new Textured { AlbedoTexture = texture! };
-        }
-        else {
-          // Unknown custom and legacy DAT surfaces keep the established kind-specific vertex tint.
-          material = new Flat();
-        }
-        var pathModel = new Model(batch.Mesh) { Material = material };
-        Scene.Models.Add(pathModel);
-      }
+      var pathVisuals = PathVisualSceneLoader.Load(World.Park, World.Terrain, pathSurfaces);
+      Scene.Models.AddRange(pathVisuals.Models);
+      // Unknown custom and legacy DAT surfaces keep the established kind-specific vertex tint in
+      // the fallback batches; resolved PTD/QTD surfaces use their native owner SHS and FTX materials.
+      logger.Debug(
+        "Added {ModelCount} native path models for {RenderedCount} placements; " +
+        "{FallbackCount} placements kept flat fallback geometry " +
+        "({UnsupportedTopologyCount} isolated ordinary); shapes: {ShapeKinds}",
+        pathVisuals.ShapeModelCount,
+        pathVisuals.RenderedPlacementCount,
+        pathVisuals.FallbackPlacementCount,
+        pathVisuals.UnsupportedTopologyPlacementCount,
+        string.Join(", ", pathVisuals.ShapeKinds.Select(pair => $"{pair.Key}={pair.Value}")));
     }
     logger.Debug("Added {Count} path tiles", World.Park.PathPlacements.Count);
 
@@ -243,8 +235,52 @@ public class Game : IGame {
       scenery.MissingOverlayPlacementCount,
       scenery.MissingTextureBatchCount);
 
+    WildAnimalCameraFramingResult? wildAnimalDiagnosticFraming = null;
+    if (World.Park.WildAnimalPlacements.Count > 0) {
+      try {
+        var animals = WildAnimalSceneLoader.Load(World.Park, installPath);
+        var publishedAnimals = false;
+        try {
+          var animalFraming = GamePresentationOptions.ShowWildAnimalDiagnostics
+            ? WildAnimalCameraFraming.Calculate(animals.Scene)
+            : null;
+          Scene.Models.AddRange(animals.Scene.Models);
+          publishedAnimals = true;
+          wildAnimalDiagnosticFraming = animalFraming;
+        }
+        finally {
+          if (!publishedAnimals)
+            ResourceReleaser.Run(animals.Scene.Models.Reverse()
+              .Select(model => new Action(model.Dispose)));
+        }
+        World.Park.WildAnimalResources = animals.Resources;
+        World.Park.WildAnimalScene = animals.Scene;
+        logger.Debug(
+          "Added {ModelCount} static Wild-animal models for {BuiltCount} of " +
+          "{PlacementCount} saved animals across {SpeciesCount} species and " +
+          "{MaterialCount} exact TEX materials; skipped {HiddenCount} hidden animals and " +
+          "{MissingMaterialCount} missing-material batches",
+          animals.Scene.ModelCount,
+          animals.Scene.BuiltPlacementCount,
+          animals.Scene.SourcePlacementCount,
+          animals.SpeciesCount,
+          animals.MaterialCount,
+          animals.Scene.HiddenPlacementCount,
+          animals.Scene.MissingMaterialBatchCount);
+      }
+      catch (Exception error) when (
+        error is InvalidDataException or IOException or UnauthorizedAccessException or
+          ArgumentException or InvalidOperationException or AggregateException or
+          OverflowException) {
+        // Wild animals are additive while the decoded terrain and scenery remain authoritative.
+        // Unsupported custom WAS/MDL/TXS data must not make an otherwise valid park unloadable.
+        logger.Warn(error, "Wild-animal scene could not be built");
+      }
+    }
+
     Vector3? rideCarDiagnosticTarget = null;
     float? rideCarDiagnosticDistance = null;
+    IReadOnlyList<Model> rideTrackDiagnosticModels = [];
     if (World.Park.RideTrackPlacements.Count > 0 && World.Park.RideTracks.Count > 0) {
       try {
         using var loadedTrackResources = RideTrackResourceCatalogLoader.Load(
@@ -289,6 +325,43 @@ public class Game : IGame {
           "Indexed {ResolvedCount} of {TrackCount} ride-track bounds",
           trackSpatialIndex.ResolvedTrackCount,
           trackSpatialIndex.TrackCount);
+        try {
+          var trackVisuals = RideTrackVisualResourceBridge.Resolve(
+            loadedTrackResources.TrackVisualResources);
+          using var trackVisualMaterials = new RideCarVisualMaterialResolver(
+            loadedTrackResources.Context);
+          var trackVisualScene = RideTrackVisualSceneBuilder.Build(
+            trackResources,
+            trackVisuals,
+            World.Terrain,
+            trackVisualMaterials);
+          var publishedTrackVisuals = false;
+          try {
+            Scene.Models.AddRange(trackVisualScene.Models);
+            publishedTrackVisuals = true;
+          }
+          finally {
+            if (!publishedTrackVisuals)
+              ResourceReleaser.Run(trackVisualScene.Models.Reverse()
+                .Select(model => new Action(model.Dispose)));
+          }
+          logger.Debug(
+            "Added {ModelCount} ride-track visual models from {RenderedCount} placements; " +
+            "skipped {SkippedCount} placements and {MissingMaterialCount} missing-material " +
+            "batches",
+            trackVisualScene.ModelCount,
+            trackVisualScene.RenderedPlacementCount,
+            trackVisualScene.SkippedPlacementCount,
+            trackVisualScene.MissingMaterialBatchCount);
+        }
+        catch (Exception error) when (
+          error is InvalidDataException or IOException or UnauthorizedAccessException or
+            ArgumentException or InvalidOperationException or AggregateException or
+            OverflowException) {
+          // Exact visual composition is additive. Keep the proven track graph and optional contact
+          // rail diagnostics when unsupported or malformed visual resources cannot be rendered.
+          logger.Warn(error, "Ride-track visual scene could not be built");
+        }
         var rideResourceCounts = loadedTrackResources.RideResources.DecodedCounts;
         logger.Debug(
           "Resolved {ResolvedCount} of {InstanceCount} ride-instance resources; decoded " +
@@ -553,6 +626,7 @@ public class Game : IGame {
         if (GamePresentationOptions.ShowRideTrackDiagnostics) {
           var diagnostics = RideTrackDiagnosticSceneBuilder.Build(trackGeometry);
           Scene.Models.AddRange(diagnostics.Models);
+          rideTrackDiagnosticModels = diagnostics.Models;
           logger.Debug(
             "Added {ModelCount} diagnostic ride-track contact-rail models ({Detail})",
             diagnostics.Models.Count,
@@ -592,15 +666,42 @@ public class Game : IGame {
     Scene.Camera.Frame(framing.Target, framing.Distance, framing.MinimumDistance);
     logger.Trace("Framed camera on terrain");
 
-    // Native diagnostics need a close enough view to inspect car orientation and materials. Keep
-    // the normal terrain framing unchanged, but aim diagnostic captures at the rendered saved train.
-    if (GamePresentationOptions.ShowRideTrackDiagnostics &&
-        rideCarDiagnosticTarget.HasValue && rideCarDiagnosticDistance.HasValue) {
-      Scene.Camera.Frame(
-        rideCarDiagnosticTarget.Value,
-        rideCarDiagnosticDistance.Value,
-        Camera.NearPlaneDistance * 2f);
-      logger.Trace("Framed diagnostic camera on saved ride cars");
+    // Native diagnostics need a close enough view to inspect actual emitted geometry. Existing saved
+    // ride-car framing stays authoritative; contact rails and explicitly requested animals are
+    // fallbacks when no saved-car frame is available.
+    var diagnosticFraming = TryCalculateModelFraming(rideTrackDiagnosticModels);
+    var diagnosticTarget = GamePresentationOptions.SelectDiagnosticCameraTarget(
+      GamePresentationOptions.ShowRideTrackDiagnostics,
+      GamePresentationOptions.ShowWildAnimalDiagnostics,
+      diagnosticFraming.HasValue,
+      rideCarDiagnosticTarget.HasValue && rideCarDiagnosticDistance.HasValue,
+      wildAnimalDiagnosticFraming.HasValue);
+    switch (diagnosticTarget) {
+      case GameDiagnosticCameraTarget.RideTrackGeometry:
+        Scene.Camera.Frame(
+          diagnosticFraming!.Value.Target,
+          diagnosticFraming.Value.Distance,
+          Camera.NearPlaneDistance * 2f);
+        logger.Trace("Framed diagnostic camera on emitted ride-track geometry");
+        break;
+      case GameDiagnosticCameraTarget.RideCars:
+        Scene.Camera.Frame(
+          rideCarDiagnosticTarget!.Value,
+          rideCarDiagnosticDistance!.Value,
+          Camera.NearPlaneDistance * 2f);
+        logger.Trace("Framed diagnostic camera on saved ride cars");
+        break;
+      case GameDiagnosticCameraTarget.WildAnimals:
+        Scene.Camera.Frame(
+          wildAnimalDiagnosticFraming!.Value.Target,
+          wildAnimalDiagnosticFraming.Value.Distance,
+          wildAnimalDiagnosticFraming.Value.MinimumDistance);
+        logger.Trace("Framed diagnostic camera on static Wild animals");
+        break;
+      case GameDiagnosticCameraTarget.Terrain:
+        break;
+      default:
+        throw new ArgumentOutOfRangeException(nameof(diagnosticTarget), diagnosticTarget, null);
     }
 
     // Keep normal gameplay unchanged while allowing native visual verification to capture the map
@@ -608,6 +709,29 @@ public class Game : IGame {
     if (GamePresentationOptions.ShowUserInterface) Scene.Windows.Add(new Editor());
 
     BindCameraInput(IoC.Resolve<IInputContext>());
+  }
+
+  private static (Vector3 Target, float Distance)? TryCalculateModelFraming(
+    IReadOnlyList<Model> models
+  ) {
+    if (models.Count == 0) return null;
+    var minimum = new Vector3(float.PositiveInfinity);
+    var maximum = new Vector3(float.NegativeInfinity);
+    var vertexCount = 0;
+    foreach (var model in models) {
+      foreach (var vertex in model.Mesh.Vertices) {
+        var world = Vector3.Transform(vertex.Position, model.Transform.Matrix);
+        if (!float.IsFinite(world.X) || !float.IsFinite(world.Y) || !float.IsFinite(world.Z))
+          continue;
+        minimum = Vector3.Min(minimum, world);
+        maximum = Vector3.Max(maximum, world);
+        vertexCount++;
+      }
+    }
+    if (vertexCount == 0) return null;
+    var target = (minimum + maximum) * 0.5f;
+    var distance = Math.Clamp(Vector3.Distance(minimum, maximum) * 1.25f, 18f, 80f);
+    return (target, distance);
   }
 
   /// <summary>

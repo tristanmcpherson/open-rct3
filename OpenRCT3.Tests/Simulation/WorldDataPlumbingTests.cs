@@ -4,6 +4,7 @@
 
 using OpenRCT3.Serialization;
 using OpenRCT3.Simulation;
+using System.Numerics;
 
 namespace OpenRCT3.Tests.Simulation;
 
@@ -26,7 +27,10 @@ public class WorldDataPlumbingTests {
       out var trackSegments,
       out var trackedRideInstances,
       out var rideTrainInstances,
-      out var rideCarInstances);
+      out var rideCarInstances,
+      out var wildAnimalSpeciesDatabaseEntries,
+      out var wildAnimalVisuals,
+      out var wildAnimalPlacements);
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(terrain.Width, Is.EqualTo(data.Width));
@@ -40,6 +44,11 @@ public class WorldDataPlumbingTests {
       Assert.That(trackedRideInstances, Is.SameAs(data.TrackedRideInstances));
       Assert.That(rideTrainInstances, Is.SameAs(data.RideTrainInstances));
       Assert.That(rideCarInstances, Is.SameAs(data.RideCarInstances));
+      Assert.That(
+        wildAnimalSpeciesDatabaseEntries,
+        Is.SameAs(data.WildAnimalSpeciesDatabaseEntries));
+      Assert.That(wildAnimalVisuals, Is.SameAs(data.WildAnimalVisuals));
+      Assert.That(wildAnimalPlacements, Is.SameAs(data.WildAnimalPlacements));
     }
   }
 
@@ -57,7 +66,10 @@ public class WorldDataPlumbingTests {
       out var trackSegments,
       out var trackedRideInstances,
       out var rideTrainInstances,
-      out var rideCarInstances);
+      out var rideCarInstances,
+      out var wildAnimalSpeciesDatabaseEntries,
+      out var wildAnimalVisuals,
+      out var wildAnimalPlacements);
 
     var park = World.BuildPark(
       terrain,
@@ -70,7 +82,10 @@ public class WorldDataPlumbingTests {
       trackSegments,
       trackedRideInstances,
       rideTrainInstances,
-      rideCarInstances);
+      rideCarInstances,
+      wildAnimalSpeciesDatabaseEntries,
+      wildAnimalVisuals,
+      wildAnimalPlacements);
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(park.PathPlacements, Has.Count.EqualTo(1));
@@ -84,6 +99,11 @@ public class WorldDataPlumbingTests {
       Assert.That(park.TrackedRideInstances, Is.EqualTo(data.TrackedRideInstances));
       Assert.That(park.RideTrainInstances, Is.EqualTo(data.RideTrainInstances));
       Assert.That(park.RideCarInstances, Is.EqualTo(data.RideCarInstances));
+      Assert.That(
+        park.WildAnimalSpeciesDatabaseEntries,
+        Is.EqualTo(data.WildAnimalSpeciesDatabaseEntries));
+      Assert.That(park.WildAnimalVisuals, Is.EqualTo(data.WildAnimalVisuals));
+      Assert.That(park.WildAnimalPlacements, Is.EqualTo(data.WildAnimalPlacements));
       Assert.That(
         park.RideTrackPlacements[0].SceneryPlacementSourceEntryId,
         Is.EqualTo(SceneryItemEntryId));
@@ -199,6 +219,29 @@ public class WorldDataPlumbingTests {
       distance: 1.25f,
       reversed: false,
       speed: 2.5f);
+    var wildAnimalSpecies = new DatWildAnimalSpeciesDatabaseEntryData(
+      1_100,
+      true,
+      @"WildAnimals\WildAnimals",
+      "Ostrich");
+    var wildAnimalVisual = new DatWildAnimalVisualData(
+      1_101,
+      [],
+      true,
+      true,
+      Matrix4x4.CreateTranslation(12f, 3f, -8f));
+    var wildAnimal = new DatWildAnimalData(
+      1_102,
+      wildAnimalSpecies.EntryId,
+      wildAnimalVisual.EntryId,
+      true,
+      false,
+      1);
+    var wildAnimalPlacement = new DatWildAnimalPlacementData(
+      wildAnimal,
+      wildAnimalSpecies,
+      wildAnimalVisual,
+      DatWildAnimalVariantSelectionStatus.Unsupported);
 
     return new DatTerrainData(
       width: 12,
@@ -216,6 +259,10 @@ public class WorldDataPlumbingTests {
       trackSegments: [trackSegment],
       trackedRideInstances: [trackedRideInstance],
       rideTrainInstances: [rideTrainInstance],
-      rideCarInstances: [rideCarInstance]);
+      rideCarInstances: [rideCarInstance],
+      wildAnimalSpeciesDatabaseEntries: [wildAnimalSpecies],
+      wildAnimalVisuals: [wildAnimalVisual],
+      wildAnimals: [wildAnimal],
+      wildAnimalPlacements: [wildAnimalPlacement]);
   }
 }

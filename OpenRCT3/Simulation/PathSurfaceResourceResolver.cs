@@ -37,10 +37,39 @@ internal sealed record ResolvedQueueTypeResource(QueueType Resource)
 }
 
 /// <summary>
+/// The first serialized static LOD reached through one PTD/QTD owner pair's exact same-name SVD.
+/// </summary>
+/// <seealso href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/include/path.h">
+/// rct3-importer path owner fields
+/// </seealso>
+/// <seealso href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/libOVLng/ManagerSVD.cpp">
+/// rct3-importer serialized SVD LOD order
+/// </seealso>
+internal sealed record ResolvedPathShape(
+  SceneryItemVisual Visual,
+  SceneryItemVisualLod Lod,
+  StaticShape Shape,
+  SceneryResourceEntry VisualSource,
+  SceneryResourceEntry ShapeSource
+);
+
+/// <summary>The path-visual resource operations consumed by scene construction.</summary>
+internal interface IPathVisualResourceResolver {
+  bool TryResolve(PathTile tile, out ResolvedPathSurfaceResource? resource);
+  bool TryResolveTexture(PathTile tile, out Texture? texture);
+  bool TryResolveShape(PathTile tile, string ownerName, out ResolvedPathShape? shape);
+  bool TryResolveShapeTexture(
+    PathTile tile,
+    SceneryResourceEntry shapeSource,
+    string? taggedReference,
+    out Texture? texture);
+}
+
+/// <summary>
 /// Resolves exact, case-insensitive DAT path surface system names against decoded PTD/QTD internal
 /// names while keeping the two resource namespaces type-safe.
 /// </summary>
-internal sealed class PathSurfaceResourceResolver : IDisposable {
+internal sealed class PathSurfaceResourceResolver : IDisposable, IPathVisualResourceResolver {
   private const int MaximumResourceCount = 100_000;
   private const int MaximumSystemNameLength = 4_096;
   private readonly IReadOnlyDictionary<string, ResolvedPathTypeResource> pathTypes;
@@ -182,6 +211,42 @@ internal sealed class PathSurfaceResourceResolver : IDisposable {
     if (!contexts.TryGetValue(resource!.SystemName, out var context)) return false;
     texture = context.ResolveTexture(tile.SurfaceColours);
     return true;
+  }
+
+  /// <summary>
+  /// Resolves the first serialized SHS LOD from the exact SVD named by one PTD/QTD owner field.
+  /// </summary>
+  public bool TryResolveShape(
+    PathTile tile,
+    string ownerName,
+    out ResolvedPathShape? shape
+  ) {
+    ObjectDisposedException.ThrowIf(disposed, this);
+    shape = null;
+    if (!TryResolve(tile, out var resource)) return false;
+    var contexts = tile.IsQueue ? installedQueueContexts : installedPathContexts;
+    if (!contexts.TryGetValue(resource!.SystemName, out var context)) return false;
+    shape = context.ResolveShape(ownerName);
+    return true;
+  }
+
+  /// <summary>Resolves one exact FTX used by a decoded path shape mesh.</summary>
+  public bool TryResolveShapeTexture(
+    PathTile tile,
+    SceneryResourceEntry shapeSource,
+    string? taggedReference,
+    out Texture? texture
+  ) {
+    ObjectDisposedException.ThrowIf(disposed, this);
+    texture = null;
+    if (!TryResolve(tile, out var resource)) return false;
+    var contexts = tile.IsQueue ? installedQueueContexts : installedPathContexts;
+    if (!contexts.TryGetValue(resource!.SystemName, out var context)) return false;
+    return context.TryResolveShapeTexture(
+      shapeSource,
+      taggedReference,
+      tile.SurfaceColours,
+      out texture);
   }
 
   /// <inheritdoc />
@@ -361,7 +426,10 @@ internal sealed class PathSurfaceResourceResolver : IDisposable {
   private sealed class InstalledPathSurfaceContext : IDisposable {
     private readonly SceneryResourceCatalog catalog;
     private readonly SceneryResourceEntry owner;
+    private readonly SceneryTextureResolver shapeTextures;
     private readonly SceneryTextureResolver? queueTextures;
+    private readonly Dictionary<string, ResolvedPathShape> shapes =
+      new(StringComparer.OrdinalIgnoreCase);
     private Texture? primaryTexture;
     private bool disposed;
 
@@ -379,6 +447,7 @@ internal sealed class PathSurfaceResourceResolver : IDisposable {
       this.catalog = catalog;
       this.owner = owner;
       PathType = pathType;
+      shapeTextures = new SceneryTextureResolver(catalog);
     }
 
     public InstalledPathSurfaceContext(
@@ -392,6 +461,7 @@ internal sealed class PathSurfaceResourceResolver : IDisposable {
       this.catalog = catalog;
       this.owner = owner;
       QueueType = queueType;
+      shapeTextures = new SceneryTextureResolver(catalog);
       queueTextures = new SceneryTextureResolver(catalog);
     }
 
@@ -425,10 +495,92 @@ internal sealed class PathSurfaceResourceResolver : IDisposable {
       return primaryTexture;
     }
 
+    public ResolvedPathShape ResolveShape(string ownerName) {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      ArgumentException.ThrowIfNullOrWhiteSpace(ownerName);
+      if (shapes.TryGetValue(ownerName, out var cached)) return cached;
+
+      // The PTD/QTD field serializes an owner-pair name, while the stock pair's same-name SVD
+      // serializes its actual high/medium/low SHS LOD identities. Follow that chain exactly instead
+      // of treating geometry size as an implicit LOD contract.
+      var visualEntries = catalog.FindInSiblingOwnerPair(
+        ownerName,
+        FileType.SceneryItemVisual);
+      var exactVisualEntries = visualEntries.Where(entry => string.Equals(
+        entry.File.Name,
+        ownerName,
+        StringComparison.OrdinalIgnoreCase)).ToArray();
+      if (exactVisualEntries.Length != 1)
+        throw new InvalidDataException(
+          $"Installed path shape owner '{ownerName}' contains " +
+          $"{exactVisualEntries.Length} exact same-name SVD resources; exactly one is required.");
+      var visualSource = exactVisualEntries[0];
+      var (visual, lod) = SelectFirstSerializedStaticLod(
+        ownerName,
+        SceneryItemVisuals.Extract(visualSource.Archive));
+      if (string.IsNullOrWhiteSpace(lod.StaticShapeRef))
+        throw new InvalidDataException(
+          $"Installed path owner SVD '{visual.Name}' first LOD has no SHS reference.");
+      var (shapeName, shapeType) = ParseShapeReference(visual, lod.StaticShapeRef);
+      if (shapeType != FileType.StaticShape)
+        throw new InvalidDataException(
+          $"Installed path owner SVD '{visual.Name}' first LOD references " +
+          $"'{lod.StaticShapeRef}', expected an SHS.");
+      var shapeSource = catalog.FindWithinOwnerClosure(
+        visualSource,
+        shapeName,
+        FileType.StaticShape)
+        ?? throw new InvalidDataException(
+          $"Installed path owner SVD '{visual.Name}' first LOD SHS " +
+          $"'{lod.StaticShapeRef}' was not found in its owner closure.");
+      var exactShapes = StaticShapes.Extract(shapeSource.Archive).Where(shape =>
+        string.Equals(shape.Name, shapeSource.File.Name, StringComparison.OrdinalIgnoreCase))
+        .ToArray();
+      if (exactShapes.Length != 1)
+        throw new InvalidDataException(
+          $"Installed path owner SVD '{visual.Name}' resolves first LOD SHS " +
+          $"'{lod.StaticShapeRef}' to {exactShapes.Length} decoded resources; " +
+          "exactly one is required.");
+      var resolved = new ResolvedPathShape(
+        visual,
+        lod,
+        exactShapes[0],
+        visualSource,
+        shapeSource);
+      shapes.Add(ownerName, resolved);
+      return resolved;
+    }
+
+    public bool TryResolveShapeTexture(
+      SceneryResourceEntry shapeSource,
+      string? taggedReference,
+      PathSurfaceColours? colours,
+      out Texture? texture
+    ) {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      var flexiColours = colours.HasValue
+        ? SceneryFlexiColours.FromSerialized(
+          colours.Value.First,
+          colours.Value.Second,
+          colours.Value.Third)
+        : default;
+      return shapeTextures.TryResolveFrom(
+        shapeSource,
+        null,
+        taggedReference,
+        flexiColours,
+        out texture);
+    }
+
     public void Dispose() {
       if (disposed) return;
       disposed = true;
       var errors = new List<Exception>();
+      try {
+        shapeTextures.Dispose();
+      } catch (Exception error) {
+        errors.Add(error);
+      }
       try {
         queueTextures?.Dispose();
       } catch (Exception error) {
@@ -446,6 +598,51 @@ internal sealed class PathSurfaceResourceResolver : IDisposable {
       }
       primaryTexture = null;
       if (errors.Count > 0) throw new AggregateException(errors);
+    }
+  }
+
+  internal static (
+    SceneryItemVisual Visual,
+    SceneryItemVisualLod Lod
+  ) SelectFirstSerializedStaticLod(
+    string ownerName,
+    IReadOnlyList<SceneryItemVisual> visuals
+  ) {
+    ArgumentException.ThrowIfNullOrWhiteSpace(ownerName);
+    ArgumentNullException.ThrowIfNull(visuals);
+    var exactVisuals = visuals.Where(visual => visual != null && string.Equals(
+      visual.Name,
+      ownerName,
+      StringComparison.OrdinalIgnoreCase)).ToArray();
+    if (exactVisuals.Length != 1)
+      throw new InvalidDataException(
+        $"Installed path shape owner '{ownerName}' decodes {exactVisuals.Length} exact SVDs; " +
+        "exactly one is required.");
+    var visual = exactVisuals[0];
+    if (visual.Lods == null || visual.Lods.Count == 0)
+      throw new InvalidDataException(
+        $"Installed path owner SVD '{visual.Name}' contains no serialized LODs.");
+    var lod = visual.Lods[0]
+      ?? throw new InvalidDataException(
+        $"Installed path owner SVD '{visual.Name}' has a null first serialized LOD.");
+    if (lod.Type != SvdLodType.StaticShape)
+      throw new InvalidDataException(
+        $"Installed path owner SVD '{visual.Name}' first serialized LOD '{lod.Name}' " +
+        $"has unsupported type {lod.Type}; expected StaticShape.");
+    return (visual, lod);
+  }
+
+  private static (string Name, FileType Type) ParseShapeReference(
+    SceneryItemVisual visual,
+    string taggedReference
+  ) {
+    try {
+      return SceneryResourceCatalog.ParseTaggedReference(taggedReference);
+    } catch (ArgumentException error) {
+      throw new InvalidDataException(
+        $"Installed path owner SVD '{visual.Name}' first LOD has malformed SHS reference " +
+        $"'{taggedReference}'.",
+        error);
     }
   }
 }

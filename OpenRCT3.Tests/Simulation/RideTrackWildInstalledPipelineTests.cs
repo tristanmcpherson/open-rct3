@@ -72,6 +72,8 @@ public class RideTrackWildInstalledPipelineTests {
         targetRides,
         targetTrains);
       var resources = loaded.Catalog.ResolveAll(park.RideTrackPlacements);
+      var trackVisuals = RideTrackVisualResourceBridge.Resolve(
+        loaded.TrackVisualResources);
       var geometry = RideTrackGeometryResolver.Resolve(
         terrain,
         park.RideTracks,
@@ -90,6 +92,10 @@ public class RideTrackWildInstalledPipelineTests {
       TestContext.Progress.WriteLine(
         $"Raiders piecewise seams: 4267->4307 {FormatSeam(firstSeam)}; " +
         $"4295->4297 {FormatSeam(secondSeam)}");
+      TestContext.Progress.WriteLine(
+        $"Raiders track visuals: archives={loaded.Context.LoadedCommonPaths.Count}, " +
+        $"visuals={trackVisuals.Visuals.Count}, staticLods={trackVisuals.StaticLodCount}, " +
+        $"boneLods={trackVisuals.BoneLodCount}, meshes={trackVisuals.MeshCount}");
 
       using (Assert.EnterMultipleScope()) {
         Assert.That(targetTracks.Select(track => track.EntryId),
@@ -107,6 +113,11 @@ public class RideTrackWildInstalledPipelineTests {
         Assert.That(geometry.Tracks.Select(link => link.Circuit!.Continuity),
           Is.All.EqualTo(TrackCircuitContinuity.ImportedPiecewise));
         Assert.That(geometry.UnresolvedResourceTrackCount, Is.Zero);
+        Assert.That(loaded.Context.LoadedCommonPaths, Has.Count.EqualTo(108));
+        Assert.That(trackVisuals.Visuals, Has.Count.EqualTo(83));
+        Assert.That(trackVisuals.StaticLodCount, Is.EqualTo(249));
+        Assert.That(trackVisuals.BoneLodCount, Is.Zero);
+        Assert.That(trackVisuals.MeshCount, Is.EqualTo(608));
         Assert.That(geometry.UnsupportedGeometryTrackCount, Is.Zero);
         Assert.That(geometry.UnsupportedTopologyTrackCount, Is.Zero);
         Assert.That(firstSeam.LeftPositionDistance, Is.LessThanOrEqualTo(0.0000025f));

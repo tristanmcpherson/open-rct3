@@ -264,6 +264,39 @@ public class Terrain {
     out IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
     out IReadOnlyList<DatRideCarInstanceData> rideCarInstances,
     string? mapPath = null
+  ) => Load(
+    out waterManager,
+    out paths,
+    out sceneryItems,
+    out sceneryItemPlacements,
+    out trackPieces,
+    out rideTracks,
+    out trackSegments,
+    out trackedRideInstances,
+    out rideTrainInstances,
+    out rideCarInstances,
+    out _,
+    out _,
+    out _,
+    mapPath);
+
+  /// <summary>Loads terrain plus decoded ride and Wild-animal provenance.</summary>
+  internal static Terrain Load(
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    out IReadOnlyList<DatTrackPieceData> trackPieces,
+    out IReadOnlyList<DatRideTrackData> rideTracks,
+    out IReadOnlyList<DatTrackSegmentData> trackSegments,
+    out IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
+    out IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
+    out IReadOnlyList<DatRideCarInstanceData> rideCarInstances,
+    out IReadOnlyList<DatWildAnimalSpeciesDatabaseEntryData>
+      wildAnimalSpeciesDatabaseEntries,
+    out IReadOnlyList<DatWildAnimalVisualData> wildAnimalVisuals,
+    out IReadOnlyList<DatWildAnimalPlacementData> wildAnimalPlacements,
+    string? mapPath = null
   ) {
     var config = AppConfig.Instance;
     Debug.Assert(config.InstallPath != null);
@@ -310,7 +343,10 @@ public class Terrain {
       out trackSegments,
       out trackedRideInstances,
       out rideTrainInstances,
-      out rideCarInstances);
+      out rideCarInstances,
+      out wildAnimalSpeciesDatabaseEntries,
+      out wildAnimalVisuals,
+      out wildAnimalPlacements);
 
     // Load the base terrain pair; Complete Edition's sibling Terrain_CT pair is overlaid by TER
     // number when present so expansion maps can use surface indices 26-31.
@@ -435,6 +471,39 @@ public class Terrain {
     out IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
     out IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
     out IReadOnlyList<DatRideCarInstanceData> rideCarInstances
+  ) => FromData(
+    data,
+    out waterManager,
+    out paths,
+    out sceneryItems,
+    out sceneryItemPlacements,
+    out trackPieces,
+    out rideTracks,
+    out trackSegments,
+    out trackedRideInstances,
+    out rideTrainInstances,
+    out rideCarInstances,
+    out _,
+    out _,
+    out _);
+
+  /// <summary>Builds terrain while preserving ride and Wild-animal provenance.</summary>
+  internal static Terrain FromData(
+    DatTerrainData data,
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    out IReadOnlyList<DatTrackPieceData> trackPieces,
+    out IReadOnlyList<DatRideTrackData> rideTracks,
+    out IReadOnlyList<DatTrackSegmentData> trackSegments,
+    out IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
+    out IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
+    out IReadOnlyList<DatRideCarInstanceData> rideCarInstances,
+    out IReadOnlyList<DatWildAnimalSpeciesDatabaseEntryData>
+      wildAnimalSpeciesDatabaseEntries,
+    out IReadOnlyList<DatWildAnimalVisualData> wildAnimalVisuals,
+    out IReadOnlyList<DatWildAnimalPlacementData> wildAnimalPlacements
   ) {
     var terrain = FromData(data);
     waterManager = data.WaterManager;
@@ -447,6 +516,9 @@ public class Terrain {
     trackedRideInstances = data.TrackedRideInstances;
     rideTrainInstances = data.RideTrainInstances;
     rideCarInstances = data.RideCarInstances;
+    wildAnimalSpeciesDatabaseEntries = data.WildAnimalSpeciesDatabaseEntries;
+    wildAnimalVisuals = data.WildAnimalVisuals;
+    wildAnimalPlacements = data.WildAnimalPlacements;
     return terrain;
   }
 

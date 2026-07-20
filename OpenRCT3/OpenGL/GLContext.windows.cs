@@ -80,18 +80,17 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
       if (wgl.TryGetExtension<ArbCreateContext>(out var ext) == false)
         throw new PlatformNotSupportedException("OpenGL wglCreateContextAttribsARB extension is unavailable.");
       var arbCreateContext = ext ?? throw new Exception(CreateContextError);
+#if DEBUG
+      // Request a debugging context
+      var contextFlags = Settings.Flags | ContextFlagMask.DebugBit;
+#else
+      var contextFlags = Settings.Flags;
+#endif
       var context = arbCreateContext.CreateContextAttrib(hdc, nint.Zero, [
         (int)ContextAttribute.MajorVersion, Settings.Version.Major,
         (int)ContextAttribute.MinorVersion, Settings.Version.Minor,
         (int)ContextAttribute.ProfileMask, (int)Settings.Profile,
-        (int)ContextAttribute.Flags,
-        (int)(
-          Settings.Flags |
-  #if DEBUG
-          // Request a debugging context
-          ContextFlagMask.DebugBit
-  #endif
-        ),
+        (int)ContextAttribute.Flags, (int)contextFlags,
         0 // NULL terminator
       ]);
       // Cleanup temporary context

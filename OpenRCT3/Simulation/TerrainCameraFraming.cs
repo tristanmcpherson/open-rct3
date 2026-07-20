@@ -21,7 +21,7 @@ public static class TerrainCameraFraming {
   /// </remarks>
   public const float DistanceMargin = 1.1f;
   /// <summary>
-  /// Extra forward depth between the closest terrain bound and the near clip plane at maximum zoom.
+  /// Object-detail zoom floor retained after the initial whole-terrain frame is calculated.
   /// </summary>
   public const float MinimumDistanceClearance = Camera.NearPlaneDistance * 2f;
 
@@ -49,12 +49,12 @@ public static class TerrainCameraFraming {
     var min = new Vector3(minXY, Terrain.CornerHeightToWorldZ(minHeight));
     var max = new Vector3(maxXY, Terrain.CornerHeightToWorldZ(maxHeight));
     var target = (min + max) * 0.5f;
-    var halfExtents = (max - min) * 0.5f;
     var distance = Vector3.Distance(min, max) * DistanceMargin;
-    // The camera can orbit to any azimuth and within one degree of either vertical pole. The AABB's
-    // half-diagonal is its maximum support over every unit view direction, so this minimum keeps the
-    // eye and near plane outside the rendered terrain at every allowed yaw and elevation.
-    var minimumDistance = halfExtents.Length() + MinimumDistanceClearance;
+    // Whole-map containment belongs to the initial distance, not the interactive zoom floor. Keeping
+    // the half-diagonal as MinimumDistance made every later pan inherit a map-sized zoom clamp.
+    var minimumDistance = MathF.Max(
+      CameraController.MinDistance,
+      MinimumDistanceClearance);
     return (target, distance, minimumDistance);
   }
 }

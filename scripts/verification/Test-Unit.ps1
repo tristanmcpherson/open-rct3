@@ -20,7 +20,7 @@ $approvedDumperSkip = 'Dumper.Tests.TruncatedLabelTests.TestVeryLongPath_Preserv
 $approvedInstalledAssetSkips = @(
   'OpenCobra.Tests.OVL.BoneAnimationsTests.Extract_InstalledVintageCar_DecodesDeclaredBanResources',
   'OpenCobra.Tests.OVL.BoneShapesTests.Extract_InstalledSaloonBrawlPreservesUnsignedHighBoneIndices',
-  'OpenCobra.Tests.OVL.ModelsTests.Extract_FromInstalledAdultElephantReadsProvenCountLayout',
+  'OpenCobra.Tests.OVL.ModelsTests.Extract_FromInstalledElephantsReadsStaticGeometry',
   'OpenCobra.Tests.OVL.PathTypesTests.Extract_InstalledAsphalt_PreservesDeclaredResources',
   'OpenCobra.Tests.OVL.QueueTypesTests.Extract_InstalledQueueSet1_PreservesDeclaredResources',
   'OpenCobra.Tests.OVL.RideCarsTests.Extract_FromInstalledElephantAllowsAnimalSpeciesBody',
@@ -38,7 +38,10 @@ $approvedInstalledAssetSkips = @(
   'OpenCobra.Tests.OVL.TrackedRideTrackResourceGraphTests.Resolve_InstalledRideLinksExternalTrackSectionsAndLocalSplines("Mono","TrackBased07",15,15)',
   'OpenCobra.Tests.OVL.TrackedRideTrackResourceGraphTests.Resolve_InstalledWoodenWildMinePreservesNineExactChainTargets',
   'OpenCobra.Tests.OVL.TrackedRidesTests.Extract_FromInstalledLogFlumeArchiveDecodesTrackedRideCore',
+  'OpenCobra.Tests.OVL.WildAnimalAnimationDataTests.Extract_FromInstalledElephantProvesExactLayout',
+  'OpenCobra.Tests.OVL.WildAnimalAnimationDataTests.Extract_FromInstalledOstrichProvesExactLayout',
   'OpenCobra.Tests.OVL.WildAnimalSpeciesTests.Extract_FromInstalledElephantReadsExactFourVariantLayout',
+  'OpenCobra.Tests.OVL.WildAnimalSpeciesTests.Extract_FromInstalledOstrichReadsExactCompactFourVariantLayout',
   'OpenRCT3.Tests.Serialization.DatRideCarInstanceReaderTests.Read_BoxOfficeCapturesExactStreamlinedMonoConsistAndResumeState',
   'OpenRCT3.Tests.Serialization.DatRideCarInstanceReaderTests.Read_ScrubGardensCapturesWildTrainVisualVariantSelections',
   'OpenRCT3.Tests.Serialization.DatTrackReaderTests.Read_BoxOfficeCapturesExactTrackPieceStartDistances',
@@ -47,6 +50,7 @@ $approvedInstalledAssetSkips = @(
   'OpenRCT3.Tests.Serialization.DatTrackedRideInstanceReaderTests.Read_InstalledCampaignCapturesRideInstanceLinkage("Campaigns/Base/BoxOffice.dat")',
   'OpenRCT3.Tests.Serialization.DatTrackedRideInstanceReaderTests.Read_InstalledCampaignCapturesRideInstanceLinkage("Campaigns/Base/Soaked/Atlantis.dat")',
   'OpenRCT3.Tests.Serialization.DatTrackedRideInstanceReaderTests.Read_InstalledCampaignCapturesRideInstanceLinkage("Campaigns/Base/Wild/GeminiBasin.dat")',
+  'OpenRCT3.Tests.Simulation.PathSurfaceResourceResolverTests.LoadInstalled_ResolvesOwnerThroughSameNameSvdFirstSerializedShsLod',
   'OpenRCT3.Tests.Simulation.PathSurfaceResourceResolverTests.LoadInstalled_ResolvesStockOrdinaryAndRecolouredQueueTextures',
   'OpenRCT3.Tests.Simulation.PathSurfaceResourceResolverTests.TryResolve_InstalledAsphaltAndQueueSet1MatchDatSystemNames',
   'OpenRCT3.Tests.Simulation.RideCarGeometryAdapterTests.BoxOffice_StreamlinedMonoBodiesExposeExactModelSpaceGeometry',
@@ -63,7 +67,12 @@ $approvedInstalledAssetSkips = @(
   'OpenRCT3.Tests.Simulation.RideTrackSectionResourceResolverTests.Resolve_InstalledCampaignsLinkExactDatOverlayAndTksIdentities',
   'OpenRCT3.Tests.Simulation.ScenerySceneLoaderTests.Load_ScrubGardensResolvesColonialWallVisualFromExactOverlay',
   'OpenRCT3.Tests.Simulation.SceneryVisualResolverTests.Resolve_ScrubGardensRideTrackSidStopsBeforeAmbiguousGlobalVisuals',
-  'OpenRCT3.Tests.Simulation.SceneryVisualResolverTests.Resolve_ScrubGardensColonialWallUsesExactOwnerOverlay'
+  'OpenRCT3.Tests.Simulation.SceneryVisualResolverTests.Resolve_ScrubGardensColonialWallUsesExactOwnerOverlay',
+  'OpenRCT3.Tests.Serialization.DatWildAnimalReaderTests.Read_OstrichFarmCapturesExactWildAnimalIdentityAndFiniteMatrices',
+  'OpenRCT3.Tests.Simulation.WildAnimalOstrichInstalledPipelineTests.OstrichFarm_DatThroughInstalledWasModelsAndStaticScenePreservesAllSixteenAnimals',
+  'OpenRCT3.Tests.Simulation.WildAnimalOstrichInstalledPipelineTests.OstrichFarm_ProductionSceneLoaderBuildsExactTexturedSceneAndTransfersLeases',
+  'OpenRCT3.Tests.Simulation.WildAnimalSpeciesModelResourceBridgeTests.ResolveInstalled_FromElephantLinksExactFourModelsInSerializedOrder',
+  'OpenRCT3.Tests.Simulation.WildAnimalSpeciesModelResourceBridgeTests.ResolveInstalled_FromOstrichLinksExactFourModelsInSerializedOrder'
 )
 $approvedSkippedTests = @($approvedDumperSkip) + $approvedInstalledAssetSkips
 $results = Join-Path $repo 'TestResults\unit'

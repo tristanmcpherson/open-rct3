@@ -1,3 +1,5 @@
+using System.Numerics;
+using System.Text;
 using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
 
@@ -6,20 +8,78 @@ namespace OpenCobra.Tests.OVL;
 [TestFixture]
 public class ModelsTests {
   [Test]
-  public void Decode_ReadsNeutralCountsAndExactOwner() {
+  public void Decode_ReadsExactStaticGeometryAndOwner() {
     var fixture = new ModelFixture();
 
     var model = fixture.Decode();
 
-    Assert.That(model, Is.EqualTo(new ModelDefinition(
-      "AdultElephant",
-      "fixture.common.ovl",
-      1_000,
-      900,
-      3,
-      4,
-      5,
-      6)));
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(model.Name, Is.EqualTo("AdultElephant"));
+      Assert.That(model.SourcePath, Is.EqualTo("fixture.common.ovl"));
+      Assert.That(model.DataAddress, Is.EqualTo(1_000));
+      Assert.That(model.LoaderStructAddress, Is.EqualTo(900));
+      Assert.That(model.Count0, Is.EqualTo(1));
+      Assert.That(model.Count1, Is.EqualTo(2));
+      Assert.That(model.Count2, Is.EqualTo(1));
+      Assert.That(model.Count3, Is.EqualTo(3));
+      Assert.That(model.BoneCount, Is.EqualTo(1));
+      Assert.That(model.InlineValues, Is.EqualTo(new uint[] { 0xAABBCCDD }));
+      Assert.That(model.Count2Values, Is.EqualTo(new uint[] { 0x11223344 }));
+      Assert.That(model.Strings, Is.EqualTo(new[] { "texture" }));
+      Assert.That(model.Bones, Has.Count.EqualTo(1));
+      Assert.That(model.Groups, Has.Count.EqualTo(1));
+    }
+
+    var bone = model.Bones[0];
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(bone.Name, Is.EqualTo("root"));
+      Assert.That(bone.PositionQuaternion, Is.EqualTo(new Vector4(1, 2, 3, 1)));
+      Assert.That(bone.RotationQuaternion, Is.EqualTo(new Vector4(0, 0, 0, 1)));
+      Assert.That(bone.Matrix, Is.EqualTo(Matrix4x4.Identity));
+      Assert.That(bone.Parent, Is.EqualTo(ushort.MaxValue));
+      Assert.That(bone.BoneNumber, Is.EqualTo(1));
+    }
+
+    var group = model.Groups[0];
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(group.SurfaceRecordCount, Is.EqualTo(1));
+      Assert.That(group.MeshCount, Is.EqualTo(1));
+      Assert.That(group.Field4, Is.EqualTo(1));
+      Assert.That(group.BitsetMarker, Is.EqualTo(1));
+      Assert.That(group.BoneBitsetWords, Is.EqualTo(new uint[] { 1 }));
+      Assert.That(group.OptionalRecordMarker, Is.Zero);
+      Assert.That(group.Meshes, Has.Count.EqualTo(1));
+      Assert.That(group.SurfaceRecords, Has.Count.EqualTo(1));
+    }
+
+    var mesh = group.Meshes[0];
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(mesh.Fvf, Is.EqualTo(0x1305));
+      Assert.That(mesh.StoredIndexCount, Is.EqualTo(3));
+      Assert.That(mesh.Multiplier, Is.EqualTo(1));
+      Assert.That(mesh.StoredVertexCount, Is.EqualTo(3));
+      Assert.That(mesh.Field0C, Is.Zero);
+      Assert.That(mesh.Field0E, Is.EqualTo(ushort.MaxValue));
+      Assert.That(mesh.Field10, Is.Zero);
+      Assert.That(mesh.Field1C, Is.Zero);
+      Assert.That(mesh.Vertices, Has.Count.EqualTo(3));
+      Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 0, 1, 2 }));
+      Assert.That(mesh.TriangleCount, Is.EqualTo(1));
+      Assert.That(mesh.Vertices[1].Position, Is.EqualTo(Vector3.UnitX));
+      Assert.That(mesh.Vertices[2].TexCoord, Is.EqualTo(Vector2.UnitY));
+      Assert.That(mesh.Vertices[0].Skinning.Bone0, Is.Zero);
+      Assert.That(mesh.Vertices[0].Skinning.Weight0, Is.EqualTo(255));
+    }
+
+    var surface = group.SurfaceRecords[0];
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(surface.Field0, Is.EqualTo(7));
+      Assert.That(surface.CountA, Is.EqualTo(1));
+      Assert.That(surface.CountB, Is.EqualTo(1));
+      Assert.That(surface.Field6, Is.EqualTo(9));
+      Assert.That(surface.ValuesA, Is.EqualTo(new uint[] { 0x11111111 }));
+      Assert.That(surface.ValuesB, Is.EqualTo(new uint[] { 0x22222222 }));
+    }
   }
 
   [Test]
@@ -29,14 +89,15 @@ public class ModelsTests {
 
     var model = fixture.Decode();
 
-    Assert.That(model.Count0, Is.EqualTo(3));
+    Assert.That(model.BoneCount, Is.EqualTo(1));
   }
 
   [Test]
   public void Extract_RejectsReferenceWithoutExactModelTag() {
     using var ovl = new Ovl("fixture");
 
-    Assert.Throws<ArgumentException>(new Action(() => Models.Extract(ovl, "AdultElephant:bsh")));
+    Assert.Throws<ArgumentException>(new Action(() =>
+      Models.Extract(ovl, "AdultElephant:bsh")));
   }
 
   [TestCase(MalformedModel.WrongLoaderType)]
@@ -53,9 +114,27 @@ public class ModelsTests {
   [TestCase(MalformedModel.WrongExtraChunkCount)]
   [TestCase(MalformedModel.EmptySecondExtraChunk)]
   [TestCase(MalformedModel.TruncatedCountPrefix)]
-  [TestCase(MalformedModel.TruncatedCount0Region)]
-  [TestCase(MalformedModel.ExcessiveCount0)]
+  [TestCase(MalformedModel.TruncatedBoneRegion)]
+  [TestCase(MalformedModel.ExcessiveBoneCount)]
   [TestCase(MalformedModel.ExcessiveCount3)]
+  [TestCase(MalformedModel.NonFiniteBone)]
+  [TestCase(MalformedModel.InvalidParent)]
+  [TestCase(MalformedModel.UnterminatedBoneNames)]
+  [TestCase(MalformedModel.TrailingBoneNameBytes)]
+  [TestCase(MalformedModel.InvalidLengthPrefixedString)]
+  [TestCase(MalformedModel.NonzeroGroupRuntimeCursor)]
+  [TestCase(MalformedModel.NonzeroOptionalRecordMarker)]
+  [TestCase(MalformedModel.UnsupportedFvf)]
+  [TestCase(MalformedModel.UnsupportedMultiplier)]
+  [TestCase(MalformedModel.NonzeroMeshVertexCursor)]
+  [TestCase(MalformedModel.NonzeroMeshIndexCursor)]
+  [TestCase(MalformedModel.NonTriangleIndexCount)]
+  [TestCase(MalformedModel.NonFiniteVertex)]
+  [TestCase(MalformedModel.OutOfRangeIndex)]
+  [TestCase(MalformedModel.OutOfRangeBoneInfluence)]
+  [TestCase(MalformedModel.NonzeroSurfaceRuntimeCursor)]
+  [TestCase(MalformedModel.TruncatedGeometry)]
+  [TestCase(MalformedModel.TrailingGeometry)]
   public void Decode_RejectsMalformedOrUnprovenData(MalformedModel malformed) {
     var fixture = new ModelFixture();
     fixture.MakeMalformed(malformed);
@@ -65,7 +144,7 @@ public class ModelsTests {
 
   [Test]
   [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
-  public void Extract_FromInstalledAdultElephantReadsProvenCountLayout() {
+  public void Extract_FromInstalledElephantsReadsStaticGeometry() {
     var rct3Path = Environment.GetEnvironmentVariable("RCT3_PATH")!;
     Assert.That(rct3Path, Is.Not.Null.And.Not.Empty, "RCT3_PATH is not configured.");
     var path = Path.Combine(
@@ -76,6 +155,16 @@ public class ModelsTests {
     Assert.That(path, Does.Exist, $"Installed Elephant data OVL not found: {path}");
 
     using var ovl = Ovl.Load(path);
+    AssertExactInstalledAdultOwner(ovl, path);
+
+    var adult = Models.Extract(ovl, "AdultElephant:MDL");
+    var baby = Models.Extract(ovl, "BabyElephant:mdl");
+
+    AssertInstalledAdult(adult, path);
+    AssertInstalledBaby(baby, path);
+  }
+
+  private static void AssertExactInstalledAdultOwner(Ovl ovl, string path) {
     var file = ovl.Keys.Single(candidate =>
       candidate.Type == FileType.Model &&
       string.Equals(candidate.Name, "AdultElephant", StringComparison.OrdinalIgnoreCase));
@@ -109,7 +198,9 @@ public class ModelsTests {
     Assert.That(ovl.TryReadBytes(address, 0x50, out var record), Is.True);
     Assert.That(record, Has.Length.EqualTo(0x50));
     foreach (var offset in Enumerable.Range(0, 0x50))
-      Assert.That(ovl.TryGetRelocationSource(address + Convert.ToUInt32(offset), out _), Is.False);
+      Assert.That(
+        ovl.TryGetRelocationSource(address + Convert.ToUInt32(offset), out _),
+        Is.False);
     if (!ovl.TryReadExtraData(address, out var chunks))
       throw new AssertionException("AdultElephant model extra data did not resolve.");
     using (Assert.EnterMultipleScope()) {
@@ -120,40 +211,137 @@ public class ModelsTests {
       Assert.That(BitConverter.ToUInt32(chunks[0], 4), Is.Zero);
       Assert.That(BitConverter.ToUInt32(chunks[0], 8), Is.Zero);
       Assert.That(BitConverter.ToUInt32(chunks[0], 12), Is.Zero);
-      Assert.That(chunks[0].Length, Is.GreaterThanOrEqualTo(0x10 + 35 * 0x60 + 0x2C));
     }
+  }
 
-    var model = Models.Extract(ovl, "AdultElephant:MDL");
+  private static void AssertInstalledAdult(ModelDefinition model, string path) {
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(model.Name, Is.EqualTo("AdultElephant"));
+      Assert.That(model.SourcePath, Is.EqualTo(path));
+      Assert.That(model.DataAddress, Is.EqualTo(350));
+      Assert.That(model.LoaderStructAddress, Is.EqualTo(190));
+      Assert.That(model.BoneCount, Is.EqualTo(35));
+      Assert.That(model.Count1, Is.Zero);
+      Assert.That(model.Count2, Is.Zero);
+      Assert.That(model.Count3, Is.Zero);
+      Assert.That(model.InlineValues, Is.Empty);
+      Assert.That(model.Count2Values, Is.Empty);
+      Assert.That(model.Strings, Has.Count.EqualTo(4));
+      Assert.That(model.Groups, Has.Count.EqualTo(6));
+      Assert.That(
+        model.Groups.Select(group => group.Meshes.Count),
+        Is.EqualTo(new[] { 2, 2, 1, 2, 0, 0 }));
+      Assert.That(
+        model.Groups.Select(group => group.Meshes.Select(mesh => mesh.Vertices.Count)),
+        Is.EqualTo(new[] {
+          new[] { 508, 8 },
+          new[] { 322, 6 },
+          new[] { 136 },
+          new[] { 35, 8 },
+          Array.Empty<int>(),
+          Array.Empty<int>(),
+        }));
+      Assert.That(
+        model.Groups.Select(group => group.Meshes.Select(mesh => mesh.Indices.Count)),
+        Is.EqualTo(new[] {
+          new[] { 1_644, 12 },
+          new[] { 936, 6 },
+          new[] { 294 },
+          new[] { 78, 12 },
+          Array.Empty<int>(),
+          Array.Empty<int>(),
+        }));
+      Assert.That(
+        model.Groups.Sum(group => group.Meshes.Sum(mesh => mesh.Vertices.Count)),
+        Is.EqualTo(1_023));
+      Assert.That(
+        model.Groups.Sum(group => group.Meshes.Sum(mesh => mesh.Indices.Count)),
+        Is.EqualTo(2_982));
+    }
+    AssertInstalledModelIsInternallyConsistent(model, "AdultElephant", path);
+  }
 
-    TestContext.Progress.WriteLine(
-      $"Installed MDL evidence: source={model.SourcePath}, data={model.DataAddress}, " +
-      $"loader={model.LoaderStructAddress}, counts=" +
-      $"[{model.Count0}, {model.Count1}, {model.Count2}, {model.Count3}]");
-    Assert.That(model, Is.EqualTo(new ModelDefinition(
-      "AdultElephant",
-      path,
-      350,
-      190,
-      35,
-      0,
-      0,
-      0)));
+  private static void AssertInstalledBaby(ModelDefinition model, string path) {
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(model.BoneCount, Is.EqualTo(35));
+      Assert.That(model.Count1, Is.Zero);
+      Assert.That(model.Count2, Is.Zero);
+      Assert.That(model.Count3, Is.Zero);
+      Assert.That(model.InlineValues, Is.Empty);
+      Assert.That(model.Count2Values, Is.Empty);
+      Assert.That(model.Strings, Has.Count.EqualTo(4));
+      Assert.That(model.Groups, Has.Count.EqualTo(6));
+      Assert.That(
+        model.Groups.Select(group => group.Meshes.Count),
+        Is.EqualTo(new[] { 2, 2, 1, 2, 0, 0 }));
+      Assert.That(
+        model.Groups.Select(group => group.Meshes.Select(mesh => mesh.Vertices.Count)),
+        Is.EqualTo(new[] {
+          new[] { 430, 8 },
+          new[] { 315, 6 },
+          new[] { 131 },
+          new[] { 35, 8 },
+          Array.Empty<int>(),
+          Array.Empty<int>(),
+        }));
+      Assert.That(
+        model.Groups.Select(group => group.Meshes.Select(mesh => mesh.Indices.Count)),
+        Is.EqualTo(new[] {
+          new[] { 1_368, 12 },
+          new[] { 864, 6 },
+          new[] { 288 },
+          new[] { 78, 12 },
+          Array.Empty<int>(),
+          Array.Empty<int>(),
+        }));
+      Assert.That(
+        model.Groups.Sum(group => group.Meshes.Sum(mesh => mesh.Vertices.Count)),
+        Is.EqualTo(933));
+      Assert.That(
+        model.Groups.Sum(group => group.Meshes.Sum(mesh => mesh.Indices.Count)),
+        Is.EqualTo(2_628));
+    }
+    AssertInstalledModelIsInternallyConsistent(model, "BabyElephant", path);
+  }
+
+  private static void AssertInstalledModelIsInternallyConsistent(
+    ModelDefinition model,
+    string name,
+    string path
+  ) {
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(model.Name, Is.EqualTo(name));
+      Assert.That(model.SourcePath, Is.EqualTo(path));
+      Assert.That(model.BoneCount, Is.GreaterThan(0));
+      Assert.That(model.Bones, Has.Count.EqualTo(model.BoneCount));
+      Assert.That(model.Groups, Is.Not.Empty);
+      Assert.That(model.Groups.All(group => group.OptionalRecordMarker == 0), Is.True);
+      Assert.That(
+        model.Groups.SelectMany(group => group.Meshes)
+          .All(mesh => mesh.Fvf == 0x1305 && mesh.Multiplier == 1),
+        Is.True);
+      Assert.That(
+        model.Groups.SelectMany(group => group.Meshes)
+          .All(mesh => mesh.Indices.Count > 0 && mesh.Indices.Count % 3 == 0),
+        Is.True);
+    }
   }
 
   private sealed class ModelFixture {
     private const uint RecordAddress = 1_000;
     private const uint StructAddress = 900;
     private const int RecordSize = 0x50;
-    private const int CountPrefixSize = 0x10;
-    private const int FirstRegionStride = 0x60;
-    private const int MetadataSize = 0x2C;
     private const string SourcePath = "fixture.common.ovl";
 
     private readonly FakeModelDataSource source = new();
     private OvlLoaderEntry owner = new("mdl", RecordAddress, SourcePath, StructAddress);
 
     public ModelFixture() {
-      source.AddBytes(RecordAddress, new byte[RecordSize]);
+      var record = new byte[RecordSize];
+      record[4] = 1;
+      WriteUInt16(record, 6, 1);
+      WriteUInt32(record, 0x4C, 1);
+      source.AddBytes(RecordAddress, record);
       source.RegionLoaders.Add(owner);
       source.RegionLoaders.Add(new OvlLoaderEntry(
         "mdl",
@@ -162,15 +350,77 @@ public class ModelsTests {
         StructAddress + 20));
       source.Relocations[StructAddress + sizeof(uint)] = RecordAddress;
 
-      var firstChunk = new byte[
-        CountPrefixSize + 3 * FirstRegionStride + MetadataSize];
-      WriteCount(firstChunk, 0, 3);
-      WriteCount(firstChunk, 1, 4);
-      WriteCount(firstChunk, 2, 5);
-      WriteCount(firstChunk, 3, 6);
-      source.ExtraChunks.Add(firstChunk);
-      source.ExtraChunks.Add([1]);
+      var firstChunk = new List<byte>();
+      AddUInt32(firstChunk, 1);
+      AddUInt32(firstChunk, 2);
+      AddUInt32(firstChunk, 1);
+      AddUInt32(firstChunk, 3);
+      AddUInt32(firstChunk, 0xAABBCCDD);
+      Align16(firstChunk);
+      BoneOffset = firstChunk.Count;
+      AddVector4(firstChunk, new Vector4(1, 2, 3, 1));
+      AddVector4(firstChunk, new Vector4(0, 0, 0, 1));
+      AddMatrix(firstChunk, Matrix4x4.Identity);
+      AddUInt16(firstChunk, ushort.MaxValue);
+      AddUInt16(firstChunk, 1);
+      AddUInt32(firstChunk, 0x11223344);
+      Align16(firstChunk);
+      StringLengthOffset = firstChunk.Count;
+      AddUInt32(firstChunk, 8);
+      firstChunk.AddRange(Encoding.ASCII.GetBytes("texture\0"));
+      Align16(firstChunk);
+      GroupHeaderOffset = firstChunk.Count;
+      AddUInt16(firstChunk, 1);
+      AddUInt16(firstChunk, 1);
+      AddUInt32(firstChunk, 1);
+      AddUInt32(firstChunk, 0);
+      AddUInt32(firstChunk, 0);
+      AddUInt32(firstChunk, 1);
+      OptionalMarkerOffset = firstChunk.Count;
+      AddUInt32(firstChunk, 0);
+      Align16(firstChunk);
+      AddUInt32(firstChunk, 1);
+      MeshHeaderOffset = firstChunk.Count;
+      AddUInt32(firstChunk, 0x1305);
+      AddUInt32(firstChunk, 3);
+      AddUInt16(firstChunk, 1);
+      AddUInt16(firstChunk, 3);
+      AddUInt16(firstChunk, 0);
+      AddUInt16(firstChunk, ushort.MaxValue);
+      AddUInt32(firstChunk, 0);
+      AddUInt32(firstChunk, 0);
+      AddUInt32(firstChunk, 0);
+      AddUInt32(firstChunk, 0);
+      Align16(firstChunk);
+      VertexOffset = firstChunk.Count;
+      AddVertex(firstChunk, Vector3.Zero, Vector2.Zero);
+      AddVertex(firstChunk, Vector3.UnitX, Vector2.UnitX);
+      AddVertex(firstChunk, Vector3.UnitY, Vector2.UnitY);
+      IndexOffset = firstChunk.Count;
+      AddUInt16(firstChunk, 0);
+      AddUInt16(firstChunk, 1);
+      AddUInt16(firstChunk, 2);
+      SurfaceHeaderOffset = firstChunk.Count;
+      AddUInt16(firstChunk, 7);
+      AddUInt16(firstChunk, 1);
+      AddUInt16(firstChunk, 1);
+      AddUInt16(firstChunk, 9);
+      AddUInt32(firstChunk, 0);
+      AddUInt32(firstChunk, 0);
+      AddUInt32(firstChunk, 0x11111111);
+      AddUInt32(firstChunk, 0x22222222);
+      source.ExtraChunks.Add(firstChunk.ToArray());
+      source.ExtraChunks.Add(Encoding.ASCII.GetBytes("root\0"));
     }
+
+    private int BoneOffset { get; }
+    private int StringLengthOffset { get; }
+    private int GroupHeaderOffset { get; }
+    private int OptionalMarkerOffset { get; }
+    private int MeshHeaderOffset { get; }
+    private int VertexOffset { get; }
+    private int IndexOffset { get; }
+    private int SurfaceHeaderOffset { get; }
 
     public ModelDefinition Decode() => Models.Decode("AdultElephant", owner, source);
 
@@ -233,24 +483,132 @@ public class ModelsTests {
           source.ExtraChunks[1] = [];
           break;
         case MalformedModel.TruncatedCountPrefix:
-          source.ExtraChunks[0] = new byte[CountPrefixSize - 1];
+          source.ExtraChunks[0] = new byte[15];
           break;
-        case MalformedModel.TruncatedCount0Region:
-          source.ExtraChunks[0] = source.ExtraChunks[0][..^1];
+        case MalformedModel.TruncatedBoneRegion:
+          source.ExtraChunks[0] = source.ExtraChunks[0][..(BoneOffset + 95)];
           break;
-        case MalformedModel.ExcessiveCount0:
-          WriteCount(source.ExtraChunks[0], 0, 1_000_001);
+        case MalformedModel.ExcessiveBoneCount:
+          WriteUInt32(source.ExtraChunks[0], 0, 65_537);
           break;
         case MalformedModel.ExcessiveCount3:
-          WriteCount(source.ExtraChunks[0], 3, 1_000_001);
+          WriteUInt32(source.ExtraChunks[0], 12, 1_000_001);
+          break;
+        case MalformedModel.NonFiniteBone:
+          WriteSingle(source.ExtraChunks[0], BoneOffset, float.NaN);
+          break;
+        case MalformedModel.InvalidParent:
+          WriteUInt16(source.ExtraChunks[0], BoneOffset + 0x60, 1);
+          break;
+        case MalformedModel.UnterminatedBoneNames:
+          source.ExtraChunks[1] = Encoding.ASCII.GetBytes("root");
+          break;
+        case MalformedModel.TrailingBoneNameBytes:
+          source.ExtraChunks[1] = [.. source.ExtraChunks[1], 1];
+          break;
+        case MalformedModel.InvalidLengthPrefixedString:
+          WriteUInt32(source.ExtraChunks[0], StringLengthOffset, 7);
+          break;
+        case MalformedModel.NonzeroGroupRuntimeCursor:
+          WriteUInt32(source.ExtraChunks[0], GroupHeaderOffset + 8, 1);
+          break;
+        case MalformedModel.NonzeroOptionalRecordMarker:
+          WriteUInt32(source.ExtraChunks[0], OptionalMarkerOffset, 1);
+          break;
+        case MalformedModel.UnsupportedFvf:
+          WriteUInt32(source.ExtraChunks[0], MeshHeaderOffset, 0x1304);
+          break;
+        case MalformedModel.UnsupportedMultiplier:
+          WriteUInt16(source.ExtraChunks[0], MeshHeaderOffset + 8, 2);
+          break;
+        case MalformedModel.NonzeroMeshVertexCursor:
+          WriteUInt32(source.ExtraChunks[0], MeshHeaderOffset + 0x14, 1);
+          break;
+        case MalformedModel.NonzeroMeshIndexCursor:
+          WriteUInt32(source.ExtraChunks[0], MeshHeaderOffset + 0x18, 1);
+          break;
+        case MalformedModel.NonTriangleIndexCount:
+          WriteUInt32(source.ExtraChunks[0], MeshHeaderOffset + 4, 4);
+          break;
+        case MalformedModel.NonFiniteVertex:
+          WriteSingle(source.ExtraChunks[0], VertexOffset, float.NaN);
+          break;
+        case MalformedModel.OutOfRangeIndex:
+          WriteUInt16(source.ExtraChunks[0], IndexOffset, 3);
+          break;
+        case MalformedModel.OutOfRangeBoneInfluence:
+          source.ExtraChunks[0][VertexOffset + 24] = 1;
+          break;
+        case MalformedModel.NonzeroSurfaceRuntimeCursor:
+          WriteUInt32(source.ExtraChunks[0], SurfaceHeaderOffset + 8, 1);
+          break;
+        case MalformedModel.TruncatedGeometry:
+          source.ExtraChunks[0] = source.ExtraChunks[0][..^1];
+          break;
+        case MalformedModel.TrailingGeometry:
+          source.ExtraChunks[0] = [.. source.ExtraChunks[0], 0];
           break;
         default:
           throw new ArgumentOutOfRangeException(nameof(malformed));
       }
     }
 
-    private static void WriteCount(byte[] chunk, int index, uint value) =>
-      BitConverter.GetBytes(value).CopyTo(chunk, index * sizeof(uint));
+    private static void AddVertex(
+      List<byte> bytes,
+      Vector3 position,
+      Vector2 texCoord
+    ) {
+      AddSingle(bytes, position.X);
+      AddSingle(bytes, position.Y);
+      AddSingle(bytes, position.Z);
+      AddSingle(bytes, 0);
+      AddSingle(bytes, 0);
+      AddSingle(bytes, 1);
+      bytes.AddRange([0, byte.MaxValue, byte.MaxValue, byte.MaxValue]);
+      bytes.AddRange([byte.MaxValue, 0, 0, 0]);
+      AddUInt32(bytes, uint.MaxValue);
+      AddSingle(bytes, texCoord.X);
+      AddSingle(bytes, texCoord.Y);
+    }
+
+    private static void AddVector4(List<byte> bytes, Vector4 value) {
+      AddSingle(bytes, value.X);
+      AddSingle(bytes, value.Y);
+      AddSingle(bytes, value.Z);
+      AddSingle(bytes, value.W);
+    }
+
+    private static void AddMatrix(List<byte> bytes, Matrix4x4 value) {
+      foreach (var element in new[] {
+                 value.M11, value.M12, value.M13, value.M14,
+                 value.M21, value.M22, value.M23, value.M24,
+                 value.M31, value.M32, value.M33, value.M34,
+                 value.M41, value.M42, value.M43, value.M44,
+               })
+        AddSingle(bytes, element);
+    }
+
+    private static void Align16(List<byte> bytes) {
+      while (bytes.Count % 16 != 0) bytes.Add(0);
+    }
+
+    private static void AddUInt16(List<byte> bytes, ushort value) =>
+      bytes.AddRange(BitConverter.GetBytes(value));
+
+    private static void AddUInt32(List<byte> bytes, uint value) =>
+      bytes.AddRange(BitConverter.GetBytes(value));
+
+    private static void AddSingle(List<byte> bytes, float value) =>
+      bytes.AddRange(BitConverter.GetBytes(value));
+
+    private static void WriteUInt16(byte[] bytes, int offset, ushort value) =>
+      BitConverter.GetBytes(value).CopyTo(bytes, offset);
+
+    private static void WriteUInt32(byte[] bytes, int offset, uint value) =>
+      BitConverter.GetBytes(value).CopyTo(bytes, offset);
+
+    private static void WriteSingle(byte[] bytes, int offset, float value) =>
+      BitConverter.GetBytes(value).CopyTo(bytes, offset);
   }
 
   private sealed class FakeModelDataSource : IModelDataSource {
@@ -305,7 +663,25 @@ public enum MalformedModel {
   WrongExtraChunkCount,
   EmptySecondExtraChunk,
   TruncatedCountPrefix,
-  TruncatedCount0Region,
-  ExcessiveCount0,
+  TruncatedBoneRegion,
+  ExcessiveBoneCount,
   ExcessiveCount3,
+  NonFiniteBone,
+  InvalidParent,
+  UnterminatedBoneNames,
+  TrailingBoneNameBytes,
+  InvalidLengthPrefixedString,
+  NonzeroGroupRuntimeCursor,
+  NonzeroOptionalRecordMarker,
+  UnsupportedFvf,
+  UnsupportedMultiplier,
+  NonzeroMeshVertexCursor,
+  NonzeroMeshIndexCursor,
+  NonTriangleIndexCount,
+  NonFiniteVertex,
+  OutOfRangeIndex,
+  OutOfRangeBoneInfluence,
+  NonzeroSurfaceRuntimeCursor,
+  TruncatedGeometry,
+  TrailingGeometry,
 }

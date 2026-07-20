@@ -204,32 +204,38 @@ internal sealed class RideTrackResourceCatalogLoadContext : IDisposable {
 internal sealed class RideTrackResourceCatalogLoadResult : IDisposable {
   public RideTrackResourceCatalog Catalog { get; }
   public RideInstanceResourceLoadResult RideResources { get; }
+  public RideTrackVisualResourceSet TrackVisualResources { get; }
   public RideTrackResourceCatalogLoadContext Context { get; }
   public IReadOnlyList<RideTrackResourceCatalogLoadIssue> Issues { get; }
   public bool IsComplete => Issues.Count == 0;
 
   internal RideTrackResourceCatalogLoadResult(
     RideTrackResourceCatalog catalog,
+    RideTrackVisualResourceSet trackVisualResources,
     RideTrackResourceCatalogLoadContext context,
     IReadOnlyList<RideTrackResourceCatalogLoadIssue> issues
   ) : this(
     catalog,
     RideInstanceResourceLoadResult.Empty,
+    trackVisualResources,
     context,
     issues) { }
 
   internal RideTrackResourceCatalogLoadResult(
     RideTrackResourceCatalog catalog,
     RideInstanceResourceLoadResult rideResources,
+    RideTrackVisualResourceSet trackVisualResources,
     RideTrackResourceCatalogLoadContext context,
     IReadOnlyList<RideTrackResourceCatalogLoadIssue> issues
   ) {
     ArgumentNullException.ThrowIfNull(catalog);
     ArgumentNullException.ThrowIfNull(rideResources);
+    ArgumentNullException.ThrowIfNull(trackVisualResources);
     ArgumentNullException.ThrowIfNull(context);
     ArgumentNullException.ThrowIfNull(issues);
     Catalog = catalog;
     RideResources = rideResources;
+    TrackVisualResources = trackVisualResources;
     Context = context;
     Issues = Array.AsReadOnly(issues.ToArray());
   }
@@ -423,6 +429,25 @@ internal static class RideTrackResourceCatalogLoader {
           issues);
         decoded = DecodePairs(loaded, source, decodeRideResources: true);
       }
+      var preliminaryClosures = BuildDependencyClosures(loaded, decoded, limits);
+      var preliminarySections = decoded.SelectMany(pair => pair.TrackSections).ToArray();
+      var preliminaryScenery = decoded.SelectMany(pair => pair.SceneryItems).ToArray();
+      var preliminarySplines = decoded.SelectMany(pair => pair.Splines).ToArray();
+      var preliminarySectionGraph = TrackSectionResourceGraphResolver.Resolve(
+        preliminarySections,
+        preliminaryScenery,
+        preliminarySplines,
+        preliminaryClosures);
+      LoadTrackVisualRoots(
+        root,
+        preliminarySectionGraph,
+        decoded.SelectMany(pair => pair.RideVisuals).ToArray(),
+        source,
+        limits,
+        loaded,
+        issues);
+      decoded = DecodePairs(loaded, source, loadRideResources);
+
       var closures = BuildDependencyClosures(loaded, decoded, limits);
       var sections = decoded.SelectMany(pair => pair.TrackSections).ToArray();
       var scenery = decoded.SelectMany(pair => pair.SceneryItems).ToArray();
@@ -438,6 +463,16 @@ internal static class RideTrackResourceCatalogLoader {
         sections,
         splines,
         closures);
+      var shapeResources = RideVisualShapeResourceDecoder.Decode(
+        decoded.Select(pair => pair.Pair.Archive).ToArray(),
+        source.ExtractStaticShapes,
+        source.ExtractBoneShapes,
+        RideCarVisualResourceBridgeLimits.Default);
+      var trackVisualResources = new RideTrackVisualResourceSet(
+        sectionGraph,
+        closures,
+        decoded.SelectMany(pair => pair.RideVisuals).ToArray(),
+        shapeResources);
       var placementSources = BuildPlacementSources(roots, decoded);
       var catalog = new RideTrackResourceCatalog(
         placementSources,
@@ -451,7 +486,7 @@ internal static class RideTrackResourceCatalogLoader {
           closures,
           rideInstances,
           rideTrainInstances,
-          source,
+          shapeResources,
           limits)
         : RideInstanceResourceLoadResult.Empty;
       var context = new RideTrackResourceCatalogLoadContext(
@@ -461,6 +496,7 @@ internal static class RideTrackResourceCatalogLoader {
       return new RideTrackResourceCatalogLoadResult(
         catalog,
         rideResources,
+        trackVisualResources,
         context,
         issues);
     } catch (Exception primaryError) {
@@ -677,6 +713,188 @@ internal static class RideTrackResourceCatalogLoader {
     return matches == 1;
   }
 
+  private static void LoadTrackVisualRoots(
+    string installRoot,
+    TrackSectionResourceGraph graph,
+    IReadOnlyList<RideVisualResourceSource> decodedVisuals,
+    IRideTrackResourceCatalogLoaderSource source,
+    RideTrackResourceCatalogLoaderLimits limits,
+    ICollection<LoadedPair> loaded,
+    ICollection<RideTrackResourceCatalogLoadIssue> issues
+  ) {
+    if (graph.Sections == null) throw Invalid("preliminary TKS graph section list is null");
+    ArgumentNullException.ThrowIfNull(decodedVisuals);
+    var pairsByPath = new Dictionary<string, LoadedPair>(StringComparer.OrdinalIgnoreCase);
+    foreach (var pair in loaded) {
+      pairsByPath.Add(pair.CommonPath, pair);
+      pairsByPath.Add(pair.UniquePath, pair);
+    }
+    var requested = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var knownVisuals = new List<RideVisualResourceSource>(decodedVisuals);
+    var edgeCount = loaded.Sum(pair => pair.DependencyCommonPaths.Count);
+
+    foreach (var section in graph.Sections) {
+      if (section == null) throw Invalid("preliminary TKS graph contains null");
+      var identity = $"{section.Source.File.Path}|{section.Source.Resource.Name}";
+      if (!requested.Add(identity))
+        throw Invalid($"preliminary TKS graph repeats exact source '{identity}'");
+      if (!pairsByPath.TryGetValue(section.Source.File.Path, out var owner))
+        throw Invalid(
+          $"TKS '{identity}' owner is not one loaded pair");
+      var scenery = section.Scenery;
+      if (scenery?.Source == null) continue;
+      if (!pairsByPath.TryGetValue(scenery.Source.File.Path, out var sceneryOwner))
+        throw Invalid(
+          $"TKS '{identity}' SID owner '{scenery.Source.File.Path}' is not one loaded pair");
+      if (scenery.Source.Resource.VisualRefs == null)
+        throw Invalid(
+          $"TKS '{identity}' SID '{scenery.Source.Resource.Name}' has a null SVD " +
+          "reference list");
+      if (scenery.Source.Resource.VisualRefs.Count > limits.MaximumDependenciesPerPair)
+        throw Invalid(
+          $"TKS '{identity}' SID visual count exceeds " +
+          $"{limits.MaximumDependenciesPerPair}");
+      foreach (var reference in scenery.Source.Resource.VisualRefs) {
+        var visualName = ParseTaggedName(
+          reference,
+          "svd",
+          $"TKS '{identity}' SID visual",
+          limits);
+        ValidatePathSegment(
+          visualName,
+          $"TKS '{identity}' SID visual name",
+          limits);
+        var existing = FindExactLoadedVisuals(
+          visualName,
+          sceneryOwner,
+          pairsByPath,
+          knownVisuals,
+          limits);
+        if (existing.Count > 1)
+          throw Invalid(
+            $"TKS '{identity}' SID visual '{reference}' is ambiguous inside the exact " +
+            "SID-owner dependency closure");
+        if (existing.Count == 1) continue;
+
+        // ManagerSID owns the serialized SID-to-SVD edge. Frontier's installed track archives
+        // store that visual's SVD/SHS/BSH resources in a sibling <visual>_data pair; the exact
+        // Track21 convention is pinned by RideTrackGunslingerInstalledPipelineTests. Derive the
+        // established sibling name only when the exact SVD is absent from the already-loaded SID
+        // closure, and attach it to the SID pair so a TKS in another pair reaches it only through
+        // the proven TKS-to-SID dependency closure.
+        var ownerDirectory = Path.GetDirectoryName(sceneryOwner.CommonPath)
+          ?? throw Invalid(
+            $"SID owner '{sceneryOwner.CommonPath}' has no parent directory");
+        var commonPath = Path.GetFullPath(Path.Combine(
+          ownerDirectory,
+          $"{visualName}_data{CommonSuffix}"));
+        if (!IsContainedBy(installRoot, commonPath))
+          throw Invalid(
+            $"TKS visual pair '{commonPath}' leaves the install root");
+        if (sceneryOwner.DependencyCommonPaths.Contains(
+          commonPath,
+          StringComparer.OrdinalIgnoreCase)) continue;
+        if (edgeCount >= limits.MaximumDependencyEdges)
+          throw Invalid(
+            $"dependency edge count exceeds {limits.MaximumDependencyEdges}");
+        edgeCount++;
+
+        var commonExists = source.FileExists(commonPath);
+        var visualUniquePath = ToUniquePath(commonPath);
+        var uniqueExists = source.FileExists(visualUniquePath);
+        if (!commonExists || !uniqueExists) {
+          issues.Add(new RideTrackResourceCatalogLoadIssue(
+            RideTrackResourceCatalogLoadIssueKind.MissingDependencyPair,
+            sceneryOwner.CommonPath,
+            reference,
+            commonPath,
+            visualUniquePath,
+            commonExists,
+            uniqueExists));
+          continue;
+        }
+
+        sceneryOwner.DependencyCommonPaths.Add(commonPath);
+        if (!pairsByPath.ContainsKey(commonPath)) {
+          var request = new RootRequest(commonPath);
+          request.AddTrack(reference, visualName);
+          LoadClosure(
+            installRoot,
+            [request],
+            source,
+            limits,
+            loaded,
+            issues);
+          foreach (var loadedPair in loaded) {
+            if (pairsByPath.ContainsKey(loadedPair.CommonPath)) continue;
+            knownVisuals.AddRange(Associate(
+              loadedPair,
+              FileType.SceneryItemVisual,
+              loadedPair.UniquePath,
+              source.ExtractSceneryItemVisuals(loadedPair.Archive),
+              resource => resource.Name,
+              (file, resource) => new RideVisualResourceSource(file, resource),
+              "SVD"));
+            pairsByPath.Add(loadedPair.CommonPath, loadedPair);
+            pairsByPath.Add(loadedPair.UniquePath, loadedPair);
+          }
+        }
+
+        var inferred = FindExactLoadedVisuals(
+          visualName,
+          sceneryOwner,
+          pairsByPath,
+          knownVisuals,
+          limits);
+        if (inferred.Count != 1)
+          throw Invalid(
+            $"TKS '{identity}' inferred SID visual pair '{commonPath}' resolves " +
+            $"{inferred.Count} exact '{reference}' targets");
+      }
+    }
+  }
+
+  private static IReadOnlyList<RideVisualResourceSource> FindExactLoadedVisuals(
+    string visualName,
+    LoadedPair sceneryOwner,
+    IReadOnlyDictionary<string, LoadedPair> pairsByPath,
+    IReadOnlyList<RideVisualResourceSource> visuals,
+    RideTrackResourceCatalogLoaderLimits limits
+  ) {
+    var allowedPaths = BuildLoadedPairClosure(sceneryOwner, pairsByPath, limits);
+    return visuals.Where(visual =>
+      visual?.File != null && visual.Resource != null &&
+      allowedPaths.Contains(visual.File.Path) &&
+      string.Equals(
+        visual.Resource.Name,
+        visualName,
+        StringComparison.OrdinalIgnoreCase)).ToArray();
+  }
+
+  private static IReadOnlySet<string> BuildLoadedPairClosure(
+    LoadedPair owner,
+    IReadOnlyDictionary<string, LoadedPair> pairsByPath,
+    RideTrackResourceCatalogLoaderLimits limits
+  ) {
+    var queue = new Queue<string>();
+    var reachablePairs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    queue.Enqueue(owner.CommonPath);
+    while (queue.Count > 0) {
+      var commonPath = queue.Dequeue();
+      if (!reachablePairs.Add(commonPath)) continue;
+      if (reachablePairs.Count > limits.MaximumPairs)
+        throw Invalid($"SID dependency closure exceeds {limits.MaximumPairs} pairs");
+      if (!pairsByPath.TryGetValue(commonPath, out var pair))
+        throw Invalid($"SID dependency closure contains unloaded pair '{commonPath}'");
+      paths.Add(pair.CommonPath);
+      paths.Add(pair.UniquePath);
+      foreach (var dependency in pair.DependencyCommonPaths)
+        queue.Enqueue(dependency);
+    }
+    return paths;
+  }
+
   private static RootRequest GetOrAddRootRequest(
     IDictionary<string, RootRequest> roots,
     string commonPath,
@@ -835,14 +1053,14 @@ internal static class RideTrackResourceCatalogLoader {
           resource => resource.Name,
           (file, resource) => new DecodedResource<RideCar>(file, resource),
           "RIC") : [],
-        decodeRideResources ? Associate(
+        Associate(
           pair,
           FileType.SceneryItemVisual,
           pair.UniquePath,
           source.ExtractSceneryItemVisuals(pair.Archive),
           resource => resource.Name,
           (file, resource) => new RideVisualResourceSource(file, resource),
-          "SVD") : []));
+          "SVD")));
     }
     return decoded;
   }
@@ -972,7 +1190,7 @@ internal static class RideTrackResourceCatalogLoader {
     IReadOnlyList<OvlResourceDependencyClosure> closures,
     IReadOnlyList<DatTrackedRideInstanceData> instances,
     IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
-    IRideTrackResourceCatalogLoaderSource source,
+    RideVisualShapeResourceSet shapeResources,
     RideTrackResourceCatalogLoaderLimits limits
   ) {
     var instanceSources = BuildRideInstanceSources(roots, decoded);
@@ -1018,11 +1236,6 @@ internal static class RideTrackResourceCatalogLoader {
         GetAllowedPaths(source.File.Path, closuresByPath))).ToArray();
     var visuals = decoded.SelectMany(pair => pair.RideVisuals).ToArray();
     var graph = RideResourceGraphResolver.Resolve(rides, trains, cars, visuals);
-    var shapeResources = RideVisualShapeResourceDecoder.Decode(
-      decoded.Select(pair => pair.Pair.Archive).ToArray(),
-      source.ExtractStaticShapes,
-      source.ExtractBoneShapes,
-      RideCarVisualResourceBridgeLimits.Default);
     var carVisuals = RideCarVisualResourceBridge.Resolve(graph, shapeResources);
     return new RideInstanceResourceLoadResult(
       instanceLinks,

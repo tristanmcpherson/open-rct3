@@ -19,14 +19,17 @@ public sealed record WildAnimalSpeciesDefinition(
   IReadOnlyList<WildAnimalSpeciesVariant> Variants
 );
 
-/// <summary>Decodes the installed Complete Edition four-variant <c>was</c> layout.</summary>
+/// <summary>Decodes installed Complete Edition four-variant <c>was</c> layouts.</summary>
 /// <remarks>
 /// Complete Edition <c>RCT3.exe</c> SHA-256
 /// <c>1C9316E728D67AAA3BFE36D0A1634F3139582927440A5467C351E4C949B5B21D</c> registers the RCT3
-/// loader name <c>WildAnimalSpecies</c> with tag <c>was</c> at VA 0x00F64870. The fixed layout
-/// decoded here is intentionally limited to installed Elephant archive evidence: a 0x40-byte
-/// header followed by four 0x478-byte variants. The executable registration and its empty
-/// type-specific callback hooks do not themselves prove those sizes.
+/// loader name <c>WildAnimalSpecies</c> with tag <c>was</c> at VA 0x00F64870. Installed version-five
+/// evidence has a 0x40-byte header followed by four variants. Each variant serializes a 0x58-byte
+/// prefix, an exact sound-slot count at +0x50, a relocated slot-array pointer at +0x54, and
+/// count * 0x2C bytes of sound slots. Elephant has 24 slots (0x478 bytes per variant); Ostrich has
+/// 10 slots (0x210 bytes per variant). The decoder requires that serialized count, pointer
+/// topology, SymbolRefs, archive version, and loader boundary all agree; record length alone never
+/// selects a layout. Unknown counts fail closed.
 /// </remarks>
 /// <seealso href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/libOVLng/ManagerCommon.cpp#L50">
 /// rct3-importer WAS tag declaration
@@ -36,13 +39,24 @@ public sealed record WildAnimalSpeciesDefinition(
 /// </seealso>
 public static class WildAnimalSpecies {
   private const int HeaderSize = 0x40;
-  private const int VariantSize = 0x478;
+  private const int VariantPrefixSize = 0x58;
+  private const int SoundSlotSize = 0x2C;
+  private const int CompactSoundSlotCount = 10;
+  private const int ExpandedSoundSlotCount = 24;
   private const int VariantCount = 4;
-  private const int RecordSize = HeaderSize + VariantCount * VariantSize;
   private const int PackagePathOffset = 0x14;
   private const int FirstVariantPointerOffset = 0x18;
+  private const int SoundSlotCountOffset = 0x50;
+  private const int SoundSlotsPointerOffset = 0x54;
   private const int MaximumStringBytes = 4 * 1024;
   private const int MaximumResourceCount = 1_000_000;
+
+  private static readonly WildAnimalSpeciesLayout CompactLayout = CreateLayout(
+    "10-slot",
+    CompactSoundSlotCount);
+  private static readonly WildAnimalSpeciesLayout ExpandedLayout = CreateLayout(
+    "24-slot",
+    ExpandedSoundSlotCount);
 
   /// <summary>Decodes one exact, case-insensitively matched <c>Name:was</c> reference.</summary>
   public static WildAnimalSpeciesDefinition Extract(Ovl ovl, string taggedReference) {
@@ -71,11 +85,12 @@ public static class WildAnimalSpecies {
 
     var source = new OvlWildAnimalSpeciesDataSource(ovl);
     var owner = source.GetSpeciesLoader(file, address);
-    return Decode(file.Name, owner, source);
+    return Decode(file.Name, ovl.Version, owner, source);
   }
 
   internal static WildAnimalSpeciesDefinition Decode(
     string name,
+    Version archiveVersion,
     OvlLoaderEntry owner,
     IWildAnimalSpeciesDataSource source
   ) {
@@ -84,6 +99,9 @@ public static class WildAnimalSpecies {
     ArgumentNullException.ThrowIfNull(source);
     if (owner.Tag.ToFileType() != FileType.WildAnimalSpecies)
       throw Invalid(name, $"loader type '{owner.Tag}' is not was");
+    if (archiveVersion != Version.Five)
+      throw Invalid(name,
+        $"archive version {archiveVersion} is unsupported; installed WAS evidence is version five");
 
     var address = owner.DataAddress;
     var regionLoaders = source.GetDataRegionLoaders(owner);
@@ -98,12 +116,17 @@ public static class WildAnimalSpecies {
         "record is the final loader in its proven data region and its block end is unavailable");
     var recordEnd = nextLoader.DataAddress;
     var extent = Convert.ToUInt64(recordEnd) - Convert.ToUInt64(address);
-    if (extent != RecordSize)
+    if (extent < Convert.ToUInt64(CompactLayout.RecordSize) ||
+        extent > Convert.ToUInt64(ExpandedLayout.RecordSize))
       throw Invalid(name,
-        $"record extent {extent} does not match the installed four-variant size {RecordSize}");
-    if (!source.TryReadBytes(address, RecordSize, out var record) ||
-        record.Length != RecordSize)
+        $"record extent {extent} is outside the bounded installed WAS range " +
+        $"{CompactLayout.RecordSize}..{ExpandedLayout.RecordSize}");
+    var recordLength = Convert.ToInt32(extent);
+    if (!source.TryReadBytes(address, recordLength, out var record) ||
+        record.Length != recordLength)
       throw Invalid(name, "record is outside the archive or truncated");
+
+    var layout = SelectLayout(name, address, extent, record, source);
 
     var packagePath = ReadRequiredString(
       source,
@@ -128,17 +151,18 @@ public static class WildAnimalSpecies {
 
       var expectedVariantAddress = CheckedAdd(
         address,
-        checked(HeaderSize + index * VariantSize),
+        checked(HeaderSize + index * layout.VariantSize),
         name);
-      var variantEnd = Convert.ToUInt64(variantAddress) + VariantSize;
+      var variantEnd = Convert.ToUInt64(variantAddress) +
+        Convert.ToUInt64(layout.VariantSize);
       if (variantAddress < CheckedAdd(address, HeaderSize, name) ||
           variantEnd > recordEnd)
         throw Invalid(name, $"variant {index} is outside the WAS record");
       if (variantAddress != expectedVariantAddress)
         throw Invalid(name,
-          $"variant {index} pointer does not match the installed fixed layout");
+          $"variant {index} pointer does not match the installed {layout.Name} layout");
 
-      var variantOffset = checked(HeaderSize + index * VariantSize);
+      var variantOffset = checked(HeaderSize + index * layout.VariantSize);
       var modelField = variantAddress;
       var animationDataField = CheckedAdd(variantAddress, sizeof(uint), name);
       expectedReferenceFields.Add(modelField);
@@ -160,14 +184,94 @@ public static class WildAnimalSpecies {
           "wad",
           name,
           $"variant {index} animation data")));
+
+      var serializedSoundSlotCount = ReadUInt32(
+        record,
+        checked(variantOffset + SoundSlotCountOffset));
+      if (serializedSoundSlotCount != Convert.ToUInt32(layout.SoundSlotCount))
+        throw Invalid(name,
+          $"variant {index} sound-slot count {serializedSoundSlotCount} does not match " +
+          $"the installed {layout.Name} layout");
+      var soundSlotsField = CheckedAdd(variantAddress, SoundSlotsPointerOffset, name);
+      var soundSlotsAddress = ReadRequiredPointer(
+        source,
+        soundSlotsField,
+        ReadUInt32(record, checked(variantOffset + SoundSlotsPointerOffset)),
+        name,
+        $"variant {index} sound-slot array");
+      var expectedSoundSlotsAddress = CheckedAdd(
+        variantAddress,
+        VariantPrefixSize,
+        name);
+      if (soundSlotsAddress != expectedSoundSlotsAddress)
+        throw Invalid(name,
+          $"variant {index} sound-slot array does not immediately follow its prefix");
+
+      foreach (var slotIndex in Enumerable.Range(0, layout.SoundSlotCount)) {
+        var slotOffset = checked(VariantPrefixSize + slotIndex * SoundSlotSize);
+        var soundField = CheckedAdd(variantAddress, slotOffset, name);
+        expectedReferenceFields.Add(soundField);
+        _ = ReadRequiredReference(
+          source,
+          owner,
+          soundField,
+          ReadUInt32(record, checked(variantOffset + slotOffset)),
+          "snd",
+          name,
+          $"variant {index} sound slot {slotIndex}");
+      }
       previousVariantAddress = variantAddress;
     }
-    ValidateOwnedModelReferences(name, owner, expectedReferenceFields, source);
+    ValidateOwnedLayoutReferences(name, owner, expectedReferenceFields, source);
 
     return new WildAnimalSpeciesDefinition(
       name,
       packagePath,
       variants.AsReadOnly());
+  }
+
+  private static WildAnimalSpeciesLayout SelectLayout(
+    string name,
+    uint address,
+    ulong extent,
+    byte[] record,
+    IWildAnimalSpeciesDataSource source
+  ) {
+    var firstVariantField = CheckedAdd(address, FirstVariantPointerOffset, name);
+    var firstVariantAddress = ReadRequiredPointer(
+      source,
+      firstVariantField,
+      ReadUInt32(record, FirstVariantPointerOffset),
+      name,
+      "variant 0 pointer");
+    var expectedFirstVariantAddress = CheckedAdd(address, HeaderSize, name);
+    if (firstVariantAddress != expectedFirstVariantAddress)
+      throw Invalid(name,
+        "variant 0 pointer does not prove the installed 0x40-byte header");
+
+    var soundSlotCount = ReadUInt32(
+      record,
+      checked(HeaderSize + SoundSlotCountOffset));
+    var layout = soundSlotCount switch {
+      CompactSoundSlotCount => CompactLayout,
+      ExpandedSoundSlotCount => ExpandedLayout,
+      _ => throw Invalid(name,
+        $"serialized sound-slot count {soundSlotCount} has no proven installed layout"),
+    };
+    if (extent != Convert.ToUInt64(layout.RecordSize))
+      throw Invalid(name,
+        $"serialized sound-slot count {soundSlotCount} selects the {layout.Name} " +
+        $"record size {layout.RecordSize}, but the loader boundary proves extent {extent}");
+    return layout;
+  }
+
+  private static WildAnimalSpeciesLayout CreateLayout(string name, int soundSlotCount) {
+    var variantSize = checked(VariantPrefixSize + soundSlotCount * SoundSlotSize);
+    return new WildAnimalSpeciesLayout(
+      name,
+      soundSlotCount,
+      variantSize,
+      checked(HeaderSize + VariantCount * variantSize));
   }
 
   private static string ParseTaggedReference(string reference) {
@@ -238,19 +342,21 @@ public static class WildAnimalSpecies {
     return reference.Symbol;
   }
 
-  private static void ValidateOwnedModelReferences(
+  private static void ValidateOwnedLayoutReferences(
     string name,
     OvlLoaderEntry owner,
     IReadOnlySet<uint> expectedFields,
     IWildAnimalSpeciesDataSource source
   ) {
     foreach (var reference in source.ResourceReferences) {
-      if (!SameLoader(reference.Value.Owner, owner) ||
-          !HasTag(reference.Value.Symbol, "mdl") &&
-          !HasTag(reference.Value.Symbol, "wad")) continue;
+      var isLayoutReference = HasTag(reference.Value.Symbol, "mdl") ||
+        HasTag(reference.Value.Symbol, "wad") ||
+        HasTag(reference.Value.Symbol, "snd");
+      if (!SameLoader(reference.Value.Owner, owner) || !isLayoutReference) continue;
       if (!expectedFields.Contains(reference.Key))
         throw Invalid(name,
-          $"loader owns an ambiguous model or animation-data SymbolRef at {reference.Key}");
+          $"loader owns an ambiguous model, animation-data, or sound SymbolRef at " +
+          $"{reference.Key}");
     }
   }
 
@@ -275,6 +381,13 @@ public static class WildAnimalSpecies {
 
   private static InvalidDataException Invalid(string name, string message) =>
     new($"Wild animal species '{name}' is malformed: {message}.");
+
+  private sealed record WildAnimalSpeciesLayout(
+    string Name,
+    int SoundSlotCount,
+    int VariantSize,
+    int RecordSize
+  );
 
   private sealed class OvlWildAnimalSpeciesDataSource : IWildAnimalSpeciesDataSource {
     private readonly Ovl ovl;

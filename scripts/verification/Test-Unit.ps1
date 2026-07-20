@@ -20,6 +20,8 @@ $approvedDumperSkip = 'Dumper.Tests.TruncatedLabelTests.TestVeryLongPath_Preserv
 $approvedInstalledAssetSkips = @(
   'OpenCobra.Tests.OVL.BoneAnimationsTests.Extract_InstalledVintageCar_DecodesDeclaredBanResources',
   'OpenCobra.Tests.OVL.BoneShapesTests.Extract_InstalledSaloonBrawlPreservesUnsignedHighBoneIndices',
+  'OpenCobra.Tests.OVL.ModelAnimationsTests.Extract_FromInstalledElephantProvesExactLayouts',
+  'OpenCobra.Tests.OVL.ModelAnimationsTests.Extract_FromInstalledOstrichProvesExactLayouts',
   'OpenCobra.Tests.OVL.ModelsTests.Extract_FromInstalledElephantsReadsStaticGeometry',
   'OpenCobra.Tests.OVL.PathTypesTests.Extract_InstalledAsphalt_PreservesDeclaredResources',
   'OpenCobra.Tests.OVL.QueueTypesTests.Extract_InstalledQueueSet1_PreservesDeclaredResources',
@@ -53,6 +55,7 @@ $approvedInstalledAssetSkips = @(
   'OpenRCT3.Tests.Simulation.PathSurfaceResourceResolverTests.LoadInstalled_ResolvesOwnerThroughSameNameSvdFirstSerializedShsLod',
   'OpenRCT3.Tests.Simulation.PathSurfaceResourceResolverTests.LoadInstalled_ResolvesStockOrdinaryAndRecolouredQueueTextures',
   'OpenRCT3.Tests.Simulation.PathSurfaceResourceResolverTests.TryResolve_InstalledAsphaltAndQueueSet1MatchDatSystemNames',
+  'OpenRCT3.Tests.Simulation.ModelAnimationFrameZeroPoseEvaluatorTests.Evaluate_InstalledAdultElephantMapsExactChannelsAndRetainsCameraBones',
   'OpenRCT3.Tests.Simulation.RideCarGeometryAdapterTests.BoxOffice_StreamlinedMonoBodiesExposeExactModelSpaceGeometry',
   'OpenRCT3.Tests.Simulation.RideCarSavedWheelCursorRegistryTests.Build_BoxOfficeResolvesAllSavedWheelContactsToExactCachedPieces',
   'OpenRCT3.Tests.Simulation.RideCarStaticInstanceRegistryTests.BoxOffice_ComposesSevenExactStaticCarsInSavedConsistOrder',
@@ -71,6 +74,7 @@ $approvedInstalledAssetSkips = @(
   'OpenRCT3.Tests.Serialization.DatWildAnimalReaderTests.Read_OstrichFarmCapturesExactWildAnimalIdentityAndFiniteMatrices',
   'OpenRCT3.Tests.Simulation.WildAnimalOstrichInstalledPipelineTests.OstrichFarm_DatThroughInstalledWasModelsAndStaticScenePreservesAllSixteenAnimals',
   'OpenRCT3.Tests.Simulation.WildAnimalOstrichInstalledPipelineTests.OstrichFarm_ProductionSceneLoaderBuildsExactTexturedSceneAndTransfersLeases',
+  'OpenRCT3.Tests.Simulation.WildAnimalModelAnimationResourceBridgeTests.ResolveInstalled_FromOstrichPreservesAllThirtyOneWadSlots',
   'OpenRCT3.Tests.Simulation.WildAnimalSpeciesModelResourceBridgeTests.ResolveInstalled_FromElephantLinksExactFourModelsInSerializedOrder',
   'OpenRCT3.Tests.Simulation.WildAnimalSpeciesModelResourceBridgeTests.ResolveInstalled_FromOstrichLinksExactFourModelsInSerializedOrder'
 )

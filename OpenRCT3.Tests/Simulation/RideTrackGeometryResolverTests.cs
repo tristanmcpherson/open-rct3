@@ -107,24 +107,11 @@ public class RideTrackGeometryResolverTests {
   [Test]
   public void Resolve_ClassifiesResolvedTksWithUnresolvedCarSplineAsUnresolvedResources() {
     var placement = Placement(500, previous: 1697, next: 1697);
-    var section = Section();
-    var file = new OvlFile(section.Name, FileType.TrackSection, "fixture.unique.ovl");
-    var sectionSource = new TrackSectionResourceSource(file, section);
-    var resources = new RideTrackResourceResolution(
-      [new(
-        new RideTrackSectionResourceLink(
-          placement,
-          new RideTrackSectionResourceSource(placement.OverlayPath, file, section)),
-        new TrackSectionResourceLink(
-          sectionSource,
-          new TrackSectionSceneryLink(section.SceneryItem, null),
-          [new(
-            TrackSectionSplineRole.CarLeft,
-            null,
-            section.CarSplines.Left,
-            Source: null)]),
-        Array.Empty<RideTrackResourceDeclaration>())],
-      UnresolvedPlacementCount: 0);
+    var resources = ResourceResolution(
+      placement,
+      resolveScenery: true,
+      resolveCarLeft: false,
+      resolveCarRight: true);
 
     var result = RideTrackGeometryResolver.Resolve(
       new Terrain(1, 1, 0),
@@ -135,6 +122,30 @@ public class RideTrackGeometryResolverTests {
       Assert.That(result.Tracks.Single().Status,
         Is.EqualTo(RideTrackGeometryStatus.UnresolvedResources));
       Assert.That(result.Tracks.Single().IsResolved, Is.False);
+      Assert.That(result.UnresolvedResourceTrackCount, Is.EqualTo(1));
+      Assert.That(result.UnsupportedGeometryTrackCount, Is.Zero);
+      Assert.That(result.UnsupportedTopologyTrackCount, Is.Zero);
+    }
+  }
+
+  [Test]
+  public void Resolve_ClassifiesResolvedCarSplinesWithUnresolvedSidAsUnresolvedResources() {
+    var placement = Placement(500, previous: 1697, next: 1697);
+    var resources = ResourceResolution(
+      placement,
+      resolveScenery: false,
+      resolveCarLeft: true,
+      resolveCarRight: true);
+
+    var result = RideTrackGeometryResolver.Resolve(
+      new Terrain(1, 1, 0),
+      [Track(700, [500], isCircuit: false)],
+      resources);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Tracks.Single().Status,
+        Is.EqualTo(RideTrackGeometryStatus.UnresolvedResources));
+      Assert.That(result.Tracks.Single().Detail, Does.Contain("SID"));
       Assert.That(result.UnresolvedResourceTrackCount, Is.EqualTo(1));
       Assert.That(result.UnsupportedGeometryTrackCount, Is.Zero);
       Assert.That(result.UnsupportedTopologyTrackCount, Is.Zero);
@@ -305,6 +316,82 @@ public class RideTrackGeometryResolverTests {
     new TrackSectionBaseUnknowns(0, 0, 0, 0, 0, 0, 0, 0, 0),
     Expansion: null,
     Wild: null);
+
+  private static RideTrackResourceResolution ResourceResolution(
+    RideTrackPlacement placement,
+    bool resolveScenery,
+    bool resolveCarLeft,
+    bool resolveCarRight
+  ) {
+    var section = Section();
+    var file = new OvlFile(section.Name, FileType.TrackSection, "fixture.unique.ovl");
+    var sectionSource = new TrackSectionResourceSource(file, section);
+    var scenery = Scenery(placement.ObjectKey);
+    var scenerySource = new SceneryItemResourceSource(
+      new OvlFile(scenery.Name, FileType.SceneryItem, "fixture.unique.ovl"),
+      scenery);
+    var left = Spline("left", -0.5f);
+    var right = Spline("right", 0.5f);
+    var leftSource = new SplineResourceSource(
+      new OvlFile(left.Name, FileType.Spline, "fixture.common.ovl"),
+      left);
+    var rightSource = new SplineResourceSource(
+      new OvlFile(right.Name, FileType.Spline, "fixture.common.ovl"),
+      right);
+    var resource = new TrackSectionResourceLink(
+      sectionSource,
+      new TrackSectionSceneryLink(
+        section.SceneryItem,
+        resolveScenery ? scenerySource : null),
+      [
+        new(
+          TrackSectionSplineRole.CarLeft,
+          null,
+          section.CarSplines.Left,
+          resolveCarLeft ? leftSource : null),
+        new(
+          TrackSectionSplineRole.CarRight,
+          null,
+          section.CarSplines.Right,
+          resolveCarRight ? rightSource : null),
+      ]);
+    return new RideTrackResourceResolution(
+      [new(
+        new RideTrackSectionResourceLink(
+          placement,
+          new RideTrackSectionResourceSource(placement.OverlayPath, file, section)),
+        resource,
+        Array.Empty<RideTrackResourceDeclaration>())],
+      UnresolvedPlacementCount: 0);
+  }
+
+  private static SceneryItem Scenery(string name) => new(
+    name,
+    SidFlags.GroundChange,
+    SidPosition.TileFull,
+    StructureVersion: 0,
+    SquaresX: 1,
+    SquaresZ: 1,
+    PositionX: 0f,
+    PositionY: 0f,
+    PositionZ: 0f,
+    SizeX: 4f,
+    SizeY: 4f,
+    SizeZ: 4f,
+    SidType.SceneryMisc,
+    VisualRefs: []);
+
+  private static Spline Spline(string name, float lateral) => new(
+    name,
+    Cyclic: false,
+    TotalLength: 1f,
+    InverseTotalLength: 1f,
+    MaximumY: 0f,
+    Nodes: [
+      new(new Vector3(0f, 0f, lateral), Vector3.Zero, new Vector3(1f / 3f, 0f, 0f)),
+      new(new Vector3(1f, 0f, lateral), new Vector3(-1f / 3f, 0f, 0f), Vector3.Zero),
+    ],
+    Segments: [new(1f, new byte[14])]);
 
   private static TrackPiece StraightPiece(float offset) {
     var geometry = TrackPieceGeometry.FromHandAuthored([

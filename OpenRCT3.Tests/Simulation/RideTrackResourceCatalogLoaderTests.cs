@@ -4,6 +4,7 @@
 
 using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
+using OpenRCT3.Serialization;
 using OpenRCT3.Simulation;
 using System.Numerics;
 
@@ -165,6 +166,7 @@ public class RideTrackResourceCatalogLoaderTests {
     var source = new FakeLoaderSource();
     var limits = new RideTrackResourceCatalogLoaderLimits(
       MaximumPlacements: 1,
+      MaximumRideInstances: 1,
       MaximumPairs: 10,
       MaximumDependenciesPerPair: 10,
       MaximumDependencyEdges: 10,
@@ -202,6 +204,414 @@ public class RideTrackResourceCatalogLoaderTests {
       Assert.That(exception!.Message, Does.Contain(
         "OVL identity 'Straight' does not match decoded name 'Different'"));
       Assert.That(source.DisposedArchives, Has.Count.EqualTo(1));
+    }
+  }
+
+  [Test]
+  public void Load_WithRideInstancesBuildsExactTransitiveRideResourceGraph() {
+    var source = new FakeLoaderSource();
+    var rideRoot = PairPath("Rides", "Synthetic", "SyntheticRide");
+    var trainPair = PairPath("Cars", "Synthetic", "SyntheticTrain");
+    var carPair = PairPath("Cars", "Synthetic", "SyntheticCar");
+    var visualPair = PairPath("Cars", "Synthetic", "SyntheticVisual");
+    source.AddPair(
+      rideRoot,
+      references: [@"..\..\Cars\Synthetic\SyntheticTrain"],
+      rides: [Ride("SyntheticRide", ["SyntheticTrain"])]);
+    source.AddPair(
+      trainPair,
+      references: ["SyntheticCar"],
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    source.AddPair(
+      carPair,
+      references: ["SyntheticVisual"],
+      rideCars: [Car("SyntheticCar", "SyntheticVisual:svd")]);
+    source.AddPair(
+      visualPair,
+      visuals: [Visual("SyntheticVisual")]);
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr");
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [],
+      [instance],
+      source);
+
+    var instanceLink = result.RideResources.Instances.Single();
+    var rideLink = result.RideResources.Graph.Rides.Single();
+    var trainLink = rideLink.Trains.Single();
+    var carLink = trainLink.Cars.Single();
+    var visualLink = carLink.Visuals.Single();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.IsComplete, Is.True);
+      Assert.That(source.LoadedPaths,
+        Is.EqualTo(new[] { rideRoot, trainPair, carPair, visualPair }));
+      Assert.That(instanceLink.IsResolved, Is.True);
+      Assert.That(instanceLink.Source!.OverlayName,
+        Is.EqualTo(instance.TrackedRideOverlayName));
+      Assert.That(rideLink.Source.File.Path, Is.EqualTo(UniquePath(rideRoot)));
+      Assert.That(trainLink.Source!.File.Path, Is.EqualTo(UniquePath(trainPair)));
+      Assert.That(carLink.Source!.File.Path, Is.EqualTo(UniquePath(carPair)));
+      Assert.That(visualLink.Source!.File.Path, Is.EqualTo(UniquePath(visualPair)));
+      Assert.That(result.RideResources.Graph.UnresolvedReferenceCount, Is.Zero);
+      Assert.That(result.RideResources.CarVisuals.Visuals, Has.Count.EqualTo(1));
+      Assert.That(result.RideResources.CarVisuals.Visuals.Single().Visual,
+        Is.SameAs(visualLink));
+      Assert.That(result.RideResources.CarVisuals.ResolvedShapeLodCount, Is.Zero);
+      Assert.That(result.RideResources.CarVisuals.UnresolvedShapeReferenceCount, Is.Zero);
+      Assert.That(result.RideResources.ResolvedInstanceCount, Is.EqualTo(1));
+      Assert.That(result.RideResources.UnresolvedInstanceCount, Is.Zero);
+      Assert.That(result.RideResources.DecodedCounts,
+        Is.EqualTo(new RideResourceDecodeCounts(1, 1, 1, 1)));
+    }
+  }
+
+  [Test]
+  public void Load_WithMissingRideRootRetainsTypedUnresolvedInstance() {
+    var source = new FakeLoaderSource();
+    var instance = RideInstance(
+      900,
+      @"Rides\Missing\MissingRide",
+      "MissingRide:trr");
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [],
+      [instance],
+      source);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Issues.Single().Kind,
+        Is.EqualTo(RideTrackResourceCatalogLoadIssueKind.MissingRootPair));
+      Assert.That(result.RideResources.Instances.Single().IsResolved, Is.False);
+      Assert.That(result.RideResources.Graph.Rides, Is.Empty);
+      Assert.That(result.RideResources.ResolvedInstanceCount, Is.Zero);
+      Assert.That(result.RideResources.UnresolvedInstanceCount, Is.EqualTo(1));
+      Assert.That(result.RideResources.DecodedCounts,
+        Is.EqualTo(new RideResourceDecodeCounts(0, 0, 0, 0)));
+    }
+  }
+
+  [Test]
+  public void Load_SavedExactRideTrainRootWinsWithoutConventionProbes() {
+    var source = new FakeLoaderSource();
+    var rideRoot = PairPath("Rides", "Synthetic", "SyntheticRide");
+    var savedTrainRoot = PairPath("CustomCars", "SavedTrain");
+    var conventionalTrainRoot = PairPath("Cars", "SyntheticTrain", "SyntheticTrain");
+    source.AddPair(
+      rideRoot,
+      rides: [Ride("SyntheticRide", ["SyntheticTrain"])]);
+    source.AddPair(
+      savedTrainRoot,
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    source.AddPair(
+      conventionalTrainRoot,
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr");
+    var savedTrain = RideTrainInstance(
+      1_000,
+      @"CustomCars\SavedTrain",
+      "SyntheticTrain:rit",
+      trackedRideInstance: 900);
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [],
+      [instance],
+      [savedTrain],
+      source);
+
+    var trainLink = result.RideResources.Graph.Rides.Single().Trains.Single();
+    var savedLink = result.RideResources.TrainInstances.Links.Single();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { rideRoot, savedTrainRoot }));
+      Assert.That(source.ProbedPaths.Any(path =>
+        path.Contains("SyntheticTrain", StringComparison.OrdinalIgnoreCase)), Is.False);
+      Assert.That(trainLink.IsResolved, Is.True);
+      Assert.That(trainLink.Source!.File.Path, Is.EqualTo(UniquePath(savedTrainRoot)));
+      Assert.That(savedLink.RideInstance, Is.SameAs(instance));
+      Assert.That(savedLink.TrainInstance, Is.SameAs(savedTrain));
+      Assert.That(savedLink.RideInstanceEntryId, Is.EqualTo(900));
+      Assert.That(savedLink.TrainInstanceEntryId, Is.EqualTo(1_000));
+      Assert.That(savedLink.Ordinal, Is.Zero);
+      Assert.That(savedLink.WhichTrain, Is.Zero);
+      Assert.That(savedLink.Length, Is.EqualTo(12.5f));
+      Assert.That(savedLink.Mass, Is.EqualTo(1_000f));
+      Assert.That(savedLink.Source!.File.Path, Is.EqualTo(UniquePath(savedTrainRoot)));
+      Assert.That(savedLink.Resource!.Name, Is.EqualTo("SyntheticTrain"));
+      Assert.That(result.RideResources.SavedTrainCount, Is.EqualTo(1));
+      Assert.That(result.RideResources.ResolvedSavedTrainCount, Is.EqualTo(1));
+      Assert.That(result.RideResources.UnresolvedSavedTrainCount, Is.Zero);
+      Assert.That(result.RideResources.TrainInstances.UnreferencedInstances, Is.Empty);
+    }
+  }
+
+  [Test]
+  public void Load_MissingSavedRideTrainRemainsUnresolvedWithoutCompatibleSubstitution() {
+    var source = new FakeLoaderSource();
+    var rideRoot = PairPath("Rides", "Synthetic", "SyntheticRide");
+    var conventionalTrainRoot = PairPath("Cars", "SyntheticTrain", "SyntheticTrain");
+    source.AddPair(
+      rideRoot,
+      rides: [Ride("SyntheticRide", ["SyntheticTrain"])]);
+    source.AddPair(
+      conventionalTrainRoot,
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr");
+    var savedTrain = RideTrainInstance(
+      1_000,
+      @"CustomCars\MissingSaved",
+      "SyntheticTrain:rit",
+      trackedRideInstance: 900);
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [],
+      [instance],
+      [savedTrain],
+      source);
+
+    var savedLink = result.RideResources.TrainInstances.Links.Single();
+    var graphTrain = result.RideResources.Graph.Rides.Single().Trains.Single();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { rideRoot }));
+      Assert.That(source.ProbedPaths, Does.Not.Contain(conventionalTrainRoot));
+      Assert.That(source.ProbedPaths, Does.Not.Contain(UniquePath(conventionalTrainRoot)));
+      Assert.That(result.Issues.Single().Kind,
+        Is.EqualTo(RideTrackResourceCatalogLoadIssueKind.MissingRootPair));
+      Assert.That(savedLink.TrainInstance, Is.SameAs(savedTrain));
+      Assert.That(savedLink.Source, Is.Null);
+      Assert.That(savedLink.IsResolved, Is.False);
+      Assert.That(graphTrain.IsResolved, Is.False);
+      Assert.That(result.RideResources.SavedTrainCount, Is.EqualTo(1));
+      Assert.That(result.RideResources.ResolvedSavedTrainCount, Is.Zero);
+      Assert.That(result.RideResources.UnresolvedSavedTrainCount, Is.EqualTo(1));
+    }
+  }
+
+  [Test]
+  public void Load_UnreferencedSavedRideTrainIsRetainedWithoutInventingAnOwnerLink() {
+    var source = new FakeLoaderSource();
+    var rideRoot = PairPath("Rides", "Synthetic", "SyntheticRide");
+    var savedTrainRoot = PairPath("CustomCars", "SavedTrain");
+    source.AddPair(
+      rideRoot,
+      rides: [Ride("SyntheticRide", ["SyntheticTrain"])]);
+    source.AddPair(
+      savedTrainRoot,
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr");
+    var referencedTrain = RideTrainInstance(
+      1_000,
+      @"CustomCars\SavedTrain",
+      "SyntheticTrain:rit",
+      trackedRideInstance: 900);
+    var unreferencedTrain = RideTrainInstance(
+      1_001,
+      @"CustomCars\Unreferenced",
+      "UnreferencedTrain:rit",
+      trackedRideInstance: 900);
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [],
+      [instance],
+      [referencedTrain, unreferencedTrain],
+      source);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.RideResources.TrainInstances.Links, Has.Count.EqualTo(1));
+      Assert.That(result.RideResources.TrainInstances.Links.Single().TrainInstance,
+        Is.SameAs(referencedTrain));
+      Assert.That(result.RideResources.TrainInstances.UnreferencedInstances,
+        Is.EqualTo(new[] { unreferencedTrain }));
+      Assert.That(result.RideResources.SavedTrainCount, Is.EqualTo(2));
+      Assert.That(result.RideResources.ResolvedSavedTrainCount, Is.EqualTo(1));
+      Assert.That(result.RideResources.UnresolvedSavedTrainCount, Is.EqualTo(1));
+      Assert.That(source.ProbedPaths.Any(path =>
+        path.Contains("Unreferenced", StringComparison.OrdinalIgnoreCase)), Is.False);
+    }
+  }
+
+  [Test]
+  public void Load_WrongSavedSymbolDoesNotSubstituteCompatibleRideTrain() {
+    var source = new FakeLoaderSource();
+    var rideRoot = PairPath("Rides", "Synthetic", "SyntheticRide");
+    var savedTrainRoot = PairPath("CustomCars", "WrongSaved");
+    var conventionalTrainRoot = PairPath("Cars", "SyntheticTrain", "SyntheticTrain");
+    source.AddPair(
+      rideRoot,
+      rides: [Ride("SyntheticRide", ["SyntheticTrain"])]);
+    source.AddPair(
+      savedTrainRoot,
+      rideTrains: [Train("DifferentTrain", "SyntheticCar:ric")]);
+    source.AddPair(
+      conventionalTrainRoot,
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr");
+    var savedTrain = RideTrainInstance(
+      1_000,
+      @"CustomCars\WrongSaved",
+      "SyntheticTrain:rit",
+      trackedRideInstance: 900);
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [],
+      [instance],
+      [savedTrain],
+      source);
+
+    var savedLink = result.RideResources.TrainInstances.Links.Single();
+    var graphTrain = result.RideResources.Graph.Rides.Single().Trains.Single();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { rideRoot, savedTrainRoot }));
+      Assert.That(source.ProbedPaths, Does.Not.Contain(conventionalTrainRoot));
+      Assert.That(source.ProbedPaths, Does.Not.Contain(UniquePath(conventionalTrainRoot)));
+      Assert.That(result.IsComplete, Is.True);
+      Assert.That(savedLink.Source, Is.Null);
+      Assert.That(savedLink.IsResolved, Is.False);
+      Assert.That(graphTrain.IsResolved, Is.False);
+      Assert.That(result.RideResources.DecodedCounts.RideTrains, Is.EqualTo(1));
+      Assert.That(result.RideResources.SavedTrainCount, Is.EqualTo(1));
+      Assert.That(result.RideResources.ResolvedSavedTrainCount, Is.Zero);
+      Assert.That(result.RideResources.UnresolvedSavedTrainCount, Is.EqualTo(1));
+    }
+  }
+
+  [Test]
+  public void Load_RejectsSavedRideTrainCountMismatch() {
+    var source = new FakeLoaderSource();
+    var rideRoot = PairPath("Rides", "Synthetic", "SyntheticRide");
+    var savedTrainRoot = PairPath("CustomCars", "SavedTrain");
+    source.AddPair(
+      rideRoot,
+      rides: [Ride("SyntheticRide", ["SyntheticTrain"])]);
+    source.AddPair(
+      savedTrainRoot,
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr",
+      nTrains: 2,
+      trains: [1_000]);
+    var savedTrain = RideTrainInstance(
+      1_000,
+      @"CustomCars\SavedTrain",
+      "SyntheticTrain:rit",
+      trackedRideInstance: 900);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrackResourceCatalogLoader.Load(
+        installRoot,
+        [],
+        [instance],
+        [savedTrain],
+        source)));
+
+    Assert.That(exception!.Message,
+      Does.Contain("declares 2 trains but references 1"));
+  }
+
+  [Test]
+  public void Load_RejectsSavedRideTrainOrderMismatch() {
+    var source = new FakeLoaderSource();
+    var rideRoot = PairPath("Rides", "Synthetic", "SyntheticRide");
+    var savedTrainRoot = PairPath("CustomCars", "SavedTrain");
+    source.AddPair(
+      rideRoot,
+      rides: [Ride("SyntheticRide", ["SyntheticTrain"])]);
+    source.AddPair(
+      savedTrainRoot,
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr",
+      nTrains: 2,
+      trains: [1_000, 1_001]);
+    var firstTrain = RideTrainInstance(
+      1_000,
+      @"CustomCars\SavedTrain",
+      "SyntheticTrain:rit",
+      trackedRideInstance: 900,
+      whichTrain: 1);
+    var secondTrain = RideTrainInstance(
+      1_001,
+      @"CustomCars\SavedTrain",
+      "SyntheticTrain:rit",
+      trackedRideInstance: 900,
+      whichTrain: 0);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrackResourceCatalogLoader.Load(
+        installRoot,
+        [],
+        [instance],
+        [firstTrain, secondTrain],
+        source)));
+
+    Assert.That(exception!.Message,
+      Does.Contain("index 1 does not match forward reference ordinal 0"));
+  }
+
+  [Test]
+  public void Load_CompatibleRideTrainUsesFirstCompleteBoundedCandidateOnly() {
+    var source = new FakeLoaderSource();
+    var rideRoot = PairPath("Rides", "Synthetic", "SyntheticRide");
+    var coasterCandidate = PairPath(
+      "Cars",
+      "CoasterCars",
+      "SyntheticTrain",
+      "SyntheticTrain");
+    var trackedRideCandidate = PairPath(
+      "Cars",
+      "TrackedRideCars",
+      "SyntheticTrain",
+      "SyntheticTrain");
+    source.AddPair(
+      rideRoot,
+      rides: [Ride("SyntheticRide", ["SyntheticTrain"])]);
+    source.AddPair(
+      coasterCandidate,
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    source.AddPair(
+      trackedRideCandidate,
+      rideTrains: [Train("SyntheticTrain", "SyntheticCar:ric")]);
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr");
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [],
+      [instance],
+      source);
+
+    var trainLink = result.RideResources.Graph.Rides.Single().Trains.Single();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { rideRoot, coasterCandidate }));
+      Assert.That(source.ProbedPaths.Any(path =>
+        path.Contains("TrackedRideCars", StringComparison.OrdinalIgnoreCase)), Is.False);
+      Assert.That(trainLink.IsResolved, Is.True);
+      Assert.That(trainLink.Source!.File.Path, Is.EqualTo(UniquePath(coasterCandidate)));
     }
   }
 
@@ -362,11 +772,14 @@ public class RideTrackResourceCatalogLoaderTests {
     ],
     Segments: [new SplineSegment(1f, new byte[14])]);
 
-  private static TrackedRide Ride(string name) => new(
+  private static TrackedRide Ride(
+    string name,
+    IReadOnlyList<string>? trainNames = null
+  ) => new(
     name,
     TrackedRideVersion.Vanilla,
     [new TrackedRideTrackSection("Straight:tks", "straight", 10)],
-    TrainNames: [],
+    TrainNames: trainNames ?? [],
     CableLift: null,
     LiftCar: null,
     VanillaTrackPath: "../Synthetic/Synthetic",
@@ -386,6 +799,85 @@ public class RideTrackResourceCatalogLoaderTests {
     Expansion: null,
     Wild: null);
 
+  private static DatTrackedRideInstanceData RideInstance(
+    ulong entryId,
+    string overlayName,
+    string symbolName,
+    int nTrains = 1,
+    ulong[]? trains = null
+  ) => new(
+    entryId,
+    "Synthetic ride",
+    track: 700,
+    overlayName,
+    symbolName,
+    nTrains,
+    nCarsPerTrain: 1,
+    trainSelection: 0,
+    trains: trains ?? [1_000]);
+
+  private static DatRideTrainInstanceData RideTrainInstance(
+    ulong entryId,
+    string overlayName,
+    string symbolName,
+    ulong trackedRideInstance,
+    int whichTrain = 0
+  ) => new(
+    entryId,
+    overlayName,
+    symbolName,
+    trackedRideInstance,
+    whichTrain,
+    length: 12.5f,
+    mass: 1_000f);
+
+  private static RideTrain Train(string name, string frontCar) => new(
+    name,
+    RideTrainVersion.Vanilla,
+    "Synthetic Train",
+    "Synthetic train description",
+    new RideTrainCars(frontCar, null, null, null, null, null, 1, 1, 1, null),
+    new RideTrainSpeedSettings(0, 0, 0),
+    new RideTrainCameraSettings(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    new RideTrainWaterSettings(0, 0, 0, 0, 0, 0, 0, 0),
+    0,
+    new RideTrainUnknownSettings(0, 0, 0, 0, 0, 0, 0, 0),
+    null,
+    null,
+    null,
+    null,
+    null);
+
+  private static RideCar Car(string name, string visual) => new(
+    name,
+    RideCarVersion.Vanilla,
+    "Synthetic Car",
+    "Synthetic Username",
+    0,
+    0,
+    visual,
+    1,
+    null,
+    -1,
+    new RideCarAxisSettings(0, 0, 0, 0, 0, 0, 0, 0),
+    new RideCarBobbingSettings(0, 0, 0, 0),
+    new RideCarAnimationSettings(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    [],
+    new RideCarWheelSettings(
+      new RideCarVisualPart(null, 0),
+      new RideCarVisualPart(null, 0),
+      new RideCarVisualPart(null, 0),
+      new RideCarVisualPart(null, 0)),
+    new RideCarAxleSettings(
+      new RideCarVisualPart(null, 0),
+      new RideCarVisualPart(null, 0)),
+    new RideCarBaseUnknownSettings(0, 0, 0, 0, 0, 0, 0),
+    null,
+    null);
+
+  private static SceneryItemVisual Visual(string name) =>
+    new(name, default, 0, 0, 0, 1, [], null);
+
   private sealed class FakeLoaderSource : IRideTrackResourceCatalogLoaderSource {
     private readonly HashSet<string> existing = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Ovl> archives = new(StringComparer.OrdinalIgnoreCase);
@@ -397,6 +889,7 @@ public class RideTrackResourceCatalogLoaderTests {
       new(ReferenceEqualityComparer.Instance);
 
     public List<string> LoadedPaths { get; } = [];
+    public List<string> ProbedPaths { get; } = [];
     public List<Ovl> DisposedArchives { get; } = [];
     public int FileExistsCount { get; private set; }
 
@@ -406,7 +899,10 @@ public class RideTrackResourceCatalogLoaderTests {
       IReadOnlyList<TrackSection>? sections = null,
       IReadOnlyList<SceneryItem>? sceneryItems = null,
       IReadOnlyList<Spline>? splines = null,
-      IReadOnlyList<TrackedRide>? rides = null
+      IReadOnlyList<TrackedRide>? rides = null,
+      IReadOnlyList<RideTrain>? rideTrains = null,
+      IReadOnlyList<RideCar>? rideCars = null,
+      IReadOnlyList<SceneryItemVisual>? visuals = null
     ) {
       var uniquePath = UniquePath(commonPath);
       var archive = new Ovl(Path.GetFileName(commonPath));
@@ -414,7 +910,10 @@ public class RideTrackResourceCatalogLoaderTests {
         sections ?? [],
         sceneryItems ?? [],
         splines ?? [],
-        rides ?? []);
+        rides ?? [],
+        rideTrains ?? [],
+        rideCars ?? [],
+        visuals ?? []);
       AddFiles(archive, pairResources.TrackSections, FileType.TrackSection, uniquePath,
         item => item.Name);
       AddFiles(archive, pairResources.SceneryItems, FileType.SceneryItem, uniquePath,
@@ -422,6 +921,12 @@ public class RideTrackResourceCatalogLoaderTests {
       AddFiles(archive, pairResources.Splines, FileType.Spline, commonPath,
         item => item.Name);
       AddFiles(archive, pairResources.TrackedRides, FileType.TrackedRide, uniquePath,
+        item => item.Name);
+      AddFiles(archive, pairResources.RideTrains, FileType.RideTrain, uniquePath,
+        item => item.Name);
+      AddFiles(archive, pairResources.RideCars, FileType.RideCar, uniquePath,
+        item => item.Name);
+      AddFiles(archive, pairResources.Visuals, FileType.SceneryItemVisual, uniquePath,
         item => item.Name);
       archives.Add(commonPath, archive);
       resources.Add(archive, pairResources);
@@ -447,6 +952,7 @@ public class RideTrackResourceCatalogLoaderTests {
 
     public bool FileExists(string path) {
       FileExistsCount++;
+      ProbedPaths.Add(path);
       return existing.Contains(path);
     }
 
@@ -463,6 +969,14 @@ public class RideTrackResourceCatalogLoaderTests {
     public IReadOnlyList<Spline> ExtractSplines(Ovl archive) => resources[archive].Splines;
     public IReadOnlyList<TrackedRide> ExtractTrackedRides(Ovl archive) =>
       resources[archive].TrackedRides;
+    public IReadOnlyList<RideTrain> ExtractRideTrains(Ovl archive) =>
+      resources[archive].RideTrains;
+    public IReadOnlyList<RideCar> ExtractRideCars(Ovl archive) =>
+      resources[archive].RideCars;
+    public IReadOnlyList<SceneryItemVisual> ExtractSceneryItemVisuals(Ovl archive) =>
+      resources[archive].Visuals;
+    public IReadOnlyList<StaticShape> ExtractStaticShapes(Ovl archive) => [];
+    public IReadOnlyList<BoneShape> ExtractBoneShapes(Ovl archive) => [];
 
     public void DisposePair(Ovl archive) {
       DisposedArchives.Add(archive);
@@ -486,7 +1000,10 @@ public class RideTrackResourceCatalogLoaderTests {
     IReadOnlyList<TrackSection> TrackSections,
     IReadOnlyList<SceneryItem> SceneryItems,
     IReadOnlyList<Spline> Splines,
-    IReadOnlyList<TrackedRide> TrackedRides
+    IReadOnlyList<TrackedRide> TrackedRides,
+    IReadOnlyList<RideTrain> RideTrains,
+    IReadOnlyList<RideCar> RideCars,
+    IReadOnlyList<SceneryItemVisual> Visuals
   );
 
   private sealed class ThrowingList<T>(int count) : IReadOnlyList<T> {

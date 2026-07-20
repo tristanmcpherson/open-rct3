@@ -275,6 +275,30 @@ public static class SceneryGeometryBuilder {
     return CalculateWorldAnchor(terrain, tileX, tileY, new PlacementAnchor(0.5d, 0.5d));
   }
 
+  /// <summary>
+  /// Returns the executable-backed position-type anchor for one decoded SID placement.
+  /// </summary>
+  internal static Vector2 CalculatePlacementAnchor(
+    Terrain terrain,
+    int tileX,
+    int tileY,
+    SceneryItem item,
+    int direction,
+    int corner,
+    string objectKey
+  ) {
+    ArgumentNullException.ThrowIfNull(terrain);
+    ArgumentNullException.ThrowIfNull(item);
+    ArgumentNullException.ThrowIfNull(objectKey);
+    if (!terrain.HasTile(tileX, tileY))
+      throw Invalid($"placement '{objectKey}' is outside the terrain grid");
+    if (direction is < 0 or > 3)
+      throw Invalid($"placement '{objectKey}' serialized direction {direction} is unsupported");
+    ValidateItem(item);
+    var normalized = CalculateNormalizedAnchor(item, direction, corner, objectKey);
+    return CalculateWorldAnchor(terrain, tileX, tileY, normalized);
+  }
+
   private static ResolvedShapeSelection? SelectShapeLod(
     SceneryPlacement placement,
     ResolvedSceneryObject resolved
@@ -459,7 +483,11 @@ public static class SceneryGeometryBuilder {
         $"placement '{placement.ObjectKey}' rotation {placement.Rotation} is unsupported");
 
     var direction = ResolveDirection(placement);
-    var normalizedAnchor = CalculateNormalizedAnchor(placement, item, direction);
+    var normalizedAnchor = CalculateNormalizedAnchor(
+      item,
+      direction,
+      placement.Corner,
+      placement.ObjectKey);
     var anchor = CalculateWorldAnchor(
       terrain, placement.TileX, placement.TileY, normalizedAnchor);
     var height = PlacementHeight(placement, item, terrain, normalizedAnchor, direction);
@@ -521,9 +549,10 @@ public static class SceneryGeometryBuilder {
   }
 
   private static PlacementAnchor CalculateNormalizedAnchor(
-    SceneryPlacement placement,
     SceneryItem item,
-    int direction
+    int direction,
+    int corner,
+    string objectKey
   ) => item.PositionType switch {
     SidPosition.TileFull or SidPosition.PathCenter =>
       CalculateFootprintCenter(item, direction),
@@ -533,7 +562,7 @@ public static class SceneryGeometryBuilder {
       CalculateEdgeAnchor(direction, 0.05d, 0.95d),
     SidPosition.Wall or SidPosition.Corner =>
       CalculateEdgeAnchor(direction, 0d, 1d),
-    SidPosition.TileQuarter => CalculateQuarterAnchor(placement),
+    SidPosition.TileQuarter => CalculateQuarterAnchor(corner, objectKey),
     SidPosition.TileHalf => CalculateHalfAnchor(direction),
     _ => throw Invalid($"SID position type {item.PositionType} is unsupported"),
   };
@@ -560,14 +589,17 @@ public static class SceneryGeometryBuilder {
     _ => throw Invalid($"serialized direction {direction} is unsupported"),
   };
 
-  private static PlacementAnchor CalculateQuarterAnchor(SceneryPlacement placement) =>
-    placement.Corner switch {
+  private static PlacementAnchor CalculateQuarterAnchor(
+    int corner,
+    string objectKey
+  ) =>
+    corner switch {
       0 => new PlacementAnchor(0.25d, 0.75d),
       1 => new PlacementAnchor(0.75d, 0.75d),
       2 => new PlacementAnchor(0.25d, 0.25d),
       3 => new PlacementAnchor(0.75d, 0.25d),
       _ => throw Invalid(
-        $"placement '{placement.ObjectKey}' quarter corner {placement.Corner} is unsupported"),
+        $"placement '{objectKey}' quarter corner {corner} is unsupported"),
     };
 
   private static PlacementAnchor CalculateHalfAnchor(int direction) => direction switch {

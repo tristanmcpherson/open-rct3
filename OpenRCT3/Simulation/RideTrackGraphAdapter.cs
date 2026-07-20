@@ -9,16 +9,27 @@ using System.Linq;
 namespace OpenRCT3.Simulation;
 
 /// <summary>
-/// Adapts the exact serialized order of one non-circuit DAT ride track into the current dual-rail
-/// directed acyclic graph substrate.
+/// Adapts the authoritative piece order of one non-circuit DAT ride track into the current
+/// dual-rail directed acyclic graph substrate.
 /// </summary>
 /// <remarks>
 /// RCT3 circuit tracks cannot be represented by <see cref="TrackGraph"/>, which deliberately
-/// rejects cycles. Expansion layouts that omit the serialized Track piece list are also rejected:
-/// their loader-retained placement order is membership evidence, not authoritative traversal order.
+/// rejects cycles. The topology loader can retain a serialized Track list or reconstruct the same
+/// order from bounded reciprocal TrackPiece links.
 /// </remarks>
 internal static class RideTrackGraphAdapter {
   private const int MaximumPieceCount = 1_000_000;
+
+  // RCT3.exe's paired TKS evaluator at 0x00F62070 samples each car spline by its own arc distance
+  // and normalizes the resulting direction. BoxOffice's 432 rail joins have a maximum normalized
+  // direction delta of 0.031452168, but 410 raw derivative magnitudes differ because each SPL has
+  // an independent parameterization. Keep this evidence-backed exception local to DAT imports.
+  internal const float ImportedJoinDirectionTolerance = 0.032f;
+  private static readonly TrackJoinValidationPolicy ImportedJoinValidation = new(
+    positionTolerance: 0.001f,
+    tangentDirectionTolerance: ImportedJoinDirectionTolerance,
+    tangentMagnitudeTolerance: null,
+    bankToleranceRadians: 0.001f);
 
   public static TrackGraph Build(
     RideTrack track,
@@ -30,7 +41,7 @@ internal static class RideTrackGraphAdapter {
     ArgumentNullException.ThrowIfNull(createPiece);
 
     if (track.IsCircuit != false)
-      throw Invalid(track, "only explicitly non-circuit tracks can be adapted to a DAG");
+      throw Invalid(track, "only link-derived open tracks can be adapted to a DAG");
     var orderedPlacements = ResolveOrderedPlacements(track, placements);
     ValidatePieceLinks(track, orderedPlacements, isCircuit: false);
 
@@ -51,10 +62,10 @@ internal static class RideTrackGraphAdapter {
         piece);
     }
 
-    return new TrackGraph(nodes, edges);
+    return new TrackGraph(nodes, edges, ImportedJoinValidation);
   }
 
-  /// <summary>Adapts one explicitly cyclic serialized piece order into a closed track circuit.</summary>
+  /// <summary>Adapts one link-derived cyclic piece order into a closed track circuit.</summary>
   public static TrackCircuit BuildCircuit(
     RideTrack track,
     IReadOnlyList<RideTrackPlacement> placements,
@@ -65,7 +76,7 @@ internal static class RideTrackGraphAdapter {
     ArgumentNullException.ThrowIfNull(createPiece);
 
     if (track.IsCircuit != true)
-      throw Invalid(track, "only explicitly circuit tracks can be adapted to a closed circuit");
+      throw Invalid(track, "only link-derived circuit tracks can be adapted to a closed circuit");
     var orderedPlacements = ResolveOrderedPlacements(track, placements);
     ValidatePieceLinks(track, orderedPlacements, isCircuit: true);
 
@@ -77,15 +88,18 @@ internal static class RideTrackGraphAdapter {
         throw Invalid(track, $"TrackPiece {placement.SourceEntryId} has no resolved geometry");
       pieces[index] = new TrackCircuitPiece($"track-piece-{placement.SourceEntryId}", piece);
     }
-    return new TrackCircuit(pieces);
+    return new TrackCircuit(pieces, ImportedJoinValidation);
   }
 
   private static RideTrackPlacement[] ResolveOrderedPlacements(
     RideTrack track,
     IReadOnlyList<RideTrackPlacement> placements
   ) {
-    if (!track.HasSerializedTrackPieceOrder)
-      throw Invalid(track, "has no authoritative serialized TrackPiece order");
+    if (!track.HasAuthoritativeTrackPieceOrder)
+      throw Invalid(track, "has no authoritative TrackPiece order");
+    if (track.SegmentSourceEntryIds.Count != 1)
+      throw Invalid(track,
+        "the current geometry substrate requires exactly one TrackSegment traversal");
     if (track.TrackPieceSourceEntryIds.Count == 0)
       throw Invalid(track, "contains no TrackPiece references");
     if (track.TrackPieceSourceEntryIds.Count > MaximumPieceCount)

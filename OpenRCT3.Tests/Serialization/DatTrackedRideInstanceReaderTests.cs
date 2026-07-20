@@ -16,6 +16,7 @@ public class DatTrackedRideInstanceReaderTests {
     var data = DatTerrainReader.Read(stream);
 
     var ride = data.TrackedRideInstances.Single();
+    var train = data.RideTrainInstances.Single(item => item.EntryId == 1_000);
     using (Assert.EnterMultipleScope()) {
       Assert.That(stream.Position, Is.EqualTo(stream.Length));
       Assert.That(ride.EntryId, Is.EqualTo(900));
@@ -27,6 +28,14 @@ public class DatTrackedRideInstanceReaderTests {
       Assert.That(ride.NCarsPerTrain, Is.EqualTo(4));
       Assert.That(ride.TrainSelection, Is.EqualTo(5));
       Assert.That(ride.Trains, Is.EqualTo(new ulong[] { 1_000, 1_001 }));
+      Assert.That(data.RideTrainInstances, Has.Count.EqualTo(2));
+      Assert.That(train.RideTrainOverlayName,
+        Is.EqualTo(@"Cars\TrackedRideCars\SyntheticTrain\SyntheticTrain"));
+      Assert.That(train.RideTrainSymbolName, Is.EqualTo("SyntheticTrain:rit"));
+      Assert.That(train.TrackedRideInstance, Is.EqualTo(900));
+      Assert.That(train.WhichTrain, Is.Zero);
+      Assert.That(train.Length, Is.EqualTo(28.754667f));
+      Assert.That(train.Mass, Is.EqualTo(10_200f));
     }
   }
 
@@ -50,6 +59,43 @@ public class DatTrackedRideInstanceReaderTests {
     using var stream = BuildDat(structure);
 
     Assert.Throws<InvalidDataException>(new Action(() => DatTerrainReader.Read(stream)));
+  }
+
+  [Test]
+  public void Read_RideTrainBackpointerMismatchFailsClosed() {
+    using var stream = BuildDat(
+      TrackedRideInstanceStructure(),
+      firstTrainOwner: 901);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      DatTerrainReader.Read(stream)));
+
+    Assert.That(exception!.Message, Does.Contain("reciprocal owner is 901"));
+  }
+
+  [Test]
+  public void Read_DuplicateRideTrainEntryIdFailsClosed() {
+    using var stream = BuildDat(
+      TrackedRideInstanceStructure(),
+      secondTrainEntryId: 1_000);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      DatTerrainReader.Read(stream)));
+
+    Assert.That(exception!.Message, Does.Contain("duplicate RideTrainInstance ID 1000"));
+  }
+
+  [Test]
+  public void Read_NonFiniteRideTrainLengthFailsClosed() {
+    using var stream = BuildDat(
+      TrackedRideInstanceStructure(),
+      firstTrainLength: float.NaN);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      DatTerrainReader.Read(stream)));
+
+    Assert.That(exception!.Message, Does.Contain(
+      "RideTrainInstance Length contains a non-finite value"));
   }
 
   [TestCase("Campaigns/Base/BoxOffice.dat")]
@@ -99,23 +145,62 @@ public class DatTrackedRideInstanceReaderTests {
 
     TestContext.WriteLine(
       $"{relativePath}: {data.TrackedRideInstances.Count} ride instances, " +
-      $"{data.RideTracks.Count} tracks");
+      $"{data.RideTrainInstances.Count} train instances, {data.RideTracks.Count} tracks");
   }
 
-  private static MemoryStream BuildDat(StructureSpec trackedRideInstanceStructure) {
-    var structures = new[] { LandscapeStructure(), trackedRideInstanceStructure };
+  [Test]
+  [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
+  public void Read_BoxOfficeCapturesExactSavedRideTrainProvenance() {
+    var installPath = Environment.GetEnvironmentVariable("RCT3_PATH");
+    Assert.That(string.IsNullOrWhiteSpace(installPath), Is.False);
+    var campaignPath = Path.Combine(installPath!, "Campaigns", "Base", "BoxOffice.dat");
+
+    var data = DatTerrainReader.Read(campaignPath);
+    var ride = data.TrackedRideInstances.Single(instance => instance.EntryId == 3_986);
+    var train = data.RideTrainInstances.Single(instance => instance.EntryId == 3_987);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(ride.Trains, Is.EqualTo(new ulong[] { 3_987 }));
+      Assert.That(ride.TrainSelection, Is.Zero);
+      Assert.That(train.TrackedRideInstance, Is.EqualTo(ride.EntryId));
+      Assert.That(train.RideTrainOverlayName,
+        Is.EqualTo(@"Cars\TrackedRideCars\StreamlinedMono\StreamlinedMono"));
+      Assert.That(train.RideTrainSymbolName, Is.EqualTo("StreamlinedMono:rit"));
+      Assert.That(train.WhichTrain, Is.Zero);
+      Assert.That(train.Length, Is.EqualTo(28.754667f).Within(0.000001f));
+      Assert.That(train.Mass, Is.EqualTo(10_200f));
+    }
+  }
+
+  private static MemoryStream BuildDat(
+    StructureSpec trackedRideInstanceStructure,
+    ulong firstTrainOwner = 900,
+    ulong secondTrainEntryId = 1_001,
+    float firstTrainLength = 28.754667f
+  ) {
+    var structures = new[] {
+      LandscapeStructure(),
+      trackedRideInstanceStructure,
+      RideTrainInstanceStructure(),
+    };
     var stream = new MemoryStream();
     using (var writer = new BinaryWriter(stream, Encoding.ASCII, leaveOpen: true)) {
       writer.Write(Convert.ToUInt32(structures.Length));
       foreach (var structure in structures)
         WriteStructure(writer, structure);
-      writer.Write(2u);
+      writer.Write(4u);
       writer.Write(0u);
       writer.Write(1ul);
       WriteTerrain(writer);
       writer.Write(1u);
       writer.Write(900ul);
       WriteTrackedRideInstance(writer);
+      writer.Write(2u);
+      writer.Write(1_000ul);
+      WriteRideTrainInstance(writer, firstTrainOwner, 0, firstTrainLength, 10_200f);
+      writer.Write(2u);
+      writer.Write(secondTrainEntryId);
+      WriteRideTrainInstance(writer, 900, 1, 12.5f, 1_000f);
     }
     stream.Position = 0;
     return stream;
@@ -187,6 +272,24 @@ public class DatTrackedRideInstanceReaderTests {
     writer.Write(5);
   }
 
+  private static void WriteRideTrainInstance(
+    BinaryWriter writer,
+    ulong trackedRideInstance,
+    int whichTrain,
+    float length,
+    float mass
+  ) {
+    writer.Write(0u);
+    writer.Write(0u);
+    writer.Write(true);
+    writer.Write(length);
+    WriteDatString(writer, @"Cars\TrackedRideCars\SyntheticTrain\SyntheticTrain");
+    writer.Write(trackedRideInstance);
+    writer.Write(mass);
+    WriteDatString(writer, "SyntheticTrain:rit");
+    writer.Write(whichTrain);
+  }
+
   private static StructureSpec LandscapeStructure() => new(
     "Landscape",
     [new FieldSpec("EngineTerrain", "GE_Terrain")]);
@@ -220,6 +323,22 @@ public class DatTrackedRideInstanceReaderTests {
         [new FieldSpec("Value", "bool", 1)]),
       new FieldSpec("TrackedRideSymbolName", "string"),
       new FieldSpec("TrainSelection", "int32", 4),
+    ]);
+
+  private static StructureSpec RideTrainInstanceStructure() => new(
+    "RideTrainInstance",
+    [
+      new FieldSpec(
+        "Cars",
+        "array",
+        NestedFields: [new FieldSpec("Car", "managedobjectptr", 8)]),
+      new FieldSpec("OpaqueFlag", "bool", 1),
+      new FieldSpec("Length", "float32", 4),
+      new FieldSpec("RideTrainOverlayName", "string"),
+      new FieldSpec("TrackedRideInstance", "managedobjectptr", 8),
+      new FieldSpec("Mass", "float32", 4),
+      new FieldSpec("RideTrainSymbolName", "string"),
+      new FieldSpec("WhichTrain", "int32", 4),
     ]);
 
   private sealed record StructureSpec(

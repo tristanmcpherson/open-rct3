@@ -33,12 +33,25 @@ public sealed class TrackGraph {
     float joinPositionTolerance = 0.001f,
     float joinTangentTolerance = 0.001f,
     float joinBankToleranceRadians = 0.001f
+  ) : this(
+    nodes,
+    edges,
+    new TrackJoinValidationPolicy(
+      joinPositionTolerance,
+      joinTangentTolerance,
+      joinTangentTolerance,
+      joinBankToleranceRadians)) {
+  }
+
+  /// <summary>Creates a directed acyclic graph with an explicit join-validation policy.</summary>
+  public TrackGraph(
+    IEnumerable<TrackNode> nodes,
+    IEnumerable<TrackEdge> edges,
+    TrackJoinValidationPolicy joinValidation
   ) {
     ArgumentNullException.ThrowIfNull(nodes);
     ArgumentNullException.ThrowIfNull(edges);
-    ValidateTolerance(joinPositionTolerance, nameof(joinPositionTolerance));
-    ValidateTolerance(joinTangentTolerance, nameof(joinTangentTolerance));
-    ValidateTolerance(joinBankToleranceRadians, nameof(joinBankToleranceRadians));
+    ArgumentNullException.ThrowIfNull(joinValidation);
 
     var nodeArray = nodes.ToArray();
     var edgeArray = edges.ToArray();
@@ -48,9 +61,7 @@ public sealed class TrackGraph {
     ValidateJoins(
       nodeArray,
       edgeArray,
-      joinPositionTolerance,
-      joinTangentTolerance,
-      joinBankToleranceRadians
+      joinValidation
     );
 
     this.nodes = Array.AsReadOnly(nodeArray);
@@ -130,9 +141,7 @@ public sealed class TrackGraph {
   private static void ValidateJoins(
     IEnumerable<TrackNode> nodes,
     IReadOnlyList<TrackEdge> edges,
-    float positionTolerance,
-    float tangentTolerance,
-    float bankTolerance
+    TrackJoinValidationPolicy validation
   ) {
     foreach (var node in nodes) {
       var endpoints = edges
@@ -143,33 +152,27 @@ public sealed class TrackGraph {
 
       var expected = endpoints[0];
       foreach (var actual in endpoints.Skip(1))
-        ValidateJoin(expected, actual, positionTolerance, tangentTolerance, bankTolerance, node.Id);
+        ValidateJoin(expected, actual, validation, node.Id);
     }
   }
 
   private static void ValidateJoin(
     TrackPieceEndpoint expected,
     TrackPieceEndpoint actual,
-    float positionTolerance,
-    float tangentTolerance,
-    float bankTolerance,
+    TrackJoinValidationPolicy validation,
     string nodeId
   ) {
     ValidateRailJoin(
       expected.Left,
       actual.Left,
-      positionTolerance,
-      tangentTolerance,
-      bankTolerance,
+      validation,
       nodeId,
       RailSide.Left
     );
     ValidateRailJoin(
       expected.Right,
       actual.Right,
-      positionTolerance,
-      tangentTolerance,
-      bankTolerance,
+      validation,
       nodeId,
       RailSide.Right
     );
@@ -178,9 +181,7 @@ public sealed class TrackGraph {
   private static void ValidateRailJoin(
     RailEndpoint expected,
     RailEndpoint actual,
-    float positionTolerance,
-    float tangentTolerance,
-    float bankTolerance,
+    TrackJoinValidationPolicy validation,
     string nodeId,
     RailSide side
   ) {
@@ -192,21 +193,19 @@ public sealed class TrackGraph {
     );
     var magnitudeScale = Math.Max(expectedMagnitude, actualMagnitude);
     var magnitudeDifference = Math.Abs(expectedMagnitude - actualMagnitude) / magnitudeScale;
+    var magnitudeMismatch = validation.TangentMagnitudeTolerance is not null
+      && magnitudeDifference > validation.TangentMagnitudeTolerance.Value;
 
-    if (TrackMath.Distance(expected.Position, actual.Position) > positionTolerance
-        || directionDifference > tangentTolerance
-        || magnitudeDifference > tangentTolerance
+    if (TrackMath.Distance(expected.Position, actual.Position) > validation.PositionTolerance
+        || directionDifference > validation.TangentDirectionTolerance
+        || magnitudeMismatch
         || MathF.Abs(TrackMath.ShortestAngleDelta(
           expected.BankRadians,
           actual.BankRadians
-        )) > bankTolerance)
+        )) > validation.BankToleranceRadians)
       throw new ArgumentException(
         $"Track pieces do not form a C1-continuous {side} rail join at node '{nodeId}'."
       );
   }
 
-  private static void ValidateTolerance(float tolerance, string parameterName) {
-    if (!float.IsFinite(tolerance) || tolerance < 0f)
-      throw new ArgumentOutOfRangeException(parameterName);
-  }
 }

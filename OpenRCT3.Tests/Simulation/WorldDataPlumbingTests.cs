@@ -24,7 +24,9 @@ public class WorldDataPlumbingTests {
       out var trackPieces,
       out var rideTracks,
       out var trackSegments,
-      out var trackedRideInstances);
+      out var trackedRideInstances,
+      out var rideTrainInstances,
+      out var rideCarInstances);
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(terrain.Width, Is.EqualTo(data.Width));
@@ -36,6 +38,8 @@ public class WorldDataPlumbingTests {
       Assert.That(rideTracks, Is.SameAs(data.RideTracks));
       Assert.That(trackSegments, Is.SameAs(data.TrackSegments));
       Assert.That(trackedRideInstances, Is.SameAs(data.TrackedRideInstances));
+      Assert.That(rideTrainInstances, Is.SameAs(data.RideTrainInstances));
+      Assert.That(rideCarInstances, Is.SameAs(data.RideCarInstances));
     }
   }
 
@@ -51,7 +55,9 @@ public class WorldDataPlumbingTests {
       out var trackPieces,
       out var rideTracks,
       out var trackSegments,
-      out var trackedRideInstances);
+      out var trackedRideInstances,
+      out var rideTrainInstances,
+      out var rideCarInstances);
 
     var park = World.BuildPark(
       terrain,
@@ -62,7 +68,9 @@ public class WorldDataPlumbingTests {
       trackPieces,
       rideTracks,
       trackSegments,
-      trackedRideInstances);
+      trackedRideInstances,
+      rideTrainInstances,
+      rideCarInstances);
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(park.PathPlacements, Has.Count.EqualTo(1));
@@ -70,9 +78,12 @@ public class WorldDataPlumbingTests {
       Assert.That(park.SceneryPlacements, Has.Count.EqualTo(1));
       Assert.That(park.SceneryPlacements[0].ObjectKey, Is.EqualTo("Test_SID"));
       Assert.That(park.RideTrackPlacements, Has.Count.EqualTo(1));
+      Assert.That(park.RideTrackPieceRecords, Is.EqualTo(data.TrackPieces));
       Assert.That(park.RideTracks, Has.Count.EqualTo(1));
       Assert.That(park.RideTrackSegments, Has.Count.EqualTo(1));
       Assert.That(park.TrackedRideInstances, Is.EqualTo(data.TrackedRideInstances));
+      Assert.That(park.RideTrainInstances, Is.EqualTo(data.RideTrainInstances));
+      Assert.That(park.RideCarInstances, Is.EqualTo(data.RideCarInstances));
       Assert.That(
         park.RideTrackPlacements[0].SceneryPlacementSourceEntryId,
         Is.EqualTo(SceneryItemEntryId));
@@ -169,6 +180,25 @@ public class WorldDataPlumbingTests {
       nCarsPerTrain: 4,
       trainSelection: 0,
       trains: [1_000]);
+    var rideTrainInstance = new DatRideTrainInstanceData(
+      entryId: 1_000,
+      rideTrainOverlayName: @"Cars\Synthetic\SyntheticTrain",
+      rideTrainSymbolName: "SyntheticTrain:rit",
+      trackedRideInstance: trackedRideInstance.EntryId,
+      whichTrain: 0,
+      length: 12.5f,
+      mass: 1_000f,
+      cars: [1_001]);
+    var rideCarInstance = new DatRideCarInstanceData(
+      entryId: 1_001,
+      rideTrainInstance: rideTrainInstance.EntryId,
+      whichCar: 0,
+      whichRideTrainCar: 0,
+      trackPiece: trackPiece.EntryId,
+      rearTrackPiece: trackPiece.EntryId,
+      distance: 1.25f,
+      reversed: false,
+      speed: 2.5f);
 
     return new DatTerrainData(
       width: 12,
@@ -184,6 +214,8 @@ public class WorldDataPlumbingTests {
       trackPieces: [trackPiece],
       rideTracks: [rideTrack],
       trackSegments: [trackSegment],
-      trackedRideInstances: [trackedRideInstance]);
+      trackedRideInstances: [trackedRideInstance],
+      rideTrainInstances: [rideTrainInstance],
+      rideCarInstances: [rideCarInstance]);
   }
 }

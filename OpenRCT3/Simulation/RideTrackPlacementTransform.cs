@@ -2,6 +2,7 @@
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 
+using OpenCobra.OVL.Files;
 using System.Numerics;
 
 namespace OpenRCT3.Simulation;
@@ -9,16 +10,21 @@ namespace OpenRCT3.Simulation;
 /// <summary>Builds the proven world transform for one decoded DAT ride-track placement.</summary>
 public static class RideTrackPlacementTransform {
   /// <summary>
-  /// Places local Z-up track geometry at the center of its scenery tile, using the DAT placement's
-  /// absolute height and scenery-specific direction ordinal.
+  /// Places local Z-up track geometry at its resolved SID position-type anchor, using the DAT
+  /// placement's absolute height and scenery-specific direction ordinal.
   /// </summary>
   /// <remarks>
-  /// No pinned reference currently proves how <see cref="RideTrackPlacement.Reversed"/> or
-  /// <see cref="RideTrackPlacement.UserAngleDegrees"/> changes track geometry. Those values are
-  /// rejected instead of inventing a transform.
+  /// <see cref="RideTrackPlacement.Reversed"/> reverses the local rail traversal before this world
+  /// transform is applied. <see cref="RideTrackPlacement.UserAngleDegrees"/> targets the vehicle's
+  /// spin/swing part over the piece and does not alter static rail placement.
   /// </remarks>
-  public static Matrix4x4 Create(RideTrackPlacement placement, Terrain terrain) {
+  public static Matrix4x4 Create(
+    RideTrackPlacement placement,
+    SceneryItem sceneryItem,
+    Terrain terrain
+  ) {
     ArgumentNullException.ThrowIfNull(placement);
+    ArgumentNullException.ThrowIfNull(sceneryItem);
     ArgumentNullException.ThrowIfNull(terrain);
 
     if (!terrain.HasTile(placement.TileX, placement.TileY))
@@ -36,17 +42,22 @@ public static class RideTrackPlacementTransform {
         placement,
         $"rotation {placement.Rotation} does not match serialized direction " +
         $"{placement.SerializedDirection} ({expectedRotation})");
-    if (placement.Reversed)
-      throw Invalid(placement, "reversed geometry has no proven transform");
-    if (placement.UserAngleDegrees != 0)
+    if (!string.Equals(
+      placement.ObjectKey,
+      sceneryItem.Name,
+      StringComparison.OrdinalIgnoreCase))
       throw Invalid(
         placement,
-        $"user angle {placement.UserAngleDegrees} degrees has no proven transform");
-
-    var anchor = SceneryGeometryBuilder.CalculateTileAnchor(
+        $"object key '{placement.ObjectKey}' does not match resolved SID " +
+        $"'{sceneryItem.Name}'");
+    var anchor = SceneryGeometryBuilder.CalculatePlacementAnchor(
       terrain,
       placement.TileX,
-      placement.TileY);
+      placement.TileY,
+      sceneryItem,
+      placement.SerializedDirection,
+      placement.Corner,
+      placement.ObjectKey);
     var translation = new Vector3(
       anchor,
       Convert.ToSingle(placement.SerializedHeight));

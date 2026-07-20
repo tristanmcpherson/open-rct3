@@ -39,19 +39,26 @@ public sealed class TrackCircuit {
     float joinPositionTolerance = 0.001f,
     float joinTangentTolerance = 0.001f,
     float joinBankToleranceRadians = 0.001f
+  ) : this(
+    pieces,
+    new TrackJoinValidationPolicy(
+      joinPositionTolerance,
+      joinTangentTolerance,
+      joinTangentTolerance,
+      joinBankToleranceRadians)) {
+  }
+
+  /// <summary>Creates a closed circuit with an explicit join-validation policy.</summary>
+  public TrackCircuit(
+    IEnumerable<TrackCircuitPiece> pieces,
+    TrackJoinValidationPolicy joinValidation
   ) {
     ArgumentNullException.ThrowIfNull(pieces);
-    ValidateTolerance(joinPositionTolerance, nameof(joinPositionTolerance));
-    ValidateTolerance(joinTangentTolerance, nameof(joinTangentTolerance));
-    ValidateTolerance(joinBankToleranceRadians, nameof(joinBankToleranceRadians));
+    ArgumentNullException.ThrowIfNull(joinValidation);
 
     var copied = CopyBounded(pieces);
     ValidatePieces(copied);
-    ValidateJoins(
-      copied,
-      joinPositionTolerance,
-      joinTangentTolerance,
-      joinBankToleranceRadians);
+    ValidateJoins(copied, joinValidation);
 
     pieceStarts = BuildPieceStarts(copied);
     this.pieces = Array.AsReadOnly(copied);
@@ -140,9 +147,7 @@ public sealed class TrackCircuit {
 
   private static void ValidateJoins(
     IReadOnlyList<TrackCircuitPiece> pieces,
-    float positionTolerance,
-    float tangentTolerance,
-    float bankTolerance
+    TrackJoinValidationPolicy validation
   ) {
     foreach (var index in Enumerable.Range(0, pieces.Count)) {
       var outgoing = pieces[index];
@@ -150,18 +155,14 @@ public sealed class TrackCircuit {
       ValidateRailJoin(
         outgoing.Piece.Exit.Left,
         incoming.Piece.Entry.Left,
-        positionTolerance,
-        tangentTolerance,
-        bankTolerance,
+        validation,
         outgoing.Id,
         incoming.Id,
         RailSide.Left);
       ValidateRailJoin(
         outgoing.Piece.Exit.Right,
         incoming.Piece.Entry.Right,
-        positionTolerance,
-        tangentTolerance,
-        bankTolerance,
+        validation,
         outgoing.Id,
         incoming.Id,
         RailSide.Right);
@@ -171,9 +172,7 @@ public sealed class TrackCircuit {
   private static void ValidateRailJoin(
     RailEndpoint expected,
     RailEndpoint actual,
-    float positionTolerance,
-    float tangentTolerance,
-    float bankTolerance,
+    TrackJoinValidationPolicy validation,
     string outgoingId,
     string incomingId,
     RailSide side
@@ -185,20 +184,18 @@ public sealed class TrackCircuit {
       TrackMath.Normalize(actual.Tangent));
     var magnitudeScale = Math.Max(expectedMagnitude, actualMagnitude);
     var magnitudeDifference = Math.Abs(expectedMagnitude - actualMagnitude) / magnitudeScale;
+    var magnitudeMismatch = validation.TangentMagnitudeTolerance is not null
+      && magnitudeDifference > validation.TangentMagnitudeTolerance.Value;
 
-    if (TrackMath.Distance(expected.Position, actual.Position) > positionTolerance
-        || directionDifference > tangentTolerance
-        || magnitudeDifference > tangentTolerance
+    if (TrackMath.Distance(expected.Position, actual.Position) > validation.PositionTolerance
+        || directionDifference > validation.TangentDirectionTolerance
+        || magnitudeMismatch
         || MathF.Abs(TrackMath.ShortestAngleDelta(
           expected.BankRadians,
-          actual.BankRadians)) > bankTolerance)
+          actual.BankRadians)) > validation.BankToleranceRadians)
       throw new ArgumentException(
         $"Track circuit pieces '{outgoingId}' and '{incomingId}' do not form a " +
         $"C1-continuous {side} rail join.");
   }
 
-  private static void ValidateTolerance(float tolerance, string parameterName) {
-    if (!float.IsFinite(tolerance) || tolerance < 0f)
-      throw new ArgumentOutOfRangeException(parameterName);
-  }
 }

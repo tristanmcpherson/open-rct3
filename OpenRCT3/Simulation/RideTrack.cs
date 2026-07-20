@@ -16,14 +16,22 @@ public sealed class RideTrack {
   public ulong FirstSegmentSourceEntryId { get; }
   public ulong LastSegmentSourceEntryId { get; }
   /// <summary>
-  /// The serialized circuit flag, or <c>null</c> when the expansion Track layout omits it.
+  /// The authoritative link-derived circuit classification, or <c>null</c> when the current
+  /// runtime model cannot represent the decoded segment topology as one traversal.
   /// </summary>
   public bool? IsCircuit { get; }
+  /// <summary>
+  /// The advisory serialized field retained by older DAT layouts. Complete Edition's native
+  /// <c>Track</c> does not consume this field; reciprocal piece links define closure.
+  /// </summary>
+  public bool? SerializedIsCircuit { get; }
   public bool Prototype { get; }
   /// <summary>
-  /// Whether <see cref="TrackPieceSourceEntryIds"/> preserves a serialized Track list. Expansion
-  /// layouts omit that list, so their membership is derived from TrackPiece-to-TrackSegment links.
+  /// Whether <see cref="TrackPieceSourceEntryIds"/> is an authoritative traversal, either retained
+  /// from a non-empty serialized Track list or reconstructed from reciprocal piece links.
   /// </summary>
+  public bool HasAuthoritativeTrackPieceOrder { get; }
+  /// <summary>Whether the DAT Track itself serialized a non-empty TrackPiece list.</summary>
   public bool HasSerializedTrackPieceOrder { get; }
   public IReadOnlyList<ulong> TrackPieceSourceEntryIds { get; }
   public IReadOnlyList<ulong> SegmentSourceEntryIds { get; }
@@ -49,7 +57,9 @@ public sealed class RideTrack {
     int flexiColour2,
     ulong trackedRideInstanceReference,
     bool? flippedTrackSections,
-    int? tunnelLightColour
+    int? tunnelLightColour,
+    bool? serializedIsCircuit = null,
+    bool? hasAuthoritativeTrackPieceOrder = null
   ) {
     ArgumentNullException.ThrowIfNull(trackPieceSourceEntryIds);
     ArgumentNullException.ThrowIfNull(segmentSourceEntryIds);
@@ -59,8 +69,11 @@ public sealed class RideTrack {
     FirstSegmentSourceEntryId = firstSegmentSourceEntryId;
     LastSegmentSourceEntryId = lastSegmentSourceEntryId;
     IsCircuit = isCircuit;
+    SerializedIsCircuit = serializedIsCircuit;
     Prototype = prototype;
     HasSerializedTrackPieceOrder = hasSerializedTrackPieceOrder;
+    HasAuthoritativeTrackPieceOrder = hasAuthoritativeTrackPieceOrder
+      ?? hasSerializedTrackPieceOrder;
     TrackPieceSourceEntryIds = Array.AsReadOnly((ulong[])trackPieceSourceEntryIds.Clone());
     SegmentSourceEntryIds = Array.AsReadOnly((ulong[])segmentSourceEntryIds.Clone());
     FlexiColour0 = flexiColour0;

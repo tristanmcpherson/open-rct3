@@ -492,6 +492,50 @@ internal static class DatTerrainReader {
       0,
       [new("Train", FieldKind.ManagedObjectPtr, 8)]),
   ];
+  private static readonly ExpectedField[] RideTrainInstanceIdentityFields = [
+    new(
+      "Cars",
+      FieldKind.Array,
+      0,
+      [new("Car", FieldKind.ManagedObjectPtr, 8)]),
+    new("Length", FieldKind.Float32, 4),
+    new("Mass", FieldKind.Float32, 4),
+    new("RideTrainOverlayName", FieldKind.String, 0),
+    new("RideTrainSymbolName", FieldKind.String, 0),
+    new("TrackedRideInstance", FieldKind.ManagedObjectPtr, 8),
+    new("WhichTrain", FieldKind.Int32, 4),
+  ];
+  private static readonly ExpectedField[] RideCarStatsSchema = [
+    new("AccelValid", FieldKind.Bool, 1),
+    new("AngVelocity", FieldKind.Vector3, 12),
+    new("Distance", FieldKind.Float32, 4),
+    new("Length", FieldKind.Float32, 4),
+    new("Mass", FieldKind.Float32, 4),
+    new("MidSplinePos", FieldKind.Vector3, 12),
+    new("Orient", FieldKind.Orientation, 12),
+    new("Pos", FieldKind.Vector3, 12),
+    new("PosValid", FieldKind.Bool, 1),
+    new("RearTrackPiece", FieldKind.ManagedObjectPtr, 8),
+    new("Reversed", FieldKind.Bool, 1),
+    new("SeatAccel", FieldKind.Vector3, 12),
+    new("Speed", FieldKind.Float32, 4),
+    new("TrackAccel", FieldKind.Vector3, 12),
+    new("TrackOrient", FieldKind.Orientation, 12),
+    new("TrackPiece", FieldKind.ManagedObjectPtr, 8),
+    new("TrackVelocity", FieldKind.Vector3, 12),
+    new("VelTimeDeltaAccum", FieldKind.Float32, 4),
+    new("VelocityValid", FieldKind.Bool, 1),
+    new("WorldAccel", FieldKind.Vector3, 12),
+    new("WorldVelocity", FieldKind.Vector3, 12),
+  ];
+  private static readonly ExpectedField[] RideCarInstanceIdentityFields = [
+    new("FrontWheelDistance", FieldKind.Float32, 4),
+    new("RearWheelDistance", FieldKind.Float32, 4),
+    new("RideTrainInstance", FieldKind.ManagedObjectPtr, 8),
+    new("Stats", FieldKind.Struct, 160, RideCarStatsSchema),
+    new("WhichCar", FieldKind.Int32, 4),
+    new("WhichRideTrainCar", FieldKind.Int32, 4),
+  ];
 
   public static DatTerrainData Read(string path) {
     if (string.IsNullOrWhiteSpace(path))
@@ -518,7 +562,13 @@ internal static class DatTerrainReader {
 
       var entryId = reader.ReadUInt64();
       var structure = structures[Convert.ToInt32(structureIndex)];
-      if (structure.Name == "TrackedRideInstance")
+      if (structure.Name == "RideCarInstance")
+        state.CaptureRideCarInstance(
+          ReadRideCarInstance(reader, structure, entryId, state));
+      else if (structure.Name == "RideTrainInstance")
+        state.CaptureRideTrainInstance(
+          ReadRideTrainInstance(reader, structure, entryId, state));
+      else if (structure.Name == "TrackedRideInstance")
         state.CaptureTrackedRideInstance(
           ReadTrackedRideInstance(reader, structure, entryId, state));
       else if (structure.Name == "Track")
@@ -549,6 +599,7 @@ internal static class DatTerrainReader {
         "The DAT file does not contain an EngineTerrain/GE_Terrain field.");
     DatPathSurfaceResolver.Resolve(state.Paths, state.PathSurfaceEntries);
     state.ResolveSceneryDatabaseEntries();
+    state.ValidateRideInstanceReferences();
     return AttachDecodedData(
       terrain,
       state.WaterManager,
@@ -558,7 +609,9 @@ internal static class DatTerrainReader {
       state.RideTracks,
       state.TrackSegments,
       state.PathSurfaceEntries,
-      state.TrackedRideInstances);
+      state.TrackedRideInstances,
+      state.RideTrainInstances,
+      state.RideCarInstances);
   }
 
   private static int ReadStructureCount(DatBinaryReader reader) {
@@ -597,7 +650,11 @@ internal static class DatTerrainReader {
     for (var index = 0; index < fieldCount; index++)
       fields[index] = ReadFieldDefinition(reader, state, depth: 1);
     var structure = new DataStructure(name, fields);
-    if (name == "TrackedRideInstance")
+    if (name == "RideCarInstance")
+      ValidateRideCarInstanceStructureSchema(structure);
+    else if (name == "RideTrainInstance")
+      ValidateRideTrainInstanceStructureSchema(structure);
+    else if (name == "TrackedRideInstance")
       ValidateTrackedRideInstanceStructureSchema(structure);
     else if (name == "Track")
       ValidateRideTrackStructureSchema(structure);
@@ -788,6 +845,36 @@ internal static class DatTerrainReader {
 
   private static void ValidateTrackedRideInstanceStructureSchema(DataStructure structure) {
     foreach (var expected in TrackedRideInstanceIdentityFields) {
+      var matches = structure.Fields.Where(field => field.Name == expected.Name).ToArray();
+      if (matches.Length != 1)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' must declare exactly one " +
+          $"'{expected.Name}' field; found {matches.Length}.");
+
+      var mismatch = DescribeSchemaMismatch(matches, [expected], structure.Name);
+      if (mismatch != null)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' has an unsupported identity field: {mismatch}");
+    }
+  }
+
+  private static void ValidateRideTrainInstanceStructureSchema(DataStructure structure) {
+    foreach (var expected in RideTrainInstanceIdentityFields) {
+      var matches = structure.Fields.Where(field => field.Name == expected.Name).ToArray();
+      if (matches.Length != 1)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' must declare exactly one " +
+          $"'{expected.Name}' field; found {matches.Length}.");
+
+      var mismatch = DescribeSchemaMismatch(matches, [expected], structure.Name);
+      if (mismatch != null)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' has an unsupported identity field: {mismatch}");
+    }
+  }
+
+  private static void ValidateRideCarInstanceStructureSchema(DataStructure structure) {
+    foreach (var expected in RideCarInstanceIdentityFields) {
       var matches = structure.Fields.Where(field => field.Name == expected.Name).ToArray();
       if (matches.Length != 1)
         throw new InvalidDataException(
@@ -1103,6 +1190,206 @@ internal static class DatTerrainReader {
   private static InvalidDataException MissingTrackedRideInstanceValue(string name) =>
     new($"TrackedRideInstance schema validation did not provide '{name}'.");
 
+  private static DatRideTrainInstanceData ReadRideTrainInstance(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    float? length = null;
+    float? mass = null;
+    string? rideTrainOverlayName = null;
+    string? rideTrainSymbolName = null;
+    ulong? trackedRideInstance = null;
+    int? whichTrain = null;
+    ulong[]? cars = null;
+
+    foreach (var field in structure.Fields) {
+      switch (field.Name) {
+        case "Cars":
+          state.AddValue();
+          cars = ReadReferenceCollection(reader, state, "RideTrainInstance Cars");
+          break;
+        case "Length":
+          state.AddValue();
+          length = ReadFiniteSingle(reader, "RideTrainInstance Length");
+          break;
+        case "Mass":
+          state.AddValue();
+          mass = ReadFiniteSingle(reader, "RideTrainInstance Mass");
+          break;
+        case "RideTrainOverlayName":
+          state.AddValue();
+          rideTrainOverlayName = ReadDatString(
+            reader,
+            "RideTrainInstance RideTrainOverlayName");
+          break;
+        case "RideTrainSymbolName":
+          state.AddValue();
+          rideTrainSymbolName = ReadDatString(
+            reader,
+            "RideTrainInstance RideTrainSymbolName");
+          break;
+        case "TrackedRideInstance":
+          state.AddValue();
+          trackedRideInstance = reader.ReadUInt64();
+          break;
+        case "WhichTrain":
+          state.AddValue();
+          whichTrain = reader.ReadInt32();
+          break;
+        default:
+          ReadFieldValue(reader, field, state);
+          break;
+      }
+    }
+
+    return new DatRideTrainInstanceData(
+      entryId,
+      rideTrainOverlayName ?? throw MissingRideTrainInstanceValue("RideTrainOverlayName"),
+      rideTrainSymbolName ?? throw MissingRideTrainInstanceValue("RideTrainSymbolName"),
+      trackedRideInstance ?? throw MissingRideTrainInstanceValue("TrackedRideInstance"),
+      whichTrain ?? throw MissingRideTrainInstanceValue("WhichTrain"),
+      length ?? throw MissingRideTrainInstanceValue("Length"),
+      mass ?? throw MissingRideTrainInstanceValue("Mass"),
+      cars ?? throw MissingRideTrainInstanceValue("Cars"));
+  }
+
+  private static InvalidDataException MissingRideTrainInstanceValue(string name) =>
+    new($"RideTrainInstance schema validation did not provide '{name}'.");
+
+  private static DatRideCarInstanceData ReadRideCarInstance(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    if (entryId == 0)
+      throw new InvalidDataException("RideCarInstance has a missing entry ID.");
+    float? frontWheelDistance = null;
+    float? rearWheelDistance = null;
+    ulong? rideTrainInstance = null;
+    int? whichCar = null;
+    int? whichRideTrainCar = null;
+    RideCarResumeState? resume = null;
+
+    foreach (var field in structure.Fields) {
+      switch (field.Name) {
+        case "FrontWheelDistance":
+          state.AddValue();
+          frontWheelDistance = ReadFiniteSingle(
+            reader,
+            "RideCarInstance FrontWheelDistance");
+          break;
+        case "RearWheelDistance":
+          state.AddValue();
+          rearWheelDistance = ReadFiniteSingle(
+            reader,
+            "RideCarInstance RearWheelDistance");
+          break;
+        case "RideTrainInstance":
+          state.AddValue();
+          rideTrainInstance = reader.ReadUInt64();
+          break;
+        case "Stats":
+          resume = ReadRideCarResumeState(reader, field, state);
+          break;
+        case "WhichCar":
+          state.AddValue();
+          whichCar = reader.ReadInt32();
+          break;
+        case "WhichRideTrainCar":
+          state.AddValue();
+          whichRideTrainCar = reader.ReadInt32();
+          break;
+        default:
+          ReadFieldValue(reader, field, state);
+          break;
+      }
+    }
+
+    var carIndex = whichCar ?? throw MissingRideCarInstanceValue("WhichCar");
+    if (carIndex < 0)
+      throw new InvalidDataException(
+        $"RideCarInstance {entryId} has invalid WhichCar value {carIndex}.");
+    var carRole = whichRideTrainCar
+      ?? throw MissingRideCarInstanceValue("WhichRideTrainCar");
+    if (carRole is < 0 or > 5)
+      throw new InvalidDataException(
+        $"RideCarInstance {entryId} has unsupported WhichRideTrainCar value {carRole}.");
+    var saved = resume ?? throw MissingRideCarInstanceValue("Stats");
+    var trainOwner = rideTrainInstance
+      ?? throw MissingRideCarInstanceValue("RideTrainInstance");
+    if (trainOwner == 0)
+      throw new InvalidDataException(
+        $"RideCarInstance {entryId} has a missing RideTrainInstance owner.");
+
+    return new DatRideCarInstanceData(
+      entryId,
+      trainOwner,
+      carIndex,
+      carRole,
+      frontWheelDistance ?? throw MissingRideCarInstanceValue("FrontWheelDistance"),
+      rearWheelDistance ?? throw MissingRideCarInstanceValue("RearWheelDistance"),
+      saved.TrackPiece,
+      saved.RearTrackPiece,
+      saved.Distance,
+      saved.Reversed,
+      saved.Speed);
+  }
+
+  private static RideCarResumeState ReadRideCarResumeState(
+    DatBinaryReader reader,
+    FieldDefinition field,
+    ValueReadState state
+  ) {
+    state.AddValue();
+    ReadSizedValueLength(reader, field.FixedSize, "RideCarInstance Stats payload");
+    float? distance = null;
+    ulong? rearTrackPiece = null;
+    bool? reversed = null;
+    float? speed = null;
+    ulong? trackPiece = null;
+
+    foreach (var child in field.Children) {
+      switch (child.Name) {
+        case "Distance":
+          state.AddValue();
+          distance = ReadFiniteSingle(reader, "RideCarInstance Stats.Distance");
+          break;
+        case "RearTrackPiece":
+          state.AddValue();
+          rearTrackPiece = reader.ReadUInt64();
+          break;
+        case "Reversed":
+          state.AddValue();
+          reversed = ReadBoolean(reader, "RideCarInstance Stats.Reversed");
+          break;
+        case "Speed":
+          state.AddValue();
+          speed = ReadFiniteSingle(reader, "RideCarInstance Stats.Speed");
+          break;
+        case "TrackPiece":
+          state.AddValue();
+          trackPiece = reader.ReadUInt64();
+          break;
+        default:
+          ReadFieldValue(reader, child, state);
+          break;
+      }
+    }
+
+    return new RideCarResumeState(
+      distance ?? throw MissingRideCarInstanceValue("Stats.Distance"),
+      reversed ?? throw MissingRideCarInstanceValue("Stats.Reversed"),
+      speed ?? throw MissingRideCarInstanceValue("Stats.Speed"),
+      trackPiece ?? throw MissingRideCarInstanceValue("Stats.TrackPiece"),
+      rearTrackPiece ?? throw MissingRideCarInstanceValue("Stats.RearTrackPiece"));
+  }
+
+  private static InvalidDataException MissingRideCarInstanceValue(string name) =>
+    new($"RideCarInstance schema validation did not provide '{name}'.");
+
   private static DatRideTrackData ReadRideTrack(
     DatBinaryReader reader,
     DataStructure structure,
@@ -1237,8 +1524,10 @@ internal static class DatTerrainReader {
       reader.ReadInt32();
       ReadFiniteSingle(reader, "TrackPiece SpiralLiftHillDistance");
     }
-    ReadFiniteSingle(reader, "TrackPiece StartDistance");
-    ReadFiniteSingle(reader, "TrackPiece StartDistanceBackwardsSpline");
+    var startDistance = ReadFiniteSingle(reader, "TrackPiece StartDistance");
+    var startDistanceBackwardsSpline = ReadFiniteSingle(
+      reader,
+      "TrackPiece StartDistanceBackwardsSpline");
     reader.ReadInt32();
     if (hasSoakedFields) reader.ReadInt32();
     var userAngleDegrees = reader.ReadInt32();
@@ -1257,6 +1546,8 @@ internal static class DatTerrainReader {
       sceneryItem,
       sceneryItemDataField,
       segment,
+      startDistance,
+      startDistanceBackwardsSpline,
       userAngleDegrees);
   }
 
@@ -1293,8 +1584,10 @@ internal static class DatTerrainReader {
     reader.ReadInt32();
     ReadFiniteSingle(reader, "TrackPiece SpinLockAngle");
     ReadFiniteSingle(reader, "TrackPiece SpiralLiftHillDistance");
-    ReadFiniteSingle(reader, "TrackPiece StartDistance");
-    ReadFiniteSingle(reader, "TrackPiece StartDistanceBackwardsSpline");
+    var startDistance = ReadFiniteSingle(reader, "TrackPiece StartDistance");
+    var startDistanceBackwardsSpline = ReadFiniteSingle(
+      reader,
+      "TrackPiece StartDistanceBackwardsSpline");
     reader.ReadInt32();
     reader.ReadInt32();
     var userAngleDegrees = reader.ReadInt32();
@@ -1312,6 +1605,8 @@ internal static class DatTerrainReader {
       sceneryItem,
       sceneryItemDataField,
       segment,
+      startDistance,
+      startDistanceBackwardsSpline,
       userAngleDegrees);
   }
 
@@ -1978,7 +2273,9 @@ internal static class DatTerrainReader {
     IReadOnlyList<DatRideTrackData> rideTracks,
     IReadOnlyList<DatTrackSegmentData> trackSegments,
     IReadOnlyList<DatPathSurfaceEntryData> pathSurfaceEntries,
-    IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances
+    IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
+    IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
+    IReadOnlyList<DatRideCarInstanceData> rideCarInstances
   ) {
     if (waterManager != null
       && (waterManager.Width != terrain.Width || waterManager.Height != terrain.Height))
@@ -1993,7 +2290,8 @@ internal static class DatTerrainReader {
 
     if (waterManager == null && paths.Count == 0 && sceneryEntries.Count == 0 &&
         trackPieces.Count == 0 && rideTracks.Count == 0 && trackSegments.Count == 0 &&
-        pathSurfaceEntries.Count == 0 && trackedRideInstances.Count == 0)
+        pathSurfaceEntries.Count == 0 && trackedRideInstances.Count == 0 &&
+        rideTrainInstances.Count == 0 && rideCarInstances.Count == 0)
       return terrain;
 
     var cells = new DatTerrainCell[terrain.Cells.Count];
@@ -2014,7 +2312,9 @@ internal static class DatTerrainReader {
       [.. rideTracks],
       [.. trackSegments],
       [.. pathSurfaceEntries],
-      [.. trackedRideInstances]);
+      [.. trackedRideInstances],
+      [.. rideTrainInstances],
+      [.. rideCarInstances]);
   }
 
   private static DatTerrainData ReadTerrain(DatBinaryReader reader, int payloadSize) {
@@ -2208,6 +2508,13 @@ internal static class DatTerrainReader {
     uint FixedSize,
     ExpectedField[]? Children = null);
 
+  private readonly record struct RideCarResumeState(
+    float Distance,
+    bool Reversed,
+    float Speed,
+    ulong TrackPiece,
+    ulong RearTrackPiece);
+
   private sealed class SchemaReadState {
     public int FieldCount { get; private set; }
 
@@ -2228,6 +2535,8 @@ internal static class DatTerrainReader {
     private readonly List<DatRideTrackData> _rideTracks = [];
     private readonly List<DatTrackSegmentData> _trackSegments = [];
     private readonly List<DatTrackedRideInstanceData> _trackedRideInstances = [];
+    private readonly List<DatRideTrainInstanceData> _rideTrainInstances = [];
+    private readonly List<DatRideCarInstanceData> _rideCarInstances = [];
 
     public DatTerrainData? Terrain { get; private set; }
     public DatWaterManagerData? WaterManager { get; private set; }
@@ -2239,6 +2548,10 @@ internal static class DatTerrainReader {
     public IReadOnlyList<DatTrackSegmentData> TrackSegments => _trackSegments;
     public IReadOnlyList<DatTrackedRideInstanceData> TrackedRideInstances =>
       _trackedRideInstances;
+    public IReadOnlyList<DatRideTrainInstanceData> RideTrainInstances =>
+      _rideTrainInstances;
+    public IReadOnlyList<DatRideCarInstanceData> RideCarInstances =>
+      _rideCarInstances;
 
     public void AddCollectionElements(int count) {
       if (count > MaxTotalCollectionElements - _collectionElementCount)
@@ -2283,6 +2596,82 @@ internal static class DatTerrainReader {
 
     public void CaptureTrackedRideInstance(DatTrackedRideInstanceData trackedRideInstance) =>
       _trackedRideInstances.Add(trackedRideInstance);
+
+    public void CaptureRideTrainInstance(DatRideTrainInstanceData rideTrainInstance) =>
+      _rideTrainInstances.Add(rideTrainInstance);
+
+    public void CaptureRideCarInstance(DatRideCarInstanceData rideCarInstance) =>
+      _rideCarInstances.Add(rideCarInstance);
+
+    public void ValidateRideInstanceReferences() {
+      var rideTrainInstancesById = new Dictionary<ulong, DatRideTrainInstanceData>();
+      foreach (var train in _rideTrainInstances) {
+        if (train.EntryId == 0 || !rideTrainInstancesById.TryAdd(train.EntryId, train))
+          throw new InvalidDataException(
+            $"DAT contains a missing or duplicate RideTrainInstance ID {train.EntryId}.");
+      }
+
+      var rideCarInstancesById = new Dictionary<ulong, DatRideCarInstanceData>();
+      foreach (var car in _rideCarInstances) {
+        if (car.EntryId == 0 || !rideCarInstancesById.TryAdd(car.EntryId, car))
+          throw new InvalidDataException(
+            $"DAT contains a missing or duplicate RideCarInstance ID {car.EntryId}.");
+      }
+
+      var trackedRideIds = new HashSet<ulong>();
+      var referencedRideTrainIds = new HashSet<ulong>();
+      foreach (var ride in _trackedRideInstances) {
+        if (ride.EntryId == 0 || !trackedRideIds.Add(ride.EntryId))
+          throw new InvalidDataException(
+            $"DAT contains a missing or duplicate TrackedRideInstance ID {ride.EntryId}.");
+        foreach (var trainId in ride.Trains) {
+          if (!referencedRideTrainIds.Add(trainId))
+            throw new InvalidDataException(
+              $"DAT RideTrainInstance {trainId} is referenced more than once.");
+          if (!rideTrainInstancesById.TryGetValue(trainId, out var train))
+            throw new InvalidDataException(
+              $"DAT TrackedRideInstance {ride.EntryId} references missing " +
+              $"RideTrainInstance {trainId}.");
+          if (train.TrackedRideInstance != ride.EntryId)
+            throw new InvalidDataException(
+              $"DAT TrackedRideInstance {ride.EntryId} references RideTrainInstance " +
+              $"{trainId}, whose reciprocal owner is {train.TrackedRideInstance}.");
+        }
+      }
+
+      var referencedRideCarIds = new HashSet<ulong>();
+      foreach (var train in _rideTrainInstances) {
+        for (var index = 0; index < train.Cars.Count; index++) {
+          var carId = train.Cars[index];
+          if (carId == 0 || !referencedRideCarIds.Add(carId))
+            throw new InvalidDataException(
+              $"DAT RideCarInstance {carId} is missing or referenced more than once.");
+          if (!rideCarInstancesById.TryGetValue(carId, out var car))
+            throw new InvalidDataException(
+              $"DAT RideTrainInstance {train.EntryId} references missing " +
+              $"RideCarInstance {carId}.");
+          if (car.RideTrainInstance != train.EntryId)
+            throw new InvalidDataException(
+              $"DAT RideTrainInstance {train.EntryId} references RideCarInstance " +
+              $"{carId}, whose reciprocal owner is {car.RideTrainInstance}.");
+          if (car.WhichCar != index)
+            throw new InvalidDataException(
+              $"DAT RideTrainInstance {train.EntryId} lists RideCarInstance {carId} at " +
+              $"index {index}, but its WhichCar value is {car.WhichCar}.");
+        }
+      }
+
+      foreach (var car in _rideCarInstances) {
+        if (!rideTrainInstancesById.ContainsKey(car.RideTrainInstance))
+          throw new InvalidDataException(
+            $"DAT RideCarInstance {car.EntryId} references missing RideTrainInstance " +
+            $"{car.RideTrainInstance}.");
+        if (!referencedRideCarIds.Contains(car.EntryId))
+          throw new InvalidDataException(
+            $"DAT RideCarInstance {car.EntryId} is not listed by its RideTrainInstance " +
+            $"{car.RideTrainInstance}.");
+      }
+    }
 
     public void ResolveSceneryDatabaseEntries() {
       var sidEntries = new Dictionary<ulong, DatSidDatabaseEntryData>();

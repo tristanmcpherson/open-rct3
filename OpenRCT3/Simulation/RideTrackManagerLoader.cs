@@ -42,6 +42,7 @@ internal static class RideTrackManagerLoader {
     }
 
     park.RideTrackPlacements.AddRange(converted);
+    park.RideTrackPieceRecords.AddRange(trackPieces);
   }
 
   private static IReadOnlyDictionary<ulong, SceneryPlacement> IndexSceneryPlacements(

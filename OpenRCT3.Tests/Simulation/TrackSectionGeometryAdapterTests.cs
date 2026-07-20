@@ -45,6 +45,34 @@ public class TrackSectionGeometryAdapterTests {
   }
 
   [Test]
+  public void CreateCarGeometry_ReversedSwapsRailsAndNegatesReverseDerivatives() {
+    var left = CreateRail("left", -1f, [1f, 3f]);
+    var right = CreateRail("right", 1f, [2f, 6f]);
+    var forward = TrackSectionGeometryAdapter.CreateCarGeometry(left, right);
+    var reversed = TrackSectionGeometryAdapter.CreateCarGeometry(
+      left,
+      right,
+      reversed: true);
+    var forwardPiece = new TrackPiece(forward);
+    var reversedPiece = new TrackPiece(reversed);
+
+    foreach (var parameter in new[] { 0f, 0.25f, 0.5f, 0.75f, 1f }) {
+      var opposite = 1f - parameter;
+      var expectedLeft = forwardPiece.EvaluateRail(RailSide.Right, opposite);
+      var expectedRight = forwardPiece.EvaluateRail(RailSide.Left, opposite);
+      var actualLeft = reversedPiece.EvaluateRail(RailSide.Left, parameter);
+      var actualRight = reversedPiece.EvaluateRail(RailSide.Right, parameter);
+
+      using (Assert.EnterMultipleScope()) {
+        AssertVector(actualLeft.Position, expectedLeft.Position);
+        AssertVector(actualRight.Position, expectedRight.Position);
+        AssertVector(actualLeft.Tangent, -expectedLeft.Tangent);
+        AssertVector(actualRight.Tangent, -expectedRight.Tangent);
+      }
+    }
+  }
+
+  [Test]
   public void CreateCarGeometry_RejectsCyclicRails() {
     var left = CreateRail("left", -1f, [1f, 3f]) with { Cyclic = true };
     var right = CreateRail("right", 1f, [2f, 6f]);

@@ -31,6 +31,8 @@ internal sealed class DatTerrainData {
   public IReadOnlyList<DatRideTrackData> RideTracks { get; }
   public IReadOnlyList<DatTrackSegmentData> TrackSegments { get; }
   public IReadOnlyList<DatTrackedRideInstanceData> TrackedRideInstances { get; }
+  public IReadOnlyList<DatRideTrainInstanceData> RideTrainInstances { get; }
+  public IReadOnlyList<DatRideCarInstanceData> RideCarInstances { get; }
 
   public DatTerrainData(
     int width,
@@ -47,7 +49,9 @@ internal sealed class DatTerrainData {
     DatRideTrackData[]? rideTracks = null,
     DatTrackSegmentData[]? trackSegments = null,
     DatPathSurfaceEntryData[]? pathSurfaceEntries = null,
-    DatTrackedRideInstanceData[]? trackedRideInstances = null) {
+    DatTrackedRideInstanceData[]? trackedRideInstances = null,
+    DatRideTrainInstanceData[]? rideTrainInstances = null,
+    DatRideCarInstanceData[]? rideCarInstances = null) {
     if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
     if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
     ArgumentNullException.ThrowIfNull(cells);
@@ -122,5 +126,11 @@ internal sealed class DatTerrainData {
     var rawTrackedRideInstances = (DatTrackedRideInstanceData[])(
       trackedRideInstances?.Clone() ?? Array.Empty<DatTrackedRideInstanceData>());
     TrackedRideInstances = Array.AsReadOnly(rawTrackedRideInstances);
+    var rawRideTrainInstances = (DatRideTrainInstanceData[])(
+      rideTrainInstances?.Clone() ?? Array.Empty<DatRideTrainInstanceData>());
+    RideTrainInstances = Array.AsReadOnly(rawRideTrainInstances);
+    var rawRideCarInstances = (DatRideCarInstanceData[])(
+      rideCarInstances?.Clone() ?? Array.Empty<DatRideCarInstanceData>());
+    RideCarInstances = Array.AsReadOnly(rawRideCarInstances);
   }
 }

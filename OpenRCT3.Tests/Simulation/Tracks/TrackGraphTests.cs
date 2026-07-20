@@ -93,6 +93,37 @@ public class TrackGraphTests {
   }
 
   [Test]
+  public void Constructor_ExplicitPolicyCanIgnoreOnlyRawTangentMagnitude() {
+    var first = new TrackNode("first");
+    var join = new TrackNode("join");
+    var last = new TrackNode("last");
+    var incoming = Piece(
+      Vector3.Zero,
+      new(10f, 0f, 0f),
+      Vector3.UnitX,
+      Vector3.UnitX);
+    var outgoing = Piece(
+      new(10f, 0f, 0f),
+      new(20f, 0f, 0f),
+      Vector3.UnitX * 5f,
+      Vector3.UnitX * 5f);
+    var nodes = new[] { first, join, last };
+    var edges = new[] {
+      new TrackEdge("incoming", first, join, incoming),
+      new TrackEdge("outgoing", join, last, outgoing),
+    };
+
+    Assert.Throws<ArgumentException>(new Action(() => new TrackGraph(nodes, edges)));
+
+    var graph = new TrackGraph(
+      nodes,
+      edges,
+      new TrackJoinValidationPolicy(0.001f, 0.001f, null, 0.001f));
+
+    Assert.That(graph.Edges, Has.Count.EqualTo(2));
+  }
+
+  [Test]
   public void Constructor_RejectsTinyOppositeJoinTangents() {
     var first = new TrackNode("first");
     var join = new TrackNode("join");

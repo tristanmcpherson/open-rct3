@@ -219,7 +219,8 @@ public class Game : IGame {
         Material material;
         if (pathSurfaces.TryResolveTexture(materialTile, out var texture)) {
           material = new Textured { AlbedoTexture = texture! };
-        } else {
+        }
+        else {
           // Unknown custom and legacy DAT surfaces keep the established kind-specific vertex tint.
           material = new Flat();
         }
@@ -241,18 +242,25 @@ public class Game : IGame {
       scenery.MissingOverlayPlacementCount,
       scenery.MissingTextureBatchCount);
 
+    Vector3? rideCarDiagnosticTarget = null;
+    float? rideCarDiagnosticDistance = null;
     if (World.Park.RideTrackPlacements.Count > 0 && World.Park.RideTracks.Count > 0) {
       try {
         using var loadedTrackResources = RideTrackResourceCatalogLoader.Load(
           installPath,
-          World.Park.RideTrackPlacements);
+          World.Park.RideTrackPlacements,
+          World.Park.TrackedRideInstances,
+          World.Park.RideTrainInstances);
+        World.Park.RideResources = loadedTrackResources.RideResources;
         var trackResources = loadedTrackResources.Catalog.ResolveAll(
           World.Park.RideTrackPlacements);
         var trackGeometry = RideTrackGeometryResolver.Resolve(
           World.Terrain,
           World.Park.RideTracks,
           trackResources);
+        var trackSpatialIndex = RideTrackGeometrySpatialIndex.Build(trackGeometry);
         World.Park.RideTrackGeometry = trackGeometry;
+        World.Park.RideTrackSpatialIndex = trackSpatialIndex;
 
         logger.Debug(
           "Resolved {TrackCount} ride tracks from {PlacementCount} placements and " +
@@ -270,6 +278,148 @@ public class Game : IGame {
           trackGeometry.UnsupportedGeometryTrackCount,
           trackGeometry.UnsupportedTopologyTrackCount,
           loadedTrackResources.Issues.Count);
+        foreach (var outcome in trackGeometry.Tracks.Where(track => !track.IsResolved))
+          logger.Debug(
+            "Ride track {TrackId} outcome {Status}: {Detail}",
+            outcome.Track.SourceEntryId,
+            outcome.Status,
+            outcome.Detail);
+        logger.Debug(
+          "Indexed {ResolvedCount} of {TrackCount} ride-track bounds",
+          trackSpatialIndex.ResolvedTrackCount,
+          trackSpatialIndex.TrackCount);
+        var rideResourceCounts = loadedTrackResources.RideResources.DecodedCounts;
+        logger.Debug(
+          "Resolved {ResolvedCount} of {InstanceCount} ride-instance resources; decoded " +
+          "{RideCount} TRR, {TrainCount} RIT, {CarCount} RIC, and {VisualCount} SVD with " +
+          "{UnresolvedEdgeCount} unresolved graph edges",
+          loadedTrackResources.RideResources.ResolvedInstanceCount,
+          loadedTrackResources.RideResources.Instances.Count,
+          rideResourceCounts.TrackedRides,
+          rideResourceCounts.RideTrains,
+          rideResourceCounts.RideCars,
+          rideResourceCounts.SceneryItemVisuals,
+          loadedTrackResources.RideResources.Graph.UnresolvedReferenceCount);
+        var carVisuals = loadedTrackResources.RideResources.CarVisuals;
+        logger.Debug(
+          "Linked {VisualCount} exact ride-car visuals to {ResolvedShapeLodCount} decoded " +
+          "shape LODs with {UnresolvedShapeReferenceCount} unresolved shape references",
+          carVisuals.Visuals.Count,
+          carVisuals.ResolvedShapeLodCount,
+          carVisuals.UnresolvedShapeReferenceCount);
+
+        try {
+          var instanceTracks = RideInstanceTrackGraph.Build(
+            World.Park.TrackedRideInstances,
+            World.Park.RideTracks);
+          var trackRuntime = RideInstanceTrackRuntimeRegistry.Build(
+            instanceTracks,
+            trackGeometry);
+          var trackSpatialQuery = RideInstanceTrackSpatialQuery.Build(
+            trackRuntime,
+            trackSpatialIndex);
+          World.Park.RideTrackRuntime = trackRuntime;
+          World.Park.RideTrackSpatialQuery = trackSpatialQuery;
+          logger.Debug(
+            "Composed {InstanceCount} ride instances with runtime track outcomes: " +
+            "{ResolvedCount} resolved and {SkippedCount} skipped",
+            trackRuntime.InstanceCount,
+            trackRuntime.ResolvedTrackCount,
+            trackRuntime.InstanceCount - trackRuntime.ResolvedTrackCount);
+
+          try {
+            var trainRuntime = RideInstanceTrainRuntimeRegistry.Build(
+              trackRuntime,
+              loadedTrackResources.RideResources.TrainInstances);
+            World.Park.RideTrainRuntime = trainRuntime;
+            logger.Debug(
+              "Composed {LinkedTrainCount} of {SavedTrainCount} saved trains with exact ride " +
+              "runtime identities: {ResolvedTrackCount} on resolved tracks, " +
+              "{ResolvedResourceCount} with exact RITs",
+              trainRuntime.LinkedTrainCount,
+              trainRuntime.SavedTrainCount,
+              trainRuntime.ResolvedTrackTrainCount,
+              trainRuntime.ResolvedResourceTrainCount);
+
+            var consistRuntime = RideInstanceTrainConsistRuntimeRegistry.Build(
+              trainRuntime,
+              loadedTrackResources.RideResources);
+            World.Park.RideTrainConsistRuntime = consistRuntime;
+            logger.Debug(
+              "Composed {ResolvedConsistCount} of {ConsistCount} saved train consists from " +
+              "exact graph-backed car roles",
+              consistRuntime.ResolvedCount,
+              consistRuntime.Entries.Count);
+
+            var carRuntime = RideCarInstanceRuntimeRegistry.Build(
+              trainRuntime,
+              World.Park.RideCarInstances,
+              consistRuntime);
+            World.Park.RideCarRuntime = carRuntime;
+            logger.Debug(
+              "Composed {LinkedCarCount} of {SavedCarCount} saved cars: " +
+              "{ResolvedTrackPieceCarCount} with exact track-piece pairs and " +
+              "{ResolvedResourceCarCount} with exact RIC resources",
+              carRuntime.LinkedCarCount,
+              carRuntime.SavedCarCount,
+              carRuntime.ResolvedTrackPieceCarCount,
+              carRuntime.ResolvedResourceCarCount);
+
+            var wheelCursors = RideCarSavedWheelCursorRegistry.Build(
+              carRuntime,
+              World.Park.RideTrackPieceRecords);
+            World.Park.RideCarWheelCursors = wheelCursors;
+            logger.Debug(
+              "Resolved {ResolvedCarCount} of {CarCount} saved cars to " +
+              "{ResolvedContactCount} exact static wheel contacts",
+              wheelCursors.ResolvedCarCount,
+              wheelCursors.CarCount,
+              wheelCursors.ResolvedContactCount);
+
+            using var visualTemplates = RideCarVisualTemplateRegistry.Build(carVisuals);
+            var staticCars = RideCarStaticInstanceRegistry.Build(
+              carRuntime,
+              wheelCursors,
+              visualTemplates);
+            using var visualMaterials = new RideCarVisualMaterialResolver(
+              loadedTrackResources.Context);
+            var carScene = RideCarStaticSceneBuilder.Build(
+              staticCars,
+              visualMaterials.ResolveMaterial);
+            Scene.Models.AddRange(carScene.Models);
+            var renderedCarCenters = staticCars.Entries
+              .Where(entry => entry.IsResolved)
+              .Select(entry => entry.Pose!.ContactMidpoint)
+              .ToArray();
+            if (renderedCarCenters.Length > 0) {
+              rideCarDiagnosticTarget = renderedCarCenters.Aggregate(
+                Vector3.Zero,
+                (sum, center) => sum + center) / renderedCarCenters.Length;
+              var trainRadius = renderedCarCenters.Max(center =>
+                Vector3.Distance(rideCarDiagnosticTarget.Value, center));
+              rideCarDiagnosticDistance = Math.Clamp((trainRadius * 2f) + 8f, 18f, 80f);
+            }
+            logger.Debug(
+              "Added {ModelCount} static ride-car models for {BuiltCarCount} of " +
+              "{SourceCarCount} saved cars; skipped {MissingMaterialBatchCount} " +
+              "missing-material batches",
+              carScene.ModelCount,
+              carScene.BuiltCarCount,
+              carScene.SourceCarCount,
+              carScene.MissingMaterialBatchCount);
+          }
+          catch (Exception error) when (
+            error is InvalidDataException or ArgumentException or InvalidOperationException) {
+            // Retain proven runtime track identity when malformed saved trains or cars cannot
+            // compose the remaining resource-backed runtime layers.
+            logger.Warn(error, "Ride train/car runtime composition could not be built");
+          }
+        }
+        catch (Exception error) when (
+          error is InvalidDataException or ArgumentException or InvalidOperationException) {
+          // Retain proven per-track geometry even when malformed instance links cannot compose it.
+          logger.Warn(error, "Ride-instance runtime track registry could not be built");
+        }
 
         if (GamePresentationOptions.ShowRideTrackDiagnostics) {
           var diagnostics = RideTrackDiagnosticSceneBuilder.Build(trackGeometry);
@@ -279,7 +429,8 @@ public class Game : IGame {
             diagnostics.Models.Count,
             diagnostics.Detail);
         }
-      } catch (Exception error) when (
+      }
+      catch (Exception error) when (
         error is InvalidDataException or IOException or UnauthorizedAccessException or
           ArgumentException or InvalidOperationException or AggregateException) {
         // Exact ride geometry is additive while the linked scenery models remain authoritative.
@@ -311,6 +462,17 @@ public class Game : IGame {
     var framing = TerrainCameraFraming.Calculate(World.Terrain);
     Scene.Camera.Frame(framing.Target, framing.Distance, framing.MinimumDistance);
     logger.Trace("Framed camera on terrain");
+
+    // Native diagnostics need a close enough view to inspect car orientation and materials. Keep
+    // the normal terrain framing unchanged, but aim diagnostic captures at the rendered saved train.
+    if (GamePresentationOptions.ShowRideTrackDiagnostics &&
+        rideCarDiagnosticTarget.HasValue && rideCarDiagnosticDistance.HasValue) {
+      Scene.Camera.Frame(
+        rideCarDiagnosticTarget.Value,
+        rideCarDiagnosticDistance.Value,
+        Camera.NearPlaneDistance * 2f);
+      logger.Trace("Framed diagnostic camera on saved ride cars");
+    }
 
     // Keep normal gameplay unchanged while allowing native visual verification to capture the map
     // without an incidental editor panel obscuring it.
@@ -446,7 +608,8 @@ public class Game : IGame {
     // the world-owned texture catalog and simulation systems.
     try {
       controller?.Dispose();
-    } finally {
+    }
+    finally {
       DisposeOwnedResources(
         scene == null ? null : scene.Dispose,
         world == null ? null : world.Dispose,
@@ -466,10 +629,12 @@ public class Game : IGame {
   ) {
     try {
       initialize();
-    } catch (Exception primaryError) {
+    }
+    catch (Exception primaryError) {
       try {
         cleanup();
-      } catch (Exception cleanupError) {
+      }
+      catch (Exception cleanupError) {
         throw new AggregateException(
           "Game initialization failed and cleanup also reported an error.",
           primaryError,
@@ -491,7 +656,8 @@ public class Game : IGame {
       if (disposeScene != null) releases.Add(disposeScene);
       if (disposeWorld != null) releases.Add(disposeWorld);
       ResourceReleaser.Run(releases);
-    } finally {
+    }
+    finally {
       clearState();
     }
   }

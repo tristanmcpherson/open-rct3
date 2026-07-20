@@ -35,7 +35,9 @@ public class World : GDK.Game.World {
           out var trackPieces,
           out var rideTracks,
           out var trackSegments,
-          out var trackedRideInstances);
+          out var trackedRideInstances,
+          out var rideTrainInstances,
+          out var rideCarInstances);
         try {
           var park = BuildPark(
             terrain,
@@ -46,7 +48,9 @@ public class World : GDK.Game.World {
             trackPieces,
             rideTracks,
             trackSegments,
-            trackedRideInstances);
+            trackedRideInstances,
+            rideTrainInstances,
+            rideCarInstances);
           Terrain = terrain;
           Park = park;
         } catch {
@@ -89,6 +93,54 @@ public class World : GDK.Game.World {
     IReadOnlyList<DatRideTrackData> rideTracks,
     IReadOnlyList<DatTrackSegmentData> trackSegments,
     IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances
+  ) => BuildPark(
+    terrain,
+    waterManager,
+    paths,
+    sceneryItems,
+    sceneryItemPlacements,
+    trackPieces,
+    rideTracks,
+    trackSegments,
+    trackedRideInstances,
+    Array.Empty<DatRideTrainInstanceData>());
+
+  internal static Park BuildPark(
+    Terrain terrain,
+    DatWaterManagerData? waterManager,
+    IReadOnlyList<DatPathData> paths,
+    IReadOnlyList<DatSceneryItemData> sceneryItems,
+    IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    IReadOnlyList<DatTrackPieceData> trackPieces,
+    IReadOnlyList<DatRideTrackData> rideTracks,
+    IReadOnlyList<DatTrackSegmentData> trackSegments,
+    IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
+    IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances
+  ) => BuildPark(
+    terrain,
+    waterManager,
+    paths,
+    sceneryItems,
+    sceneryItemPlacements,
+    trackPieces,
+    rideTracks,
+    trackSegments,
+    trackedRideInstances,
+    rideTrainInstances,
+    Array.Empty<DatRideCarInstanceData>());
+
+  internal static Park BuildPark(
+    Terrain terrain,
+    DatWaterManagerData? waterManager,
+    IReadOnlyList<DatPathData> paths,
+    IReadOnlyList<DatSceneryItemData> sceneryItems,
+    IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    IReadOnlyList<DatTrackPieceData> trackPieces,
+    IReadOnlyList<DatRideTrackData> rideTracks,
+    IReadOnlyList<DatTrackSegmentData> trackSegments,
+    IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
+    IReadOnlyList<DatRideTrainInstanceData> rideTrainInstances,
+    IReadOnlyList<DatRideCarInstanceData> rideCarInstances
   ) {
     var park = new Park(terrain);
     if (waterManager != null) WaterManagerLoader.Load(park, terrain, waterManager);
@@ -97,6 +149,8 @@ public class World : GDK.Game.World {
     RideTrackManagerLoader.Load(park, terrain, trackPieces);
     RideTrackTopologyLoader.Load(park, rideTracks, trackSegments);
     park.TrackedRideInstances.AddRange(trackedRideInstances);
+    park.RideTrainInstances.AddRange(rideTrainInstances);
+    park.RideCarInstances.AddRange(rideCarInstances);
     return park;
   }
 

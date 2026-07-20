@@ -105,6 +105,11 @@ public class Park {
   /// </summary>
   public List<RideTrackPlacement> RideTrackPlacements { get; } = [];
 
+  /// <summary>
+  /// Exact decoded DAT <c>TrackPiece</c> records retained for saved vehicle cursor recovery.
+  /// </summary>
+  internal List<DatTrackPieceData> RideTrackPieceRecords { get; } = [];
+
   /// <summary>Semantic DAT <c>Track</c> roots, without generated or duplicated geometry.</summary>
   public List<RideTrack> RideTracks { get; } = [];
 
@@ -114,11 +119,43 @@ public class Park {
   /// </summary>
   internal RideTrackGeometryResolution? RideTrackGeometry { get; set; }
 
+  /// <summary>Broad-phase bounds over every resolved runtime ride track.</summary>
+  internal RideTrackGeometrySpatialIndex? RideTrackSpatialIndex { get; set; }
+
+  /// <summary>
+  /// Exact DAT ride-instance identities composed with their typed runtime track outcomes.
+  /// </summary>
+  internal RideInstanceTrackRuntimeRegistry? RideTrackRuntime { get; set; }
+
+  /// <summary>Exact saved train identities composed with their owning runtime tracks.</summary>
+  internal RideInstanceTrainRuntimeRegistry? RideTrainRuntime { get; set; }
+
+  /// <summary>Exact saved trains composed with graph-backed native consist roles.</summary>
+  internal RideInstanceTrainConsistRuntimeRegistry? RideTrainConsistRuntime { get; set; }
+
+  /// <summary>Exact saved car identities composed with train, track-piece, and RIC outcomes.</summary>
+  internal RideCarInstanceRuntimeRegistry? RideCarRuntime { get; set; }
+
+  /// <summary>Validated static-load front/rear wheel cursors from exact saved car state.</summary>
+  internal RideCarSavedWheelCursorRegistry? RideCarWheelCursors { get; set; }
+
+  /// <summary>Exact point-to-track bounds queries mapped back to ride-instance runtime entries.</summary>
+  internal RideInstanceTrackSpatialQuery? RideTrackSpatialQuery { get; set; }
+
+  /// <summary>Exact DAT ride-instance links and decoded ride resource graph.</summary>
+  internal RideInstanceResourceLoadResult? RideResources { get; set; }
+
   /// <summary>Semantic DAT <c>TrackSegment</c> records linked to their ride-track roots.</summary>
   public List<RideTrackSegment> RideTrackSegments { get; } = [];
 
   /// <summary>Decoded DAT ride-instance identities awaiting the semantic ride graph.</summary>
   internal List<DatTrackedRideInstanceData> TrackedRideInstances { get; } = [];
+
+  /// <summary>Exact saved ride-train resource provenance and seed dimensions.</summary>
+  internal List<DatRideTrainInstanceData> RideTrainInstances { get; } = [];
+
+  /// <summary>Exact saved ride-car ownership, resource roles, and resume state.</summary>
+  internal List<DatRideCarInstanceData> RideCarInstances { get; } = [];
 
   public Park(int buildableWidth = DefaultMapSize, int buildableHeight = DefaultMapSize) {
     float halfWidth = (buildableWidth * TileSize) / 2.0f;

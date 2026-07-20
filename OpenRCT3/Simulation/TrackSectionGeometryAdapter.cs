@@ -32,6 +32,10 @@ namespace OpenRCT3.Simulation;
 /// TKS/SID fixture proves that the native-to-park bridge swaps those semantic roles, so this exact
 /// subset retains the serialized left/right identities. A future alignment proof must resolve that
 /// boundary before any role swap is introduced.
+///
+/// RCT3's native reversed-piece sampler maps distance from the opposite endpoint, swaps the
+/// evaluated left/right rail outputs, and negates both derivatives. Reversed geometry therefore
+/// applies <c>left(u) = right(1-u)</c> and <c>right(u) = left(1-u)</c> without changing placement.
 /// </remarks>
 /// <seealso href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/include/spline.h">
 /// rct3-importer spline control-point layout
@@ -46,7 +50,10 @@ public static class TrackSectionGeometryAdapter {
   private const float MaximumSerializedLengthRelativeError = 0.00001f;
 
   /// <summary>Creates geometry from a resolved track section's authoritative car rails.</summary>
-  public static TrackPieceGeometry CreateCarGeometry(TrackSectionResourceLink section) {
+  public static TrackPieceGeometry CreateCarGeometry(
+    TrackSectionResourceLink section,
+    bool reversed = false
+  ) {
     ArgumentNullException.ThrowIfNull(section);
     if (section.Source is null || section.Source.File is null || section.Source.Resource is null)
       throw Invalid("track-section source is incomplete");
@@ -78,10 +85,14 @@ public static class TrackSectionGeometryAdapter {
       section,
       TrackSectionSplineRole.CarRight,
       section.Source.Resource.CarSplines.Right);
-    return CreateCarGeometry(left.Resource, right.Resource);
+    return CreateCarGeometry(left.Resource, right.Resource, reversed);
   }
 
-  internal static TrackPieceGeometry CreateCarGeometry(Spline left, Spline right) {
+  internal static TrackPieceGeometry CreateCarGeometry(
+    Spline left,
+    Spline right,
+    bool reversed = false
+  ) {
     ArgumentNullException.ThrowIfNull(left);
     ArgumentNullException.ThrowIfNull(right);
     ValidateSpline(left, "left");
@@ -104,6 +115,7 @@ public static class TrackSectionGeometryAdapter {
         GetTangent(right, parameters, index, "right"),
         0f);
     }
+    if (reversed) controlPoints = Reverse(controlPoints);
 
     try {
       return TrackPieceGeometry.FromHandAuthored(controlPoints);
@@ -112,6 +124,21 @@ public static class TrackSectionGeometryAdapter {
         "Track-section geometry is unsupported by the exact paired-rail model.",
         exception);
     }
+  }
+
+  private static RailControlPair[] Reverse(IReadOnlyList<RailControlPair> source) {
+    var reversed = new RailControlPair[source.Count];
+    foreach (var index in Enumerable.Range(0, source.Count)) {
+      var point = source[source.Count - index - 1];
+      reversed[index] = new RailControlPair(
+        1f - point.Parameter,
+        point.RightPosition,
+        -point.RightTangent,
+        point.LeftPosition,
+        -point.LeftTangent,
+        0f);
+    }
+    return reversed;
   }
 
   private static SplineResourceSource FindCarSpline(

@@ -41,7 +41,7 @@ public class RideTrackGraphAdapterTests {
   }
 
   [Test]
-  public void Build_RejectsCircuitAndExpansionDerivedOrders() {
+  public void Build_RejectsCircuitAndUnprovenOrders() {
     var placement = Placement(500, previous: 1697, next: 1697);
 
     Assert.Throws<InvalidDataException>(new Action(() =>
@@ -54,6 +54,28 @@ public class RideTrackGraphAdapterTests {
         Track([500], hasSerializedOrder: false),
         [placement],
         _ => StraightPiece(0f))));
+  }
+
+  [Test]
+  public void Build_AcceptsAuthoritativeLinkDerivedOrderWithoutSerializedList() {
+    var placements = new[] {
+      Placement(500, previous: 1697, next: 501),
+      Placement(501, previous: 500, next: 1697),
+    };
+    var track = Track(
+      [500, 501],
+      hasSerializedOrder: false,
+      hasAuthoritativeOrder: true);
+
+    var graph = RideTrackGraphAdapter.Build(
+      track,
+      placements,
+      placement => StraightPiece(placement.SourceEntryId == 500 ? 0f : 1f));
+
+    Assert.That(graph.Edges.Select(edge => edge.Id), Is.EqualTo(new[] {
+      "track-piece-500",
+      "track-piece-501",
+    }));
   }
 
   [Test]
@@ -118,10 +140,35 @@ public class RideTrackGraphAdapterTests {
         placement => StraightPiece(placement.SourceEntryId == 500 ? 0f : 2f))));
   }
 
+  [Test]
+  public void Build_UsesNativeImportDirectionPolicyWithoutRequiringDerivativeMagnitude() {
+    var track = Track([500, 501]);
+    var placements = new[] {
+      Placement(500, previous: 1697, next: 501),
+      Placement(501, previous: 500, next: 1697),
+    };
+    var directionOffset = RideTrackGraphAdapter.ImportedJoinDirectionTolerance * 0.99f;
+
+    Assert.DoesNotThrow(new Action(() => RideTrackGraphAdapter.Build(
+      track,
+      placements,
+      placement => placement.SourceEntryId == 500
+        ? StraightPiece(0f, Vector3.UnitX)
+        : StraightPiece(1f, Vector3.Normalize(new Vector3(1f, directionOffset, 0f)) * 5f))));
+
+    Assert.Throws<ArgumentException>(new Action(() => RideTrackGraphAdapter.Build(
+      track,
+      placements,
+      placement => placement.SourceEntryId == 500
+        ? StraightPiece(0f, Vector3.UnitX)
+        : StraightPiece(1f, Vector3.Normalize(new Vector3(1f, 0.04f, 0f)) * 5f))));
+  }
+
   private static RideTrack Track(
     ulong[] pieceIds,
     bool? isCircuit = false,
-    bool hasSerializedOrder = true
+    bool hasSerializedOrder = true,
+    bool? hasAuthoritativeOrder = null
   ) => new(
     sourceEntryId: 700,
     direction: 0,
@@ -137,7 +184,8 @@ public class RideTrackGraphAdapterTests {
     flexiColour2: 0,
     trackedRideInstanceReference: 900,
     flippedTrackSections: null,
-    tunnelLightColour: null);
+    tunnelLightColour: null,
+    hasAuthoritativeTrackPieceOrder: hasAuthoritativeOrder);
 
   private static RideTrackPlacement Placement(
     ulong sourceEntryId,
@@ -167,21 +215,25 @@ public class RideTrackGraphAdapterTests {
     flexiColour1: 0,
     flexiColour2: 0);
 
-  private static TrackPiece StraightPiece(float offset) {
+  private static TrackPiece StraightPiece(
+    float offset,
+    Vector3? tangent = null
+  ) {
+    var railTangent = tangent ?? Vector3.UnitX;
     var geometry = TrackPieceGeometry.FromHandAuthored([
       new RailControlPair(
         0f,
         new Vector3(0f, -0.5f, 0f),
-        Vector3.UnitX,
+        railTangent,
         new Vector3(0f, 0.5f, 0f),
-        Vector3.UnitX,
+        railTangent,
         0f),
       new RailControlPair(
         1f,
         new Vector3(1f, -0.5f, 0f),
-        Vector3.UnitX,
+        railTangent,
         new Vector3(1f, 0.5f, 0f),
-        Vector3.UnitX,
+        railTangent,
         0f),
     ]);
     return new TrackPiece(geometry, Matrix4x4.CreateTranslation(offset, 0f, 0f));

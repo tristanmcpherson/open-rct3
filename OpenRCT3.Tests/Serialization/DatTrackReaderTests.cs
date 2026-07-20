@@ -96,6 +96,8 @@ public class DatTrackReaderTests {
         track.SceneryItemDataField,
         Is.EqualTo(new DatSceneryItemDataField(3, 1, 6, null, 1, 1)));
       Assert.That(track.Segment, Is.EqualTo(800));
+      Assert.That(track.StartDistance, Is.EqualTo(0.5f));
+      Assert.That(track.StartDistanceBackwardsSpline, Is.EqualTo(0.75f));
       Assert.That(track.UserAngleDegrees, Is.EqualTo(45));
     }
   }
@@ -113,8 +115,26 @@ public class DatTrackReaderTests {
       Assert.That(track.SymbolName, Is.EqualTo("Test_SID:tks"));
       Assert.That(track.SceneryItem, Is.EqualTo(100));
       Assert.That(track.Segment, Is.EqualTo(800));
+      Assert.That(track.StartDistance, Is.EqualTo(0.5f));
+      Assert.That(track.StartDistanceBackwardsSpline, Is.EqualTo(0.75f));
       Assert.That(track.UserAngleDegrees, Is.EqualTo(45));
     }
+  }
+
+  [TestCase(true)]
+  [TestCase(false)]
+  public void Read_NonFiniteTrackPieceStartDistanceFailsClosed(bool backwardsSpline) {
+    using var stream = BuildDat(
+      TrackPieceStructure(),
+      startDistance: backwardsSpline ? 0.5f : float.NaN,
+      startDistanceBackwardsSpline: backwardsSpline ? float.PositiveInfinity : 0.75f);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      DatTerrainReader.Read(stream)));
+
+    Assert.That(exception!.Message, Does.Contain(backwardsSpline
+      ? "TrackPiece StartDistanceBackwardsSpline contains a non-finite value"
+      : "TrackPiece StartDistance contains a non-finite value"));
   }
 
   [Test]
@@ -152,10 +172,40 @@ public class DatTrackReaderTests {
     Assert.Throws<InvalidDataException>(new Action(() => DatTerrainReader.Read(stream)));
   }
 
+  [Test]
+  [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
+  public void Read_BoxOfficeCapturesExactTrackPieceStartDistances() {
+    var installPath = Environment.GetEnvironmentVariable("RCT3_PATH");
+    Assert.That(string.IsNullOrWhiteSpace(installPath), Is.False);
+    var campaignPath = Path.Combine(installPath!, "Campaigns", "Base", "BoxOffice.dat");
+
+    var data = DatTerrainReader.Read(campaignPath);
+    var pieces = data.TrackPieces.OrderBy(piece => piece.StartDistance).ToArray();
+    var indices = Enumerable.Range(0, pieces.Length).ToArray();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(pieces, Has.Length.EqualTo(216));
+      Assert.That(pieces[0].EntryId, Is.EqualTo(5_646));
+      Assert.That(pieces[0].StartDistance, Is.Zero);
+      Assert.That(pieces[^1].EntryId, Is.EqualTo(6_005));
+      Assert.That(pieces[^1].StartDistance, Is.EqualTo(1_217.1932f));
+      Assert.That(pieces.Select(piece => piece.StartDistanceBackwardsSpline), Is.All.Zero);
+      Assert.That(indices.Skip(1).All(index =>
+        pieces[index].StartDistance > pieces[index - 1].StartDistance), Is.True);
+      Assert.That(indices.All(index =>
+        pieces[index].Next == pieces[(index + 1) % pieces.Length].EntryId), Is.True);
+      Assert.That(indices.All(index =>
+        pieces[index].Prev == pieces[(index + pieces.Length - 1) % pieces.Length].EntryId),
+        Is.True);
+    }
+  }
+
   private static MemoryStream BuildDat(
     StructureSpec trackPieceStructure,
     bool includeTopology = false,
-    bool soakedTrackPiece = false
+    bool soakedTrackPiece = false,
+    float startDistance = 0.5f,
+    float startDistanceBackwardsSpline = 0.75f
   ) {
     var structures = includeTopology
       ? new[] {
@@ -176,7 +226,11 @@ public class DatTrackReaderTests {
       WriteTerrain(writer);
       writer.Write(1u);
       writer.Write(500ul);
-      WriteTrackPiece(writer, soakedTrackPiece);
+      WriteTrackPiece(
+        writer,
+        soakedTrackPiece,
+        startDistance,
+        startDistanceBackwardsSpline);
       if (includeTopology) {
         writer.Write(2u);
         writer.Write(700ul);
@@ -235,7 +289,12 @@ public class DatTrackReaderTests {
     writer.Write(new byte[6]);
   }
 
-  private static void WriteTrackPiece(BinaryWriter writer, bool soakedTrackPiece) {
+  private static void WriteTrackPiece(
+    BinaryWriter writer,
+    bool soakedTrackPiece,
+    float startDistance,
+    float startDistanceBackwardsSpline
+  ) {
     writer.Write(15);
     writer.Write(-1);
     writer.Write(2);
@@ -275,8 +334,8 @@ public class DatTrackReaderTests {
       writer.Write(12);
       writer.Write(1.25f);
     }
-    writer.Write(0.5f);
-    writer.Write(0.75f);
+    writer.Write(startDistance);
+    writer.Write(startDistanceBackwardsSpline);
     writer.Write(2);
     if (soakedTrackPiece) writer.Write(7);
     writer.Write(45);

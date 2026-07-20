@@ -24,6 +24,8 @@ public class RideTrackTopologyLoaderTests {
       Assert.That(track.FirstSegmentSourceEntryId, Is.EqualTo(800));
       Assert.That(track.LastSegmentSourceEntryId, Is.EqualTo(800));
       Assert.That(track.IsCircuit, Is.False);
+      Assert.That(track.SerializedIsCircuit, Is.False);
+      Assert.That(track.HasAuthoritativeTrackPieceOrder, Is.True);
       Assert.That(track.HasSerializedTrackPieceOrder, Is.True);
       Assert.That(track.TrackPieceSourceEntryIds, Is.EqualTo(new ulong[] { 500 }));
       Assert.That(track.SegmentSourceEntryIds, Is.EqualTo(new ulong[] { 800 }));
@@ -42,7 +44,7 @@ public class RideTrackTopologyLoaderTests {
   }
 
   [Test]
-  public void Load_ExpansionTrackDerivesMembershipWithoutInventingAbsentFields() {
+  public void Load_ExpansionTrackReconstructsOpenTraversalFromPieceLinks() {
     var park = new Park(buildableWidth: 1, buildableHeight: 1);
     park.RideTrackPlacements.Add(Placement());
     var expansionTrack = new DatRideTrackData(
@@ -62,7 +64,9 @@ public class RideTrackTopologyLoaderTests {
 
     var track = park.RideTracks.Single();
     using (Assert.EnterMultipleScope()) {
-      Assert.That(track.IsCircuit, Is.Null);
+      Assert.That(track.IsCircuit, Is.False);
+      Assert.That(track.SerializedIsCircuit, Is.Null);
+      Assert.That(track.HasAuthoritativeTrackPieceOrder, Is.True);
       Assert.That(track.HasSerializedTrackPieceOrder, Is.False);
       Assert.That(track.TrackPieceSourceEntryIds, Is.EqualTo(new ulong[] { 500 }));
       Assert.That(track.FlippedTrackSections, Is.True);
@@ -89,8 +93,126 @@ public class RideTrackTopologyLoaderTests {
 
     var track = park.RideTracks.Single();
     using (Assert.EnterMultipleScope()) {
+      Assert.That(track.IsCircuit, Is.False);
+      Assert.That(track.SerializedIsCircuit, Is.False);
+      Assert.That(track.HasAuthoritativeTrackPieceOrder, Is.True);
       Assert.That(track.HasSerializedTrackPieceOrder, Is.False);
       Assert.That(track.TrackPieceSourceEntryIds, Is.EqualTo(new ulong[] { 500 }));
+    }
+  }
+
+  [Test]
+  public void Load_EmptyLegacyListUsesReciprocalRingInsteadOfAdvisoryCircuitField() {
+    var park = new Park(buildableWidth: 1, buildableHeight: 1);
+    park.RideTrackPlacements.AddRange([
+      Placement(501, previousPieceReference: 500, nextPieceReference: 500),
+      Placement(500, previousPieceReference: 501, nextPieceReference: 501),
+    ]);
+    var source = Track(trackPieces: [], isCircuit: false);
+    var segment = Segment(firstPiece: 500, lastPiece: 501);
+
+    RideTrackTopologyLoader.Load(park, [source], [segment]);
+
+    var track = park.RideTracks.Single();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(track.TrackPieceSourceEntryIds, Is.EqualTo(new ulong[] { 500, 501 }));
+      Assert.That(track.IsCircuit, Is.True);
+      Assert.That(track.SerializedIsCircuit, Is.False);
+      Assert.That(track.HasAuthoritativeTrackPieceOrder, Is.True);
+      Assert.That(track.HasSerializedTrackPieceOrder, Is.False);
+    }
+  }
+
+  [Test]
+  public void Load_DerivesOpenPieceAndSegmentOrderIndependentlyOfDatEntryOrder() {
+    var park = new Park(buildableWidth: 1, buildableHeight: 1);
+    park.RideTrackPlacements.AddRange([
+      Placement(
+        601,
+        segmentReference: 801,
+        ownerReference: 801,
+        previousPieceReference: 600,
+        nextPieceReference: 1697),
+      Placement(501, previousPieceReference: 500, nextPieceReference: 1697),
+      Placement(
+        600,
+        segmentReference: 801,
+        ownerReference: 801,
+        previousPieceReference: 1697,
+        nextPieceReference: 601),
+      Placement(500, previousPieceReference: 1697, nextPieceReference: 501),
+    ]);
+    var source = Track(
+      isCircuit: null,
+      firstSegment: 800,
+      lastSegment: 801,
+      omitTrackPieces: true);
+    var first = Segment(
+      entryId: 800,
+      firstPiece: 500,
+      lastPiece: 501,
+      nextSegment: 801,
+      prevSegment: 1697);
+    var last = Segment(
+      entryId: 801,
+      firstPiece: 600,
+      lastPiece: 601,
+      nextSegment: 1697,
+      prevSegment: 800);
+
+    RideTrackTopologyLoader.Load(park, [source], [last, first]);
+
+    var track = park.RideTracks.Single();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(track.SegmentSourceEntryIds, Is.EqualTo(new ulong[] { 800, 801 }));
+      Assert.That(track.TrackPieceSourceEntryIds,
+        Is.EqualTo(new ulong[] { 500, 501, 600, 601 }));
+      Assert.That(track.IsCircuit, Is.False);
+      Assert.That(track.SerializedIsCircuit, Is.Null);
+      Assert.That(track.HasAuthoritativeTrackPieceOrder, Is.True);
+      Assert.That(track.HasSerializedTrackPieceOrder, Is.False);
+    }
+  }
+
+  [Test]
+  public void Load_MissingOrNonReciprocalPieceLinkFailsClosed() {
+    var missingPark = new Park(buildableWidth: 1, buildableHeight: 1);
+    missingPark.RideTrackPlacements.AddRange([
+      Placement(500, previousPieceReference: 1697, nextPieceReference: 999),
+      Placement(501, previousPieceReference: 500, nextPieceReference: 1697),
+    ]);
+    var source = Track(isCircuit: null, omitTrackPieces: true);
+    var segment = Segment(firstPiece: 500, lastPiece: 501);
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrackTopologyLoader.Load(missingPark, [source], [segment])));
+
+    var nonReciprocalPark = new Park(buildableWidth: 1, buildableHeight: 1);
+    nonReciprocalPark.RideTrackPlacements.AddRange([
+      Placement(500, previousPieceReference: 1697, nextPieceReference: 501),
+      Placement(501, previousPieceReference: 999, nextPieceReference: 1697),
+    ]);
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrackTopologyLoader.Load(nonReciprocalPark, [source], [segment])));
+  }
+
+  [Test]
+  public void Load_CycleBeforeLastPieceFailsWithoutPartialTopology() {
+    var park = new Park(buildableWidth: 1, buildableHeight: 1);
+    park.RideTrackPlacements.AddRange([
+      Placement(500, previousPieceReference: 501, nextPieceReference: 501),
+      Placement(501, previousPieceReference: 500, nextPieceReference: 500),
+      Placement(502, previousPieceReference: 1697, nextPieceReference: 1697),
+    ]);
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrackTopologyLoader.Load(
+        park,
+        [Track(isCircuit: null, omitTrackPieces: true)],
+        [Segment(firstPiece: 500, lastPiece: 502)])));
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(park.RideTracks, Is.Empty);
+      Assert.That(park.RideTrackSegments, Is.Empty);
     }
   }
 
@@ -107,12 +229,18 @@ public class RideTrackTopologyLoaderTests {
     }
   }
 
-  private static RideTrackPlacement Placement(ulong ownerReference = 800) => new(
-    sourceEntryId: 500,
-    sceneryPlacementSourceEntryId: 100,
-    sidDatabaseEntryReference: 200,
-    symbolName: "Test_SID:tks",
-    objectKey: "Test_SID",
+  private static RideTrackPlacement Placement(
+    ulong sourceEntryId = 500,
+    ulong ownerReference = 800,
+    ulong segmentReference = 800,
+    ulong previousPieceReference = 0,
+    ulong nextPieceReference = 0
+  ) => new(
+    sourceEntryId,
+    sceneryPlacementSourceEntryId: sourceEntryId + 100,
+    sidDatabaseEntryReference: sourceEntryId + 200,
+    symbolName: $"Test{sourceEntryId}_SID:tks",
+    objectKey: $"Test{sourceEntryId}_SID",
     overlayPath: "Tracks\\Test",
     tileX: 1,
     tileY: 1,
@@ -121,9 +249,9 @@ public class RideTrackTopologyLoaderTests {
     serializedHeight: 6,
     corner: 3,
     ownerReference,
-    segmentReference: 800,
-    previousPieceReference: 0,
-    nextPieceReference: 0,
+    segmentReference,
+    previousPieceReference,
+    nextPieceReference,
     platformPieceReference: 0,
     reversed: false,
     userAngleDegrees: 0,
@@ -131,24 +259,36 @@ public class RideTrackTopologyLoaderTests {
     flexiColour1: 5,
     flexiColour2: 6);
 
-  private static DatRideTrackData Track() => new(
+  private static DatRideTrackData Track(
+    ulong[]? trackPieces = null,
+    bool? isCircuit = false,
+    ulong firstSegment = 800,
+    ulong lastSegment = 800,
+    bool omitTrackPieces = false
+  ) => new(
     entryId: 700,
     direction: 2,
-    firstSegment: 800,
-    isCircuit: false,
-    lastSegment: 800,
+    firstSegment,
+    isCircuit,
+    lastSegment,
     prototype: false,
-    trackPieces: [500],
+    trackPieces: omitTrackPieces ? null : trackPieces ?? [500],
     trackFlexiColours: new DatSceneryFlexiColour(4, 5, 6),
     trackedRideInstance: 900);
 
-  private static DatTrackSegmentData Segment() => new(
-    entryId: 800,
+  private static DatTrackSegmentData Segment(
+    ulong entryId = 800,
+    ulong firstPiece = 500,
+    ulong lastPiece = 500,
+    ulong nextSegment = 1697,
+    ulong prevSegment = 1697
+  ) => new(
+    entryId,
     direction: 2,
-    firstPiece: 500,
-    lastPiece: 500,
-    nextSegment: 1697,
-    prevSegment: 1697,
+    firstPiece,
+    lastPiece,
+    nextSegment,
+    prevSegment,
     prototype: false,
     track: 700);
 }

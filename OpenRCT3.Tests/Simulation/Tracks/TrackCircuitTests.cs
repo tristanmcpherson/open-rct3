@@ -56,6 +56,19 @@ public class TrackCircuitTests {
   }
 
   [Test]
+  public void Constructor_ExplicitPolicyCanIgnoreOnlyRawTangentMagnitude() {
+    var pieces = Circle(pieceTangentScales: [1f, 4f, 2f, 3f]);
+
+    Assert.Throws<ArgumentException>(new Action(() => new TrackCircuit(pieces)));
+
+    var circuit = new TrackCircuit(
+      pieces,
+      new TrackJoinValidationPolicy(0.001f, 0.001f, null, 0.001f));
+
+    Assert.That(circuit.Pieces, Has.Count.EqualTo(4));
+  }
+
+  [Test]
   public void Constructor_RejectsDuplicateIdsAndOpenSinglePiece() {
     var pieces = Circle().Pieces.ToArray();
     pieces[1] = pieces[1] with { Id = pieces[0].Id };
@@ -78,22 +91,28 @@ public class TrackCircuitTests {
     Assert.Throws<ArgumentOutOfRangeException>(new Action(() => circuit.Sample(float.NaN)));
   }
 
-  private static TrackCircuit Circle() {
-    var scale = 1.5f;
-    return new TrackCircuit([
+  private static TrackCircuit Circle() => new(Circle(pieceTangentScales: null));
+
+  private static TrackCircuitPiece[] Circle(float[]? pieceTangentScales) {
+    var scales = pieceTangentScales ?? [1.5f, 1.5f, 1.5f, 1.5f];
+    return [
       new TrackCircuitPiece(
         "north-east",
-        Piece(Vector3.UnitX, Vector3.UnitY, Vector3.UnitY * scale, -Vector3.UnitX * scale)),
+        Piece(Vector3.UnitX, Vector3.UnitY,
+          Vector3.UnitY * scales[0], -Vector3.UnitX * scales[0])),
       new TrackCircuitPiece(
         "north-west",
-        Piece(Vector3.UnitY, -Vector3.UnitX, -Vector3.UnitX * scale, -Vector3.UnitY * scale)),
+        Piece(Vector3.UnitY, -Vector3.UnitX,
+          -Vector3.UnitX * scales[1], -Vector3.UnitY * scales[1])),
       new TrackCircuitPiece(
         "south-west",
-        Piece(-Vector3.UnitX, -Vector3.UnitY, -Vector3.UnitY * scale, Vector3.UnitX * scale)),
+        Piece(-Vector3.UnitX, -Vector3.UnitY,
+          -Vector3.UnitY * scales[2], Vector3.UnitX * scales[2])),
       new TrackCircuitPiece(
         "south-east",
-        Piece(-Vector3.UnitY, Vector3.UnitX, Vector3.UnitX * scale, Vector3.UnitY * scale)),
-    ]);
+        Piece(-Vector3.UnitY, Vector3.UnitX,
+          Vector3.UnitX * scales[3], Vector3.UnitY * scales[3])),
+    ];
   }
 
   private static TrackPiece Piece(

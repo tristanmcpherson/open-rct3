@@ -26,6 +26,7 @@ internal sealed record RideTrackGeometryLink(
   TrackCircuit? Circuit
 ) {
   public bool IsResolved => Graph != null || Circuit != null;
+  public string? Detail { get; init; }
 }
 
 /// <summary>The bounded, DAT-order result of resolving every track's runtime geometry.</summary>
@@ -79,20 +80,20 @@ internal static class RideTrackGeometryResolver {
       if (resource.Section is null)
         throw Invalid($"resolved TrackPiece {placement.SourceEntryId} has no TKS graph link");
 
-      if (HasUnresolvedCarSpline(resource.Section)) {
+      if (HasUnresolvedGeometryResource(resource.Section)) {
         pieces.Add(placement.SourceEntryId, null);
-        continue;
-      }
-
-      if (placement.Reversed || placement.UserAngleDegrees != 0) {
-        pieces.Add(placement.SourceEntryId, null);
-        unsupportedPieceIds.Add(placement.SourceEntryId);
         continue;
       }
 
       try {
-        var geometry = TrackSectionGeometryAdapter.CreateCarGeometry(resource.Section);
-        var transform = RideTrackPlacementTransform.Create(placement, terrain);
+        var geometry = TrackSectionGeometryAdapter.CreateCarGeometry(
+          resource.Section,
+          placement.Reversed);
+        var sceneryItem = resource.Section.Scenery.Source!.Resource;
+        var transform = RideTrackPlacementTransform.Create(
+          placement,
+          sceneryItem,
+          terrain);
         pieces.Add(placement.SourceEntryId, new TrackPiece(geometry, transform));
       } catch (Exception error) when (IsUnsupportedGeometry(error)) {
         pieces.Add(placement.SourceEntryId, null);
@@ -167,7 +168,9 @@ internal static class RideTrackGeometryResolver {
           track,
           RideTrackGeometryStatus.UnresolvedResources,
           Graph: null,
-          Circuit: null));
+          Circuit: null) {
+          Detail = "One or more track pieces have unresolved TKS, SID, or car-spline resources.",
+        });
         unresolvedTracks++;
         continue;
       }
@@ -178,17 +181,21 @@ internal static class RideTrackGeometryResolver {
           track,
           RideTrackGeometryStatus.UnsupportedGeometry,
           Graph: null,
-          Circuit: null));
+          Circuit: null) {
+          Detail = "One or more track pieces have malformed or unsupported rail geometry.",
+        });
         unsupportedGeometryTracks++;
         continue;
       }
 
-      if (!track.HasSerializedTrackPieceOrder || track.IsCircuit is null) {
+      if (!track.HasAuthoritativeTrackPieceOrder || track.IsCircuit is null) {
         links.Add(new(
           track,
           RideTrackGeometryStatus.UnsupportedTopology,
           Graph: null,
-          Circuit: null));
+          Circuit: null) {
+          Detail = "The DAT links do not define one authoritative open/circuit traversal.",
+        });
         unsupportedTracks++;
         continue;
       }
@@ -214,19 +221,23 @@ internal static class RideTrackGeometryResolver {
               CreatePiece),
             Circuit: null));
         }
-      } catch (InvalidDataException) {
+      } catch (InvalidDataException error) {
         links.Add(new(
           track,
           RideTrackGeometryStatus.UnsupportedTopology,
           Graph: null,
-          Circuit: null));
+          Circuit: null) {
+          Detail = error.Message,
+        });
         unsupportedTracks++;
       } catch (Exception error) when (IsUnsupportedGeometry(error)) {
         links.Add(new(
           track,
           RideTrackGeometryStatus.UnsupportedGeometry,
           Graph: null,
-          Circuit: null));
+          Circuit: null) {
+          Detail = error.Message,
+        });
         unsupportedGeometryTracks++;
       }
     }
@@ -256,7 +267,8 @@ internal static class RideTrackGeometryResolver {
     return byId;
   }
 
-  private static bool HasUnresolvedCarSpline(TrackSectionResourceLink section) {
+  private static bool HasUnresolvedGeometryResource(TrackSectionResourceLink section) {
+    if (section.Scenery?.Source is null) return true;
     if (section.Splines is null) return false;
     foreach (var role in new[] {
       TrackSectionSplineRole.CarLeft,

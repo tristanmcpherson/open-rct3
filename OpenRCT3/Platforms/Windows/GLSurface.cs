@@ -27,6 +27,7 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
   private readonly static Logger logger = LogManager.GetCurrentClassLogger();
   private readonly SurfaceSettings settings;
   private GL? gl;
+  private IInputContext? input;
   private Renderer? renderer;
   private readonly WindowsSurfaceResourceCycle resources = new();
   private Game? finalGame;
@@ -79,6 +80,12 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     }
   }
 
+  protected override bool IsInputKey(Keys keyData) {
+    var keyCode = keyData & Keys.KeyCode;
+    return keyCode is Keys.Up or Keys.Down or Keys.Left or Keys.Right
+      || base.IsInputKey(keyData);
+  }
+
   protected override void OnHandleCreated(EventArgs e) {
     if (DesignMode) return;
     if (resources.HasPending) resources.EndHandle(Context);
@@ -116,11 +123,14 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
 
     // Initialize the GUI controller first, renderer implementations depend on it
     var mainWindow = Parent as GameWindow ?? throw new InvalidOperationException();
-    var input = mainWindow.CreateInput();
-    handleResources.OwnInput(input.Dispose);
-    var controller = new Controller(input);
+    var ownedInput = mainWindow.CreateInput();
+    input = ownedInput;
+    handleResources.OwnInput(ownedInput.Dispose);
+    WindowsSurfaceRegistrations.ReplaceInput(Game.IoC, ownedInput);
+    var controller = new Controller(ownedInput);
     handleResources.OwnController(controller.Dispose);
     WindowsSurfaceRegistrations.ReplaceController(Game.IoC, controller);
+    Game.Instance?.BindCameraInput(ownedInput);
 
     // Initialize the scene renderer
     var ownedRenderer = new Renderer {
@@ -139,11 +149,13 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
 
   protected override void OnHandleDestroyed(EventArgs e) {
     if (renderer != null) Game.Instance?.UnbindRenderer(renderer);
+    if (input != null) Game.Instance?.UnbindCameraInput(input);
     try {
       resources.EndHandle(Context);
       logger.Trace("Surface resources disposed");
     } finally {
       renderer = null;
+      input = null;
       gl = null;
       base.OnHandleDestroyed(e);
     }
@@ -283,6 +295,9 @@ internal static class WindowsSurfaceRegistrations {
 
   public static void ReplaceController(DryIoc.Container container, Controller controller) =>
     container.RegisterInstance(controller, IfAlreadyRegistered.Replace, ownerManaged);
+
+  public static void ReplaceInput(DryIoc.Container container, IInputContext input) =>
+    container.RegisterInstance(input, IfAlreadyRegistered.Replace, ownerManaged);
 
   public static void ReplaceRenderer(DryIoc.Container container, IRenderer renderer) =>
     container.RegisterInstance<IRenderer>(

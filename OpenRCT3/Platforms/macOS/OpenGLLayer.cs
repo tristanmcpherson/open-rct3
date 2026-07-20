@@ -32,6 +32,7 @@ public class OpenGLLayer : CAOpenGLLayer, IGraphicsSurface {
   private SurfaceSettings? settings;
   private GL? gl;
   private readonly GLContext glContext = new();
+  private IInputContext? input;
   private Renderer? renderer;
   private readonly MacSurfaceResourceOwner resources = new();
   private bool ownsGame;
@@ -140,12 +141,14 @@ public class OpenGLLayer : CAOpenGLLayer, IGraphicsSurface {
     Game.IoC.RegisterInstance<IGLContext>(glContext);
 
     // Provide a minimal input context and GUI controller used by the renderer
-    var input = new MacInputContext(context.Handle.Handle);
-    resources.OwnInput(input.Dispose);
-    Game.IoC.RegisterInstance<IInputContext>(input);
-    var controller = new Controller(input);
+    var ownedInput = new MacInputContext(context.Handle.Handle);
+    input = ownedInput;
+    resources.OwnInput(ownedInput.Dispose);
+    Game.IoC.RegisterInstance<IInputContext>(ownedInput);
+    var controller = new Controller(ownedInput);
     resources.OwnController(controller.Dispose);
     Game.IoC.RegisterInstance(controller);
+    Game.Instance?.BindCameraInput(ownedInput);
 
     // Create and initialize the scene renderer
     var ownedRenderer = new Renderer {
@@ -175,11 +178,13 @@ public class OpenGLLayer : CAOpenGLLayer, IGraphicsSurface {
   protected override void Dispose(bool disposing) {
     try {
       if (disposing) {
+        if (input != null) Game.Instance?.UnbindCameraInput(input);
         resources.Dispose(glContext);
       }
     } finally {
       if (disposing) {
         renderer = null;
+        input = null;
         gl = null;
         initialized = false;
       }

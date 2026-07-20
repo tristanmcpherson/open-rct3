@@ -81,6 +81,29 @@ public class CameraTests {
   }
 
   [Test]
+  public void Frame_StoresAndResetsTheSceneMinimumDistance() {
+    var camera = new Camera();
+
+    camera.Frame(Vector3.Zero, distance: 100f, minimumDistance: 25f);
+    Assert.That(camera.MinimumDistance, Is.EqualTo(25f));
+
+    camera.Frame(Vector3.Zero, distance: 50f);
+    Assert.That(camera.MinimumDistance, Is.EqualTo(Camera.NearPlaneDistance));
+  }
+
+  [Test]
+  public void Frame_RejectsMinimumDistanceOutsideTheFramingRange() {
+    var camera = new Camera();
+
+    Assert.Multiple(new Action(() => {
+      Assert.Throws<ArgumentOutOfRangeException>(new Action(() =>
+        camera.Frame(Vector3.Zero, distance: 100f, minimumDistance: 0f)));
+      Assert.Throws<ArgumentOutOfRangeException>(new Action(() =>
+        camera.Frame(Vector3.Zero, distance: 100f, minimumDistance: 101f)));
+    }));
+  }
+
+  [Test]
   public void Update_TargetProjectsNearScreenCenter() {
     var camera = new Camera();
     camera.Frame(new Vector3(1000, -1000, 0), distance: 500f);
@@ -134,6 +157,70 @@ public class CameraTests {
     var nearPoint = camera.Eye + (direction * near);
 
     Assert.That(NdcZ(camera.Value!.Value, nearPoint), Is.EqualTo(-1f).Within(Epsilon));
+  }
+
+  [Test]
+  public void Update_ZoomingInPreservesTheFramedFarPlane() {
+    // Regression test: SetDistance previously made Update derive the far plane from the new zoomed
+    // distance. Zooming a park framed at 500 units down to 2 units therefore collapsed its far plane
+    // from 1000 units to 4 and clipped almost the entire park. The near plane must remain close while
+    // the far plane retains the last framing coverage.
+    var camera = new Camera();
+    camera.Frame(Vector3.Zero, distance: 500f);
+    camera.SetDistance(distance: 2f);
+    camera.Update(aspectRatio: 1f);
+    Assert.That(camera.Value, Is.Not.Null);
+
+    var direction = Vector3.Normalize(camera.Target - camera.Eye);
+    var nearPoint = camera.Eye + (direction * 0.01f);
+    var framedFarPoint = camera.Eye + (direction * 1000f);
+
+    Assert.Multiple(new Action(() => {
+      Assert.That(
+        NdcZ(camera.Value!.Value, nearPoint),
+        Is.EqualTo(-1f).Within(Epsilon)
+      );
+      Assert.That(
+        NdcZ(camera.Value!.Value, framedFarPoint),
+        Is.EqualTo(1f).Within(Epsilon)
+      );
+    }));
+  }
+
+  [Test]
+  public void Update_ZoomingOutExpandsBeyondTheFramedFarPlane() {
+    var camera = new Camera();
+    camera.Frame(Vector3.Zero, distance: 100f);
+    camera.SetDistance(distance: 500f);
+    camera.Update(aspectRatio: 1f);
+    Assert.That(camera.Value, Is.Not.Null);
+
+    var direction = Vector3.Normalize(camera.Target - camera.Eye);
+    var zoomedFarPoint = camera.Eye + (direction * 1000f);
+
+    Assert.That(
+      NdcZ(camera.Value!.Value, zoomedFarPoint),
+      Is.EqualTo(1f).Within(Epsilon)
+    );
+  }
+
+  [Test]
+  public void Update_ReframingReplacesThePreservedFarPlane() {
+    var camera = new Camera();
+    camera.Frame(Vector3.Zero, distance: 500f);
+    camera.SetDistance(distance: 2f);
+    camera.Frame(Vector3.Zero, distance: 100f);
+    camera.SetDistance(distance: 2f);
+    camera.Update(aspectRatio: 1f);
+    Assert.That(camera.Value, Is.Not.Null);
+
+    var direction = Vector3.Normalize(camera.Target - camera.Eye);
+    var reframedFarPoint = camera.Eye + (direction * 200f);
+
+    Assert.That(
+      NdcZ(camera.Value!.Value, reframedFarPoint),
+      Is.EqualTo(1f).Within(Epsilon)
+    );
   }
 
   [Test]

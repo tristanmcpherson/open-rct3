@@ -27,6 +27,11 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
     "Could not create an OpenGL context. Please upgrade your graphics drivers.";
 
   private const string OPENGL32 = "opengl32.dll";
+  internal const uint PfdDoubleBuffer = 0x00000001;
+  internal const uint PfdDrawToWindow = 0x00000004;
+  internal const uint PfdSupportOpenGl = 0x00000020;
+  internal const uint RequiredPixelFormatFlags =
+    PfdDoubleBuffer | PfdDrawToWindow | PfdSupportOpenGl;
   private readonly WindowsGlContextLifetime lifetime = new(LoadLibrary(OPENGL32));
   private readonly WGL wgl;
 
@@ -52,18 +57,16 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
       if (hdc == nint.Zero) return;
 
       // Try to create an appropriate pixel format
-      var pfd = new PIXELFORMATDESCRIPTOR {
-        nSize = (ushort)Marshal.SizeOf<PIXELFORMATDESCRIPTOR>(),
-        nVersion = 1,
-        dwFlags = 0x00000004 | 0x00000020, // PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL
-        iPixelType = 0, // PFD_TYPE_RGBA
-        cColorBits = Convert.ToByte(PreferredColorDepth),
-        cDepthBits = Convert.ToByte(PreferredDepthBufferBits),
-        cStencilBits = Convert.ToByte(PreferredStencilBufferBits),
-        iLayerType = 0 // PFD_MAIN_PLANE
-      };
+      var pfd = CreatePixelFormatDescriptor();
       var pix = ChoosePixelFormat(hdc, ref pfd);
       if (pix == nint.Zero) throw new Exception("Could not choose an appropriate pixel format for OpenGL.");
+      var selectedPfd = new PIXELFORMATDESCRIPTOR();
+      var described = DescribePixelFormat(
+        hdc,
+        Convert.ToInt32(pix.ToInt64()),
+        Convert.ToUInt32(Marshal.SizeOf<PIXELFORMATDESCRIPTOR>()),
+        ref selectedPfd);
+      ValidateSelectedPixelFormat(described, selectedPfd.dwFlags);
       if (!SetPixelFormat(hdc, pix, ref pfd)) throw new Exception("Could not set the surface's pixel format.");
       if (hdc == nint.Zero) throw new InvalidOperationException("Surface HDC context is invalid!");
       // Create a staging OpenGL context
@@ -109,6 +112,19 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
       if (didRecreate) Recreated?.Invoke(this, EventArgs.Empty);
     }
   }
+
+  internal static PIXELFORMATDESCRIPTOR CreatePixelFormatDescriptor() =>
+    new() {
+      nSize = Convert.ToUInt16(Marshal.SizeOf<PIXELFORMATDESCRIPTOR>()),
+      nVersion = 1,
+      // PFD_DOUBLEBUFFER | PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL
+      dwFlags = RequiredPixelFormatFlags,
+      iPixelType = 0, // PFD_TYPE_RGBA
+      cColorBits = Convert.ToByte(PreferredColorDepth),
+      cDepthBits = Convert.ToByte(PreferredDepthBufferBits),
+      cStencilBits = Convert.ToByte(PreferredStencilBufferBits),
+      iLayerType = 0 // PFD_MAIN_PLANE
+    };
 
   public SurfaceSettings Settings { get; init; }
 
@@ -170,7 +186,20 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
 
   public void SwapBuffers() {
     if (Hdc == nint.Zero) throw new Exception("Could not swap graphics buffers.");
-    Win32.SwapBuffers(Hdc);
+    EnsureBufferSwapSucceeded(Win32.SwapBuffers(Hdc));
+  }
+
+  internal static void ValidateSelectedPixelFormat(int described, uint flags) {
+    if (described == 0)
+      throw new Exception("Could not describe the selected OpenGL pixel format.");
+    var missingFlags = RequiredPixelFormatFlags & ~flags;
+    if (missingFlags != 0)
+      throw new PlatformNotSupportedException(
+        $"The selected OpenGL pixel format is missing required presentation flags: 0x{missingFlags:X8}.");
+  }
+
+  internal static void EnsureBufferSwapSucceeded(bool succeeded) {
+    if (!succeeded) throw new Exception("Could not swap graphics buffers.");
   }
 
   public void Clear() {
@@ -210,6 +239,13 @@ public partial class GLContext : IGLContext, INativeContext, IDisposable {
 
   [LibraryImport(OPENGL32, EntryPoint = "wglGetProcAddress", StringMarshalling = StringMarshalling.Custom, StringMarshallingCustomType = typeof(System.Runtime.InteropServices.Marshalling.AnsiStringMarshaller))]
   private static partial nint WglGetProcAddress(string proc);
+
+  [LibraryImport("gdi32.dll", SetLastError = true)]
+  private static partial int DescribePixelFormat(
+    nint hdc,
+    int pixelFormat,
+    uint bytes,
+    ref PIXELFORMATDESCRIPTOR descriptor);
 
   [LibraryImport("kernel32.dll", EntryPoint = "GetProcAddress", SetLastError = true, StringMarshalling = StringMarshalling.Custom, StringMarshallingCustomType = typeof(System.Runtime.InteropServices.Marshalling.AnsiStringMarshaller))]
   private static partial nint GetProcAddress(nint lib, string proc);

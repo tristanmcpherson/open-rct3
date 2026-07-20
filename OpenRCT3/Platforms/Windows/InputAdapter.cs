@@ -47,26 +47,52 @@ public class InputAdapter : InputContext {
   private readonly Device[] devices;
 
   [SuppressMessage("Style", "IDE0305:Simplify collection initialization", Justification = "Explicitness for clarity")]
-  public InputAdapter(Control control) : base(control.Handle) {
-    devices = GetDevices().ToArray();
+  public InputAdapter(Control control) : this(control, GetDevices()) { }
 
-    // Detect connected input devices
-    var keyboards =
-      from device in this.devices
-      where device.Usages.Contains((uint)Usage.GenericDesktopKeyboard)
-      select new KeyboardAdapter(this.devices.IndexOf(device), device, control);
-    var mice =
-      from device in this.devices
-      where device.Usages.Contains((uint)Usage.GenericDesktopMouse)
-      select new MouseAdapter(this.devices.IndexOf(device), device, control);
+  internal InputAdapter(Control control, IEnumerable<Device> devices) : base(control.Handle) {
+    this.devices = devices.ToArray();
+
+    // WinForms provides one logical event stream for each device class. HID
+    // discovery supplies representative metadata, not additional subscriptions.
+    var keyboardDevice = GetRepresentativeDevice(
+      Usage.GenericDesktopKeyboard,
+      "winforms-keyboard",
+      "Windows Forms Keyboard");
+    var mouseDevice = GetRepresentativeDevice(
+      Usage.GenericDesktopMouse,
+      "winforms-mouse",
+      "Windows Forms Mouse");
     var gamepads =
       from device in this.devices
       where device.Usages.Contains((uint)Usage.GenericDesktopGamepad)
       select new GamepadAdapter(this.devices.IndexOf(device), device);
 
-    this.keyboards.AddRange(keyboards);
-    this.mice.AddRange(mice);
+    this.keyboards.Add(new KeyboardAdapter(0, keyboardDevice, control));
+    this.mice.Add(new MouseAdapter(0, mouseDevice, control));
     this.gamepads.AddRange(gamepads);
+  }
+
+  private Device GetRepresentativeDevice(
+    Usage usage,
+    string fallbackId,
+    string fallbackName
+  ) => devices
+    .Where(device => device.Usages.Contains(Convert.ToUInt32(usage)))
+    .Select(device => (Device?)device)
+    .FirstOrDefault() ?? new(
+      fallbackId,
+      0,
+      0,
+      fallbackName,
+      "OpenRCT3",
+      [Convert.ToUInt32(usage)]);
+
+  public override void Dispose() {
+    if (IsDisposed) return;
+
+    foreach (var keyboard in keyboards.OfType<IDisposable>()) keyboard.Dispose();
+    foreach (var mouse in mice.OfType<IDisposable>()) mouse.Dispose();
+    base.Dispose();
   }
 
   //private IKeyboard? PrimaryKeyboard => devices.FirstOrDefault(dev => dev.Usages.Contains((uint)Usage.GenericDesktopKeyboard));
@@ -77,7 +103,9 @@ public class InputAdapter : InputContext {
     .Select(dev => dev.ToDevice(dev.GetDevices()))
     .Where(dev => dev != null).Cast<Device>();
 
-  private class KeyboardAdapter : HidDevice, IKeyboard {
+  internal class KeyboardAdapter : HidDevice, IKeyboard, IDisposable {
+    private readonly Control control;
+    private bool disposed;
     private PressedKey[] pressedKeys = [];
 
     public event Action<IKeyboard, Key, int>? KeyDown;
@@ -85,36 +113,65 @@ public class InputAdapter : InputContext {
     public event Action<IKeyboard, char>? KeyChar;
 
     public KeyboardAdapter(int index, Device device, Control control) : base(index, device) {
+      this.control = control;
       control.KeyDown += OnKeyDown;
       control.KeyUp += OnKeyUp;
-      control.KeyPress += KeyPress;
+      control.KeyPress += OnKeyPress;
     }
 
-    public IReadOnlyList<Key> SupportedKeys => [.. Enum.GetValues<Keys>().Cast<Key>()];
+    public IReadOnlyList<Key> SupportedKeys => [
+      Key.W,
+      Key.A,
+      Key.S,
+      Key.D,
+      Key.Q,
+      Key.E,
+      Key.Up,
+      Key.Down,
+      Key.Left,
+      Key.Right,
+    ];
     public string ClipboardText {
       get => Clipboard.GetText();
       set => Clipboard.SetText(value);
     }
 
     private void OnKeyDown(object? _, KeyEventArgs e) {
-      pressedKeys = [.. pressedKeys, new PressedKey((Key)e.KeyCode, e.KeyValue)];
-      KeyDown?.Invoke(this, (Key)e.KeyCode, e.KeyValue);
+      var key = e.KeyCode.ToSilkKey();
+      pressedKeys = [
+        .. pressedKeys.Where(pressed => pressed.Key != key),
+        new PressedKey(key, e.KeyValue),
+      ];
+      KeyDown?.Invoke(this, key, e.KeyValue);
     }
 
     private void OnKeyUp(object? _, KeyEventArgs e) {
-      pressedKeys = [.. pressedKeys.Where(k => k.Key != (Key)e.KeyCode)];
-      KeyUp?.Invoke(this, (Key)e.KeyCode, e.KeyValue);
+      var key = e.KeyCode.ToSilkKey();
+      pressedKeys = [.. pressedKeys.Where(pressed => pressed.Key != key)];
+      KeyUp?.Invoke(this, key, e.KeyValue);
     }
 
-    private void KeyPress(object? _, KeyPressEventArgs e) => KeyChar?.Invoke(this, e.KeyChar);
+    private void OnKeyPress(object? _, KeyPressEventArgs e) => KeyChar?.Invoke(this, e.KeyChar);
 
     public void BeginInput() {}
     public void EndInput() {}
     public bool IsKeyPressed(Key key) => pressedKeys.Select(k => k.Key).Contains(key);
     public bool IsScancodePressed(int scancode) => pressedKeys.Select(k => k.ScanCode).Contains(scancode);
+
+    public void Dispose() {
+      if (disposed) return;
+      disposed = true;
+      control.KeyDown -= OnKeyDown;
+      control.KeyUp -= OnKeyUp;
+      control.KeyPress -= OnKeyPress;
+      pressedKeys = [];
+      GC.SuppressFinalize(this);
+    }
   }
 
-  private class MouseAdapter : HidDevice, IMouse {
+  internal class MouseAdapter : HidDevice, IMouse, IDisposable {
+    private readonly Control control;
+    private bool disposed;
     private MouseState mouse = new();
     private MouseButton? lastClickedButton = null;
 
@@ -127,32 +184,52 @@ public class InputAdapter : InputContext {
 
 #pragma warning disable CS8618 // Silk.Net Bug: Mouse events are not nullable
     public MouseAdapter(int index, Device device, Control control) : base(index, device) {
-      control.MouseDown += (_, e) => {
-        mouse = mouse.WithButton(e.Button.ToMouseButton(), true);
-        lastClickedButton = e.Button.ToMouseButton();
-        MouseDown?.Invoke(this, e.Button.ToMouseButton());
-      };
-      control.MouseUp += (_, e) => {
-        mouse = mouse.WithButton(e.Button.ToMouseButton(), false);
-        MouseUp?.Invoke(this, e.Button.ToMouseButton());
-      };
-      control.Click += (_, e) => {
-        if (lastClickedButton is not { } button) return;
-        Click?.Invoke(this, button, mouse.Position);
-        lastClickedButton = null;
-      };
-      control.DoubleClick += (_, e) => {
-        if (lastClickedButton is not { } button) return;
-        DoubleClick?.Invoke(this, button, mouse.Position);
-        lastClickedButton = null;
-      };
-      control.MouseMove += (_, e) => {
-        mouse = mouse.WithPosition(new(e.Location.X, e.Location.Y));
-        MouseMove?.Invoke(this, mouse.Position);
-      };
-      control.MouseWheel += (_, e) => Scroll?.Invoke(this, new ScrollWheel(0, (float)e.Delta / SystemInformation.MouseWheelScrollDelta));
+      this.control = control;
+      control.MouseDown += OnMouseDown;
+      control.MouseUp += OnMouseUp;
+      control.Click += OnClick;
+      control.DoubleClick += OnDoubleClick;
+      control.MouseMove += OnMouseMove;
+      control.MouseWheel += OnMouseWheel;
     }
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor.
+
+    private void OnMouseDown(object? _, MouseEventArgs e) {
+      var button = e.Button.ToMouseButton();
+      mouse = mouse.WithPosition(new(e.Location.X, e.Location.Y));
+      mouse = mouse.WithButton(button, true);
+      lastClickedButton = button;
+      MouseDown?.Invoke(this, button);
+    }
+
+    private void OnMouseUp(object? _, MouseEventArgs e) {
+      var button = e.Button.ToMouseButton();
+      mouse = mouse.WithPosition(new(e.Location.X, e.Location.Y));
+      mouse = mouse.WithButton(button, false);
+      MouseUp?.Invoke(this, button);
+    }
+
+    private void OnClick(object? _, EventArgs e) {
+      if (lastClickedButton is not { } button) return;
+      Click?.Invoke(this, button, mouse.Position);
+      lastClickedButton = null;
+    }
+
+    private void OnDoubleClick(object? _, EventArgs e) {
+      if (lastClickedButton is not { } button) return;
+      DoubleClick?.Invoke(this, button, mouse.Position);
+      lastClickedButton = null;
+    }
+
+    private void OnMouseMove(object? _, MouseEventArgs e) {
+      mouse = mouse.WithPosition(new(e.Location.X, e.Location.Y));
+      MouseMove?.Invoke(this, mouse.Position);
+    }
+
+    private void OnMouseWheel(object? _, MouseEventArgs e) =>
+      Scroll?.Invoke(this, new ScrollWheel(
+        0,
+        (float)e.Delta / SystemInformation.MouseWheelScrollDelta));
 
     // FIXME: Get the supported buttons via the Win32 API
     public IReadOnlyList<MouseButton> SupportedButtons => [
@@ -182,6 +259,19 @@ public class InputAdapter : InputContext {
     }
 
     public bool IsButtonPressed(MouseButton btn) => mouse.PressedButtons.Contains(btn);
+
+    public void Dispose() {
+      if (disposed) return;
+      disposed = true;
+      control.MouseDown -= OnMouseDown;
+      control.MouseUp -= OnMouseUp;
+      control.Click -= OnClick;
+      control.DoubleClick -= OnDoubleClick;
+      control.MouseMove -= OnMouseMove;
+      control.MouseWheel -= OnMouseWheel;
+      lastClickedButton = null;
+      GC.SuppressFinalize(this);
+    }
   }
 
   private class GamepadAdapter : HidDevice, IGamepad {
@@ -245,5 +335,21 @@ internal static class MouseButtonsExtensions {
     MouseButtons.Right => MouseButton.Right,
     MouseButtons.Middle => MouseButton.Middle,
     _ => throw new NotImplementedException(),
+  };
+}
+
+internal static class KeysExtensions {
+  internal static Key ToSilkKey(this Keys key) => key switch {
+    Keys.W => Key.W,
+    Keys.A => Key.A,
+    Keys.S => Key.S,
+    Keys.D => Key.D,
+    Keys.Q => Key.Q,
+    Keys.E => Key.E,
+    Keys.Up => Key.Up,
+    Keys.Down => Key.Down,
+    Keys.Left => Key.Left,
+    Keys.Right => Key.Right,
+    _ => Key.Unknown,
   };
 }

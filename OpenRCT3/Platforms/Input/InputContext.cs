@@ -11,6 +11,8 @@ using Silk.NET.Input;
 namespace OpenRCT3.Platforms.Input;
 
 public abstract class InputContext(nint handle) : IInputContext {
+  private bool disposed;
+
   protected List<IGamepad> gamepads = [];
   protected List<IJoystick> joysticks = [];
   protected List<IKeyboard> keyboards = [];
@@ -27,7 +29,11 @@ public abstract class InputContext(nint handle) : IInputContext {
   public IReadOnlyList<IMouse> Mice => mice;
   public IReadOnlyList<IInputDevice> OtherDevices => otherDevices;
 
-  public void Dispose() {
+  protected bool IsDisposed => disposed;
+
+  public virtual void Dispose() {
+    if (disposed) return;
+    disposed = true;
     GC.SuppressFinalize(this);
     keyboards.Clear();
     mice.Clear();

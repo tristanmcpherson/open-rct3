@@ -4,6 +4,7 @@
 //   - Chance Snow <git@chancesnow.me>
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
+using OpenCobra.GDK;
 using System.Numerics;
 
 namespace OpenRCT3.Simulation;
@@ -19,9 +20,18 @@ public static class TerrainCameraFraming {
   /// ratios without pulling the camera unnecessarily far away.
   /// </remarks>
   public const float DistanceMargin = 1.1f;
+  /// <summary>
+  /// Extra forward depth between the closest terrain bound and the near clip plane at maximum zoom.
+  /// </summary>
+  public const float MinimumDistanceClearance = Camera.NearPlaneDistance * 2f;
 
-  /// <summary>Calculates the camera target and distance for the complete OOB-inclusive terrain.</summary>
-  public static (Vector3 Target, float Distance) Calculate(Terrain terrain) {
+  /// <summary>
+  /// Calculates the camera target, framing distance, and orbit-safe minimum distance for the complete
+  /// OOB-inclusive terrain.
+  /// </summary>
+  public static (Vector3 Target, float Distance, float MinimumDistance) Calculate(
+    Terrain terrain
+  ) {
     ArgumentNullException.ThrowIfNull(terrain);
 
     var minHeight = int.MaxValue;
@@ -39,7 +49,16 @@ public static class TerrainCameraFraming {
     var min = new Vector3(minXY, Terrain.CornerHeightToWorldZ(minHeight));
     var max = new Vector3(maxXY, Terrain.CornerHeightToWorldZ(maxHeight));
     var target = (min + max) * 0.5f;
+    var halfExtents = (max - min) * 0.5f;
     var distance = Vector3.Distance(min, max) * DistanceMargin;
-    return (target, distance);
+    var horizontalViewMagnitude = new Vector2(
+      Camera.DefaultViewDirection.X,
+      Camera.DefaultViewDirection.Y
+    ).Length();
+    var horizontalSupport = horizontalViewMagnitude
+      * new Vector2(halfExtents.X, halfExtents.Y).Length();
+    var verticalSupport = MathF.Abs(Camera.DefaultViewDirection.Z) * halfExtents.Z;
+    var minimumDistance = horizontalSupport + verticalSupport + MinimumDistanceClearance;
+    return (target, distance, minimumDistance);
   }
 }

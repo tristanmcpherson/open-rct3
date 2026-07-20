@@ -227,6 +227,9 @@ internal partial class GameWindow : Form, IWindow {
   public void Start() {
     stopwatch.Start();
     Debug.Assert(renderer != null, "Renderer should be created before starting the game.");
+    // Keyboard adapters subscribe to the OpenGL surface, so select it before the game loop starts.
+    // Mouse clicks also focus it, but camera keys should work before the first click.
+    glSurface.Select();
     if (Game.Instance == null) {
       logger.Trace("Starting game...");
       var game = new Game();

@@ -7,7 +7,9 @@ using OpenRCT3.OpenGL;
 using OpenRCT3.Platforms;
 using OpenRCT3.Platforms.Windows;
 using Silk.NET.Core.Contexts;
+using Silk.NET.Input;
 using Silk.NET.OpenGL;
+using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -246,6 +248,7 @@ public class WindowsLifecycleTests {
     var game = (Game)RuntimeHelpers.GetUninitializedObject(typeof(Game));
     SetGameField(game, "lifecycle", new GameRunLifecycle());
     SetGameField(game, "resumeSignal", resumeSignal);
+    SetGameField(game, "cameraControllerGate", new object());
     var firstRenderer = new FakeRenderer();
     var secondRenderer = new FakeRenderer();
     SetGameInstance(game);
@@ -283,6 +286,7 @@ public class WindowsLifecycleTests {
     var game = (Game)RuntimeHelpers.GetUninitializedObject(typeof(Game));
     SetGameField(game, "lifecycle", new GameRunLifecycle());
     SetGameField(game, "resumeSignal", resumeSignal);
+    SetGameField(game, "cameraControllerGate", new object());
     var surface = new GLSurface();
     SetGameInstance(game);
 
@@ -308,19 +312,77 @@ public class WindowsLifecycleTests {
       Assert.That(container.Resolve<IGraphicsSurface>(), Is.SameAs(second.Surface));
       Assert.That(container.Resolve<GL>(), Is.SameAs(second.Gl));
       Assert.That(container.Resolve<IGLContext>(), Is.SameAs(second.Context));
+      Assert.That(container.Resolve<IInputContext>(), Is.SameAs(second.Input));
       Assert.That(container.Resolve<Controller>(), Is.SameAs(second.Controller));
       Assert.That(container.Resolve<IRenderer>(), Is.SameAs(second.Renderer));
       Assert.That(Game.ResolveRenderer(container), Is.SameAs(second.Renderer));
       Assert.That(first.Context.DisposeCount, Is.Zero);
+      Assert.That(first.Input.DisposeCount, Is.Zero);
       Assert.That(first.Renderer.DisposeCount, Is.Zero);
     }
 
     container.Dispose();
     using (Assert.EnterMultipleScope()) {
       Assert.That(first.Context.DisposeCount, Is.Zero);
+      Assert.That(first.Input.DisposeCount, Is.Zero);
       Assert.That(first.Renderer.DisposeCount, Is.Zero);
       Assert.That(second.Context.DisposeCount, Is.Zero);
+      Assert.That(second.Input.DisposeCount, Is.Zero);
       Assert.That(second.Renderer.DisposeCount, Is.Zero);
+    }
+  }
+
+  [Test]
+  public void CameraInputReplacement_UnsubscribesOldGenerationAndFinalDisposal() {
+    using var resumeSignal = new ManualResetEvent(true);
+    var game = (Game)RuntimeHelpers.GetUninitializedObject(typeof(Game));
+    SetGameField(game, "lifecycle", new GameRunLifecycle());
+    SetGameField(game, "resumeSignal", resumeSignal);
+    SetGameField(game, "cameraControllerGate", new object());
+    SetGameField(game, "<Scene>k__BackingField", new TestScene());
+    var first = new TestInputContext();
+    var second = new TestInputContext();
+    var final = new TestInputContext();
+    var afterDisposal = new TestInputContext();
+
+    game.BindCameraInput(first);
+    game.BindCameraInput(second);
+    game.UnbindCameraInput(first);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(first.Keyboard.KeyDownSubscriberCount, Is.Zero);
+      Assert.That(first.Keyboard.KeyUpSubscriberCount, Is.Zero);
+      Assert.That(first.Mouse.ScrollSubscriberCount, Is.Zero);
+      Assert.That(second.Keyboard.KeyDownSubscriberCount, Is.EqualTo(1));
+      Assert.That(second.Keyboard.KeyUpSubscriberCount, Is.EqualTo(1));
+      Assert.That(second.Mouse.ScrollSubscriberCount, Is.EqualTo(1));
+    }
+
+    game.UnbindCameraInput(second);
+    game.BindCameraInput(final);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(second.Keyboard.KeyDownSubscriberCount, Is.Zero);
+      Assert.That(second.Keyboard.KeyUpSubscriberCount, Is.Zero);
+      Assert.That(second.Mouse.ScrollSubscriberCount, Is.Zero);
+      Assert.That(final.Keyboard.KeyDownSubscriberCount, Is.EqualTo(1));
+      Assert.That(final.Keyboard.KeyUpSubscriberCount, Is.EqualTo(1));
+      Assert.That(final.Mouse.ScrollSubscriberCount, Is.EqualTo(1));
+    }
+
+    game.Dispose();
+    game.BindCameraInput(afterDisposal);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(second.Keyboard.KeyDownSubscriberCount, Is.Zero);
+      Assert.That(second.Keyboard.KeyUpSubscriberCount, Is.Zero);
+      Assert.That(second.Mouse.ScrollSubscriberCount, Is.Zero);
+      Assert.That(final.Keyboard.KeyDownSubscriberCount, Is.Zero);
+      Assert.That(final.Keyboard.KeyUpSubscriberCount, Is.Zero);
+      Assert.That(final.Mouse.ScrollSubscriberCount, Is.Zero);
+      Assert.That(afterDisposal.Keyboard.KeyDownSubscriberCount, Is.Zero);
+      Assert.That(afterDisposal.Keyboard.KeyUpSubscriberCount, Is.Zero);
+      Assert.That(afterDisposal.Mouse.ScrollSubscriberCount, Is.Zero);
     }
   }
 
@@ -545,14 +607,16 @@ public class WindowsLifecycleTests {
   ) {
     var gl = (GL)RuntimeHelpers.GetUninitializedObject(typeof(GL));
     var context = new StatefulGlContext([]);
+    var input = new TestInputContext();
     var controller = (Controller)RuntimeHelpers.GetUninitializedObject(
       typeof(Controller));
     var renderer = new FakeRenderer();
 
     WindowsSurfaceRegistrations.ReplaceGraphics(container, surface, gl, context);
+    WindowsSurfaceRegistrations.ReplaceInput(container, input);
     WindowsSurfaceRegistrations.ReplaceController(container, controller);
     WindowsSurfaceRegistrations.ReplaceRenderer(container, renderer);
-    return new(surface, gl, context, controller, renderer);
+    return new(surface, gl, context, input, controller, renderer);
   }
 
   private static void SetGameInstance(Game? game) {
@@ -592,6 +656,84 @@ public class WindowsLifecycleTests {
       DisposeCount++;
       State = State.Disposed;
     }
+  }
+
+  private sealed class TestInputContext : IInputContext {
+    public TestKeyboard Keyboard { get; } = new();
+    public TestMouse Mouse { get; } = new();
+    public int DisposeCount { get; private set; }
+
+    public event Action<IInputDevice, bool>? ConnectionChanged;
+    public nint Handle => nint.Zero;
+    public IReadOnlyList<IGamepad> Gamepads => [];
+    public IReadOnlyList<IJoystick> Joysticks => [];
+    public IReadOnlyList<IKeyboard> Keyboards => [Keyboard];
+    public IReadOnlyList<IMouse> Mice => [Mouse];
+    public IReadOnlyList<IInputDevice> OtherDevices => [];
+    public void Dispose() => DisposeCount++;
+  }
+
+  private sealed class TestScene : Scene {
+    public TestScene() : base(null, null) { }
+  }
+
+  private sealed class TestKeyboard : IKeyboard {
+    private Action<IKeyboard, Key, int>? keyDown;
+    private Action<IKeyboard, Key, int>? keyUp;
+
+    public int KeyDownSubscriberCount => keyDown?.GetInvocationList().Length ?? 0;
+    public int KeyUpSubscriberCount => keyUp?.GetInvocationList().Length ?? 0;
+
+    public event Action<IKeyboard, Key, int>? KeyDown {
+      add => keyDown += value;
+      remove => keyDown -= value;
+    }
+    public event Action<IKeyboard, Key, int>? KeyUp {
+      add => keyUp += value;
+      remove => keyUp -= value;
+    }
+    public event Action<IKeyboard, char>? KeyChar;
+
+    public string Name => "Test Keyboard";
+    public int Index => 0;
+    public bool IsConnected => true;
+    public IReadOnlyList<Key> SupportedKeys => Enum.GetValues<Key>();
+    public string ClipboardText { get; set; } = string.Empty;
+
+    public void BeginInput() { }
+    public void EndInput() { }
+    public bool IsKeyPressed(Key key) => false;
+    public bool IsScancodePressed(int scancode) => false;
+  }
+
+  private sealed class TestMouse : IMouse {
+    private Action<IMouse, ScrollWheel>? scroll;
+
+    public int ScrollSubscriberCount => scroll?.GetInvocationList().Length ?? 0;
+
+    public event Action<IMouse, MouseButton>? MouseDown;
+    public event Action<IMouse, MouseButton>? MouseUp;
+    public event Action<IMouse, MouseButton, Vector2>? Click;
+    public event Action<IMouse, MouseButton, Vector2>? DoubleClick;
+    public event Action<IMouse, Vector2>? MouseMove;
+    public event Action<IMouse, ScrollWheel>? Scroll {
+      add => scroll += value;
+      remove => scroll -= value;
+    }
+
+    public string Name => "Test Mouse";
+    public int Index => 0;
+    public bool IsConnected => true;
+    public IReadOnlyList<MouseButton> SupportedButtons => [];
+    public IReadOnlyList<ScrollWheel> ScrollWheels => [new ScrollWheel(0f, 0f)];
+    public Vector2 Position { get; set; }
+    public ICursor Cursor => null!;
+    public int DoubleClickTime { get; set; }
+    public int DoubleClickRange { get; set; }
+
+    public void BeginInput() { }
+    public void EndInput() { }
+    public bool IsButtonPressed(MouseButton button) => false;
   }
 
   private sealed class StatefulGlContext(List<string> released) : IGLContext {
@@ -656,6 +798,7 @@ public class WindowsLifecycleTests {
     IGraphicsSurface Surface,
     GL Gl,
     StatefulGlContext Context,
+    TestInputContext Input,
     Controller Controller,
     FakeRenderer Renderer
   );

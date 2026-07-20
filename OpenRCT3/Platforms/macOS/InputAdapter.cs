@@ -60,12 +60,15 @@ namespace OpenRCT3.Platforms.macOS {
       MouseMove?.Invoke(this, pos);
     }
     public void OnScroll(float dx, float dy) {
-      Scroll?.Invoke(this, new ScrollWheel((int)dx, (int)dy));
+      Scroll?.Invoke(this, new ScrollWheel(dx, dy));
     }
   }
 
   // Minimal keyboard implementation used by the GUI controller
   internal class MacKeyboard : IKeyboard {
+    private readonly HashSet<Key> pressed = new();
+    private readonly HashSet<int> pressedScancodes = new();
+
     public event Action<IKeyboard, Key, int>? KeyDown;
     public event Action<IKeyboard, Key, int>? KeyUp;
     public event Action<IKeyboard, char>? KeyChar;
@@ -75,24 +78,43 @@ namespace OpenRCT3.Platforms.macOS {
     public int Index => 0;
     public bool IsConnected => true;
 
-    public IReadOnlyList<Key> SupportedKeys => Array.Empty<Key>();
+    public IReadOnlyList<Key> SupportedKeys => new[] {
+      Key.W,
+      Key.A,
+      Key.S,
+      Key.D,
+      Key.Q,
+      Key.E,
+      Key.Up,
+      Key.Down,
+      Key.Left,
+      Key.Right,
+    };
     public string ClipboardText { get => NSPasteboard.GeneralPasteboard.GetStringForType(NSPasteboard.NSPasteboardTypeString) ?? string.Empty; set { var pb = NSPasteboard.GeneralPasteboard; pb.ClearContents(); pb.SetStringForType(value, NSPasteboard.NSPasteboardTypeString); } }
 
     public void BeginInput() { }
     public void EndInput() { }
-    public bool IsKeyPressed(Key key) => false;
-    public bool IsScancodePressed(int scancode) => false;
+    public bool IsKeyPressed(Key key) => pressed.Contains(key);
+    public bool IsScancodePressed(int scancode) => pressedScancodes.Contains(scancode);
 
     // Helpers
-    public void OnKeyDown(Key key, int scancode) => KeyDown?.Invoke(this, key, scancode);
-    public void OnKeyUp(Key key, int scancode) => KeyUp?.Invoke(this, key, scancode);
+    public void OnKeyDown(Key key, int scancode) {
+      pressed.Add(key);
+      pressedScancodes.Add(scancode);
+      KeyDown?.Invoke(this, key, scancode);
+    }
+    public void OnKeyUp(Key key, int scancode) {
+      pressed.Remove(key);
+      pressedScancodes.Remove(scancode);
+      KeyUp?.Invoke(this, key, scancode);
+    }
     public void OnKeyChar(char ch) => KeyChar?.Invoke(this, ch);
   }
 
   // Mac input context using NSEvent local monitors. Keeps lifetime minimal and removes monitors on Dispose.
   internal class MacInputContext : InputContext {
-    private readonly NSObject mouseMonitor;
-    private readonly NSObject keyMonitor;
+    private NSObject? mouseMonitor;
+    private NSObject? keyMonitor;
     private readonly MacMouse mouse;
     private readonly MacKeyboard keyboard;
 
@@ -103,20 +125,31 @@ namespace OpenRCT3.Platforms.macOS {
       keyboards.Add(keyboard);
 
       // Combine mouse-related event types into a mask
-      var mouseMask = NSEventMask.MouseMoved | NSEventMask.LeftMouseDown | NSEventMask.LeftMouseUp |
-                      NSEventMask.RightMouseDown | NSEventMask.RightMouseUp | NSEventMask.OtherMouseDown |
-                      NSEventMask.OtherMouseUp | NSEventMask.ScrollWheel;
+      var mouseMask = NSEventMask.MouseMoved | NSEventMask.LeftMouseDragged |
+                      NSEventMask.RightMouseDragged | NSEventMask.OtherMouseDragged |
+                      NSEventMask.LeftMouseDown | NSEventMask.LeftMouseUp |
+                      NSEventMask.RightMouseDown | NSEventMask.RightMouseUp |
+                      NSEventMask.OtherMouseDown | NSEventMask.OtherMouseUp |
+                      NSEventMask.ScrollWheel;
 
-      mouseMonitor = NSEvent.AddLocalMonitorForEventsMatchingMask(mouseMask, (ev) => {
-        HandleMouseEvent(ev);
-        return ev;
-      });
+      mouseMonitor = NSEvent.AddLocalMonitorForEventsMatchingMask(
+        mouseMask,
+        MonitorMouseEvent);
 
       var keyMask = NSEventMask.KeyDown | NSEventMask.KeyUp;
-      keyMonitor = NSEvent.AddLocalMonitorForEventsMatchingMask(keyMask, (ev) => {
-        HandleKeyEvent(ev);
-        return ev;
-      });
+      keyMonitor = NSEvent.AddLocalMonitorForEventsMatchingMask(
+        keyMask,
+        MonitorKeyEvent);
+    }
+
+    private NSEvent MonitorMouseEvent(NSEvent ev) {
+      HandleMouseEvent(ev);
+      return ev;
+    }
+
+    private NSEvent MonitorKeyEvent(NSEvent ev) {
+      HandleKeyEvent(ev);
+      return ev;
     }
 
     private void HandleMouseEvent(NSEvent ev) {
@@ -143,6 +176,9 @@ namespace OpenRCT3.Platforms.macOS {
           mouse.OnMouseUp(MouseButton.Middle, pos);
           break;
         case NSEventType.MouseMoved:
+        case NSEventType.LeftMouseDragged:
+        case NSEventType.RightMouseDragged:
+        case NSEventType.OtherMouseDragged:
           mouse.OnMouseMove(pos);
           break;
         case NSEventType.ScrollWheel:
@@ -160,19 +196,38 @@ namespace OpenRCT3.Platforms.macOS {
           if (!string.IsNullOrEmpty(ev.CharactersIgnoringModifiers)) {
             foreach (var ch in ev.CharactersIgnoringModifiers) keyboard.OnKeyChar(ch);
           }
-          // Fire KeyDown with scancode
-          keyboard.OnKeyDown(Key.Unknown, (int)ev.KeyCode);
+          // Fire KeyDown with the platform-independent key and native scancode.
+          keyboard.OnKeyDown(ToSilkKey(ev.KeyCode), (int)ev.KeyCode);
           break;
         case NSEventType.KeyUp:
-          keyboard.OnKeyUp(Key.Unknown, (int)ev.KeyCode);
+          keyboard.OnKeyUp(ToSilkKey(ev.KeyCode), (int)ev.KeyCode);
           break;
       }
     }
 
-    public new void Dispose() {
-      // Remove monitors
-      if (mouseMonitor != null) NSEvent.RemoveMonitor(mouseMonitor);
-      if (keyMonitor != null) NSEvent.RemoveMonitor(keyMonitor);
+    private static Key ToSilkKey(ushort keyCode) => keyCode switch {
+      0 => Key.A,
+      1 => Key.S,
+      2 => Key.D,
+      12 => Key.Q,
+      13 => Key.W,
+      14 => Key.E,
+      123 => Key.Left,
+      124 => Key.Right,
+      125 => Key.Down,
+      126 => Key.Up,
+      _ => Key.Unknown,
+    };
+
+    public override void Dispose() {
+      if (mouseMonitor != null) {
+        NSEvent.RemoveMonitor(mouseMonitor);
+        mouseMonitor = null;
+      }
+      if (keyMonitor != null) {
+        NSEvent.RemoveMonitor(keyMonitor);
+        keyMonitor = null;
+      }
       base.Dispose();
     }
   }

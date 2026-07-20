@@ -21,7 +21,7 @@ public class CameraFramingTests {
   private static Camera FrameTerrain(Terrain terrain, float aspectRatio = 16f / 9f) {
     var camera = new Camera();
     var framing = TerrainCameraFraming.Calculate(terrain);
-    camera.Frame(framing.Target, framing.Distance);
+    camera.Frame(framing.Target, framing.Distance, framing.MinimumDistance);
     camera.Update(aspectRatio);
     return camera;
   }
@@ -98,6 +98,67 @@ public class CameraFramingTests {
       Is.EqualTo(Vector3.Distance(min, max) * TerrainCameraFraming.DistanceMargin)
         .Within(Epsilon)
     );
+  }
+
+  [Test]
+  public void Calculate_MinimumDistanceUsesOrbitSafeSupportForAsymmetricTallBounds() {
+    var minHeight = Terrain.WorldZToCornerHeight(-20f);
+    var maxHeight = Terrain.WorldZToCornerHeight(180f);
+    var terrain = new Terrain(width: 3, height: 11, initialHeight: minHeight);
+    terrain.SetCornerHeight(
+      terrain.Width - 1,
+      terrain.Height - 1,
+      TerrainCornerSlot.NorthEast,
+      maxHeight
+    );
+
+    var framing = TerrainCameraFraming.Calculate(terrain);
+    var (minXY, maxXY) = terrain.Bounds;
+    var min = new Vector3(minXY, Terrain.CornerHeightToWorldZ(minHeight));
+    var max = new Vector3(maxXY, Terrain.CornerHeightToWorldZ(maxHeight));
+    var halfExtents = (max - min) * 0.5f;
+    var horizontalViewMagnitude = new Vector2(
+      Camera.DefaultViewDirection.X,
+      Camera.DefaultViewDirection.Y
+    ).Length();
+    var expected = (
+      horizontalViewMagnitude * new Vector2(halfExtents.X, halfExtents.Y).Length()
+    ) + (MathF.Abs(Camera.DefaultViewDirection.Z) * halfExtents.Z)
+      + TerrainCameraFraming.MinimumDistanceClearance;
+
+    Assert.That(framing.MinimumDistance, Is.EqualTo(expected).Within(Epsilon));
+  }
+
+  [TestCase(0f)]
+  [TestCase(1.5707964f)]
+  [TestCase(3.1415927f)]
+  [TestCase(4.712389f)]
+  public void MinimumDistance_KeepsTerrainBoundsInFrontAcrossYawQuadrants(
+    float orbitRadians
+  ) {
+    var minHeight = Terrain.WorldZToCornerHeight(-20f);
+    var maxHeight = Terrain.WorldZToCornerHeight(180f);
+    var terrain = new Terrain(width: 3, height: 11, initialHeight: minHeight);
+    terrain.SetCornerHeight(
+      terrain.Width - 1,
+      terrain.Height - 1,
+      TerrainCornerSlot.NorthEast,
+      maxHeight
+    );
+    var framing = TerrainCameraFraming.Calculate(terrain);
+    var camera = new Camera();
+    camera.Frame(framing.Target, framing.Distance, framing.MinimumDistance);
+    camera.SetDistance(framing.MinimumDistance);
+    camera.Orbit(orbitRadians);
+    camera.Update(aspectRatio: 16f / 9f);
+    var minZ = Terrain.CornerHeightToWorldZ(minHeight);
+    var maxZ = Terrain.CornerHeightToWorldZ(maxHeight);
+
+    foreach (var corner in FullMeshCorners(terrain, minZ, maxZ)) {
+      var clip = ProjectToClip(camera, corner);
+      Assert.That(clip.W, Is.GreaterThan(0f), $"corner {corner} is behind the camera");
+      Assert.That(clip.Z, Is.InRange(-clip.W, clip.W), $"corner {corner} is depth-clipped");
+    }
   }
 
   [Test]

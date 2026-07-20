@@ -15,51 +15,66 @@ public sealed record ResolvedSceneryStaticLod(
   StaticShape Shape
 );
 
+/// <summary>One rest-pose bone-shape LOD reached through a placed object's SID and SVD resources.</summary>
+public sealed record ResolvedSceneryBoneLod(
+  SceneryItemVisual Visual,
+  SceneryItemVisualLod Lod,
+  BoneShape Shape
+);
+
 /// <summary>
-/// A decoded SID plus the static-shape LODs from its first supported visual alternative.
+/// A decoded SID plus the shape LODs from its first supported visual alternative.
 /// </summary>
 public sealed record ResolvedSceneryObject(
   SceneryItem Item,
   IReadOnlyList<ResolvedSceneryStaticLod> StaticLods
-);
+) {
+  public IReadOnlyList<ResolvedSceneryBoneLod> BoneLods { get; init; } = [];
+}
 
-/// <summary>Resolves the SID-to-SVD-to-SHS resource chain for scenery rendering.</summary>
+/// <summary>Resolves SID-to-SVD-to-SHS/BSH resource chains for scenery rendering.</summary>
 public sealed class SceneryVisualResolver {
   private readonly Func<string, FileType, SceneryResourceEntry?> find;
   private readonly Func<Ovl, IReadOnlyList<SceneryItem>> decodeItems;
   private readonly Func<Ovl, IReadOnlyList<SceneryItemVisual>> decodeVisuals;
   private readonly Func<Ovl, IReadOnlyList<StaticShape>> decodeShapes;
+  private readonly Func<Ovl, IReadOnlyList<BoneShape>> decodeBoneShapes;
   private readonly Dictionary<Ovl, IReadOnlyDictionary<string, SceneryItem>> itemCache = [];
   private readonly Dictionary<Ovl, IReadOnlyDictionary<string, SceneryItemVisual>> visualCache = [];
   private readonly Dictionary<Ovl, IReadOnlyDictionary<string, StaticShape>> shapeCache = [];
+  private readonly Dictionary<Ovl, IReadOnlyDictionary<string, BoneShape>> boneShapeCache = [];
 
   public SceneryVisualResolver(SceneryResourceCatalog catalog)
     : this(
       catalog.Find,
       SceneryItems.Extract,
       SceneryItemVisuals.Extract,
-      StaticShapes.Extract) { }
+      StaticShapes.Extract,
+      BoneShapes.Extract) { }
 
   internal SceneryVisualResolver(
     Func<string, FileType, SceneryResourceEntry?> find,
     Func<Ovl, IReadOnlyList<SceneryItem>> decodeItems,
     Func<Ovl, IReadOnlyList<SceneryItemVisual>> decodeVisuals,
-    Func<Ovl, IReadOnlyList<StaticShape>> decodeShapes
+    Func<Ovl, IReadOnlyList<StaticShape>> decodeShapes,
+    Func<Ovl, IReadOnlyList<BoneShape>> decodeBoneShapes
   ) {
     ArgumentNullException.ThrowIfNull(find);
     ArgumentNullException.ThrowIfNull(decodeItems);
     ArgumentNullException.ThrowIfNull(decodeVisuals);
     ArgumentNullException.ThrowIfNull(decodeShapes);
+    ArgumentNullException.ThrowIfNull(decodeBoneShapes);
     this.find = find;
     this.decodeItems = decodeItems;
     this.decodeVisuals = decodeVisuals;
     this.decodeShapes = decodeShapes;
+    this.decodeBoneShapes = decodeBoneShapes;
   }
 
   /// <summary>
   /// Resolves <paramref name="objectKey"/>. A missing catalog SID returns <c>null</c>. SID visual
   /// references are serialized alternatives (for example, billboard and 3D tree variants), so the
-  /// first visual containing a supported static-shape LOD wins.
+  /// first visual containing a supported static- or bone-shape LOD wins.
   /// </summary>
   public ResolvedSceneryObject? Resolve(string objectKey) {
     ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
@@ -81,23 +96,45 @@ public sealed class SceneryVisualResolver {
         decodeVisuals,
         "SVD");
       var staticLods = new List<ResolvedSceneryStaticLod>();
+      var boneLods = new List<ResolvedSceneryBoneLod>();
       foreach (var lod in visual.Lods) {
-        if (lod.Type != SvdLodType.StaticShape) continue;
-        if (string.IsNullOrWhiteSpace(lod.StaticShapeRef))
-          throw new InvalidDataException(
-            $"SVD '{visual.Name}' static LOD '{lod.Name}' has no SHS reference.");
+        switch (lod.Type) {
+          case SvdLodType.StaticShape:
+            if (string.IsNullOrWhiteSpace(lod.StaticShapeRef))
+              throw new InvalidDataException(
+                $"SVD '{visual.Name}' static LOD '{lod.Name}' has no SHS reference.");
 
-        var shapeEntry = FindRequired(lod.StaticShapeRef, FileType.StaticShape, visual.Name);
-        var shape = GetExact(
-          shapeEntry.Archive,
-          shapeEntry.File.Name,
-          shapeCache,
-          decodeShapes,
-            "SHS");
-        staticLods.Add(new ResolvedSceneryStaticLod(visual, lod, shape));
+            var shapeEntry = FindRequired(
+              lod.StaticShapeRef, FileType.StaticShape, visual.Name);
+            var shape = GetExact(
+              shapeEntry.Archive,
+              shapeEntry.File.Name,
+              shapeCache,
+              decodeShapes,
+              "SHS");
+            staticLods.Add(new ResolvedSceneryStaticLod(visual, lod, shape));
+            break;
+          case SvdLodType.BoneShape:
+            if (string.IsNullOrWhiteSpace(lod.BoneShapeRef))
+              throw new InvalidDataException(
+                $"SVD '{visual.Name}' bone LOD '{lod.Name}' has no BSH reference.");
+
+            var boneShapeEntry = FindRequired(
+              lod.BoneShapeRef, FileType.BoneShape, visual.Name);
+            var boneShape = GetExact(
+              boneShapeEntry.Archive,
+              boneShapeEntry.File.Name,
+              boneShapeCache,
+              decodeBoneShapes,
+              "BSH");
+            boneLods.Add(new ResolvedSceneryBoneLod(visual, lod, boneShape));
+            break;
+        }
       }
-      if (staticLods.Count > 0)
-        return new ResolvedSceneryObject(item, staticLods.ToArray());
+      if (staticLods.Count > 0 || boneLods.Count > 0)
+        return new ResolvedSceneryObject(item, staticLods.ToArray()) {
+          BoneLods = boneLods.ToArray()
+        };
     }
     return new ResolvedSceneryObject(item, []);
   }
@@ -166,6 +203,7 @@ public sealed class SceneryVisualResolver {
     SceneryItem item => item.Name,
     SceneryItemVisual visual => visual.Name,
     StaticShape shape => shape.Name,
+    BoneShape shape => shape.Name,
     _ => throw new ArgumentException(
       $"Unsupported scenery resource model '{typeof(T).Name}'.", nameof(resource)),
   };

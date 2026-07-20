@@ -1,4 +1,4 @@
-// Static Shape Mesh Builder Tests
+// Bone Shape Mesh Builder Tests
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 
@@ -9,20 +9,30 @@ using System.Numerics;
 namespace OpenRCT3.Tests.Simulation;
 
 [TestFixture]
-public class StaticShapeMeshBuilderTests {
+public class BoneShapeMeshBuilderTests {
   [Test]
-  public void BuildBatches_ConvertsCoordinatesAndPreservesVertexAttributes() {
+  public void BuildBatches_UsesStoredRestPoseAndIgnoresBoneMatrices() {
     var color = new Vector4(0.1f, 0.2f, 0.3f, 0.4f);
     var texCoord = new Vector2(0.25f, 0.75f);
     var vertices = TriangleVertices();
-    vertices[0] = new StaticShapeVertex(
+    vertices[0] = new BoneShapeVertex(
       new Vector3(1f, 2f, 3f),
       new Vector3(4f, 5f, 6f),
       texCoord,
-      color);
-    var shape = Shape(Mesh(vertices: vertices));
+      color,
+      new BoneShapeSkinning(0, -1, -1, -1, 255, 0, 0, 0));
+    var shape = new BoneShape(
+      "shape",
+      new Vector3(-10f),
+      new Vector3(10f),
+      [Mesh(vertices: vertices)],
+      [new BoneShapeBone(
+        "bone",
+        -1,
+        Matrix4x4.CreateScale(100f),
+        Matrix4x4.CreateTranslation(500f, 600f, 700f))]);
 
-    var vertex = StaticShapeMeshBuilder.BuildBatches(shape).Single().Mesh.Vertices[0];
+    var vertex = BoneShapeMeshBuilder.BuildBatches(shape).Single().Mesh.Vertices[0];
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(vertex.Position, Is.EqualTo(new Vector3(1f, 3f, 2f)));
@@ -34,8 +44,7 @@ public class StaticShapeMeshBuilderTests {
 
   [Test]
   public void BuildBatches_HandednessChangeKeepsCcwWindingAlignedWithNormals() {
-    var batch = StaticShapeMeshBuilder.BuildBatches(Shape(Mesh())).Single();
-    var mesh = batch.Mesh;
+    var mesh = BoneShapeMeshBuilder.BuildBatches(Shape(Mesh())).Single().Mesh;
 
     Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 2, 0, 1 }));
     var a = mesh.Vertices[Convert.ToInt32(mesh.Indices[0])].Position;
@@ -61,7 +70,8 @@ public class StaticShapeMeshBuilderTests {
       textureFlags: 68,
       sides: 1) with {
       IndexLayout = StaticShapeIndexLayout.PlacementTriangleList,
-      StoredIndexCount = 1
+      StoredIndexCount = 1,
+      LogicalIndexCount = 3
     };
     var alpha = Mesh(
       name: "alpha",
@@ -72,7 +82,7 @@ public class StaticShapeMeshBuilderTests {
       textureFlags: 12,
       sides: 3);
 
-    var batches = StaticShapeMeshBuilder.BuildBatches(Shape(zeta, alpha));
+    var batches = BoneShapeMeshBuilder.BuildBatches(Shape(zeta, alpha));
 
     Assert.That(batches.Select(batch => batch.SourceMeshName),
       Is.EqualTo(new[] { "zeta", "alpha" }));
@@ -96,123 +106,93 @@ public class StaticShapeMeshBuilderTests {
   }
 
   [Test]
-  public void BuildBatches_PlacementTriangleListUsesAllDecodedTriangles() {
-    var source = Mesh(transparency: 1, indices: [0, 2, 1]) with {
-      IndexLayout = StaticShapeIndexLayout.PlacementTriangleList,
-      StoredIndexCount = 1
-    };
-
-    var mesh = StaticShapeMeshBuilder.BuildBatches(Shape(source)).Single().Mesh;
-
-    Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 2, 0, 1 }));
-  }
-
-  [Test]
-  public void BuildBatches_DivisiblePlacementTriangleListUsesAllDecodedTriangles() {
+  public void BuildBatches_PlacementTriangleListUsesAllLogicalIndices() {
     var source = Mesh(
       transparency: 1,
       indices: [0, 2, 1, 1, 0, 2, 2, 1, 0]) with {
       IndexLayout = StaticShapeIndexLayout.PlacementTriangleList,
-      StoredIndexCount = 3
+      StoredIndexCount = 3,
+      LogicalIndexCount = 9
     };
 
-    var mesh = StaticShapeMeshBuilder.BuildBatches(Shape(source)).Single().Mesh;
+    var mesh = BoneShapeMeshBuilder.BuildBatches(Shape(source)).Single().Mesh;
 
     Assert.That(mesh.Indices,
       Is.EqualTo(new uint[] { 2, 0, 1, 0, 1, 2, 1, 2, 0 }));
   }
 
   [Test]
-  public void BuildBatches_SortedPlacementTriangleListUsesTheRetainedPermutationOnce() {
+  public void BuildBatches_SortedPlacementListUsesFirstValidatedPermutationOnce() {
     var source = Mesh(
       transparency: 1,
-      indices: [0, 2, 1, 1, 2, 0]) with {
+      indices: [0, 2, 1, 1, 0, 2]) with {
       IndexLayout = StaticShapeIndexLayout.PlacementSortedTriangleList,
       StoredIndexCount = 6,
+      LogicalIndexCount = 6,
       PlacementSortPermutations = [
-        new uint[] { 0, 2, 1, 1, 2, 0 },
-        new uint[] { 1, 2, 0, 0, 2, 1 },
-        new uint[] { 2, 0, 1, 1, 0, 2 }
+        new uint[] { 0, 2, 1, 1, 0, 2 },
+        new uint[] { 1, 0, 2, 0, 2, 1 },
+        new uint[] { 0, 2, 1, 1, 0, 2 }
       ]
     };
 
-    var mesh = StaticShapeMeshBuilder.BuildBatches(Shape(source)).Single().Mesh;
+    var mesh = BoneShapeMeshBuilder.BuildBatches(Shape(source)).Single().Mesh;
 
-    Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 2, 0, 1, 2, 1, 0 }));
+    Assert.That(mesh.Indices, Is.EqualTo(new uint[] { 2, 0, 1, 0, 1, 2 }));
   }
 
   [Test]
-  public void BuildBatches_OutOfRangeIndexFailsClosed() {
-    var shape = Shape(Mesh(indices: [0, 2, 3]));
-
-    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
-      StaticShapeMeshBuilder.BuildBatches(shape)));
-
-    Assert.That(exception!.Message, Does.Contain("references vertex 3"));
-  }
-
-  [Test]
-  public void BuildBatches_NonFiniteVertexFailsClosed() {
-    var vertices = TriangleVertices();
-    vertices[1] = vertices[1] with {
-      Position = new Vector3(float.NaN, 0f, 0f)
+  public void BuildBatches_MismatchedSortedPermutationFailsClosed() {
+    var source = Mesh(
+      transparency: 1,
+      indices: [0, 2, 1, 1, 0, 2]) with {
+      IndexLayout = StaticShapeIndexLayout.PlacementSortedTriangleList,
+      StoredIndexCount = 6,
+      LogicalIndexCount = 6,
+      PlacementSortPermutations = [
+        new uint[] { 0, 2, 1, 1, 0, 2 },
+        new uint[] { 1, 0, 2, 0, 2, 1 },
+        new uint[] { 0, 1, 2, 1, 0, 2 }
+      ]
     };
-    var shape = Shape(Mesh(vertices: vertices));
 
     var exception = Assert.Throws<InvalidDataException>(new Action(() =>
-      StaticShapeMeshBuilder.BuildBatches(shape)));
+      BoneShapeMeshBuilder.BuildBatches(Shape(source))));
 
-    Assert.That(exception!.Message, Does.Contain("non-finite value"));
+    Assert.That(exception!.Message, Does.Contain("does not contain the same triangles"));
   }
 
   [Test]
-  public void BuildBatches_NonFiniteNormalFailsClosed() {
+  public void BuildBatches_NonFiniteRestPoseFailsClosed() {
     var vertices = TriangleVertices();
     vertices[1] = vertices[1] with {
       Normal = new Vector3(0f, float.PositiveInfinity, 0f)
     };
-    var shape = Shape(Mesh(vertices: vertices));
 
     var exception = Assert.Throws<InvalidDataException>(new Action(() =>
-      StaticShapeMeshBuilder.BuildBatches(shape)));
+      BoneShapeMeshBuilder.BuildBatches(Shape(Mesh(vertices: vertices)))));
 
     Assert.That(exception!.Message, Does.Contain("non-finite value"));
   }
 
   [Test]
-  public void BuildBatches_StoredIndexCountMismatchFailsClosed() {
-    var source = Mesh() with { StoredIndexCount = 6 };
+  public void BuildBatches_LogicalIndexCountMismatchFailsClosed() {
+    var source = Mesh() with { LogicalIndexCount = 6 };
 
     var exception = Assert.Throws<InvalidDataException>(new Action(() =>
-      StaticShapeMeshBuilder.BuildBatches(Shape(source))));
+      BoneShapeMeshBuilder.BuildBatches(Shape(source))));
 
-    Assert.That(exception!.Message, Does.Contain("does not match"));
+    Assert.That(exception!.Message, Does.Contain("logical index count 6 does not match"));
   }
 
-  [Test]
-  public void BuildBatches_SortedPlacementCountMismatchFailsClosed() {
-    var source = Mesh(
-      transparency: 1,
-      indices: [0, 2, 1, 0, 2, 1, 0, 2, 1]) with {
-      IndexLayout = StaticShapeIndexLayout.PlacementSortedTriangleList,
-      StoredIndexCount = 3
-    };
-
-    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
-      StaticShapeMeshBuilder.BuildBatches(Shape(source))));
-
-    Assert.That(exception!.Message,
-      Does.Contain("does not match the 9 retained permutation indices"));
-  }
-
-  private static StaticShape Shape(params StaticShapeMesh[] meshes) => new(
+  private static BoneShape Shape(params BoneShapeMesh[] meshes) => new(
     "shape",
     new Vector3(-1f),
     new Vector3(1f),
     meshes,
     []);
 
-  private static StaticShapeMesh Mesh(
+  private static BoneShapeMesh Mesh(
     string name = "mesh",
     int supportType = 0,
     string? ftxRef = "texture:ftx",
@@ -220,11 +200,11 @@ public class StaticShapeMeshBuilderTests {
     uint transparency = 0,
     uint textureFlags = 0,
     uint sides = 3,
-    StaticShapeVertex[]? vertices = null,
+    BoneShapeVertex[]? vertices = null,
     uint[]? indices = null
   ) {
     indices ??= [0, 2, 1];
-    return new StaticShapeMesh(
+    return new BoneShapeMesh(
       name,
       supportType,
       ftxRef,
@@ -235,19 +215,21 @@ public class StaticShapeMeshBuilderTests {
       vertices ?? TriangleVertices(),
       indices) {
       IndexLayout = StaticShapeIndexLayout.TriangleList,
-      StoredIndexCount = Convert.ToUInt32(indices.Length)
+      StoredIndexCount = Convert.ToUInt32(indices.Length),
+      LogicalIndexCount = Convert.ToUInt32(indices.Length)
     };
   }
 
-  private static StaticShapeVertex[] TriangleVertices() => [
+  private static BoneShapeVertex[] TriangleVertices() => [
     Vertex(new Vector3(0f, 0f, 0f)),
     Vertex(new Vector3(0f, 0f, -1f)),
     Vertex(new Vector3(1f, 0f, 0f)),
   ];
 
-  private static StaticShapeVertex Vertex(Vector3 position) => new(
+  private static BoneShapeVertex Vertex(Vector3 position) => new(
     position,
     Vector3.UnitY,
     Vector2.Zero,
-    Vector4.One);
+    Vector4.One,
+    new BoneShapeSkinning(-1, -1, -1, -1, 0, 0, 0, 0));
 }

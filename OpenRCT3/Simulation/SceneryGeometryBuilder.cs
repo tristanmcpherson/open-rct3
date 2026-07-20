@@ -66,7 +66,7 @@ public sealed record SceneryGeometryBuildResult(
     HiddenPlacementCount + UnresolvedPlacementCount + UnsupportedVisualPlacementCount;
 }
 
-/// <summary>Assembles resolved SID/SVD/SHS scenery into deterministic material batches.</summary>
+/// <summary>Assembles resolved SID/SVD/SHS/BSH scenery into deterministic material batches.</summary>
 public static class SceneryGeometryBuilder {
   /// <summary>
   /// Builds every visible, resolvable placement in park order. The lookup owns catalog selection;
@@ -81,6 +81,7 @@ public static class SceneryGeometryBuilder {
     terrain,
     lookup,
     StaticShapeMeshBuilder.BuildBatches,
+    BoneShapeMeshBuilder.BuildBatches,
     SceneryGeometryBuildLimits.Default);
 
   internal static SceneryGeometryBuildResult Build(
@@ -89,11 +90,27 @@ public static class SceneryGeometryBuilder {
     Func<SceneryPlacement, ResolvedSceneryObject?> lookup,
     Func<StaticShape, IReadOnlyList<StaticShapeMeshBatch>> adaptShape,
     SceneryGeometryBuildLimits limits
+  ) => Build(
+    park,
+    terrain,
+    lookup,
+    adaptShape,
+    BoneShapeMeshBuilder.BuildBatches,
+    limits);
+
+  internal static SceneryGeometryBuildResult Build(
+    Park park,
+    Terrain terrain,
+    Func<SceneryPlacement, ResolvedSceneryObject?> lookup,
+    Func<StaticShape, IReadOnlyList<StaticShapeMeshBatch>> adaptShape,
+    Func<BoneShape, IReadOnlyList<StaticShapeMeshBatch>> adaptBoneShape,
+    SceneryGeometryBuildLimits limits
   ) {
     ArgumentNullException.ThrowIfNull(park);
     ArgumentNullException.ThrowIfNull(terrain);
     ArgumentNullException.ThrowIfNull(lookup);
     ArgumentNullException.ThrowIfNull(adaptShape);
+    ArgumentNullException.ThrowIfNull(adaptBoneShape);
     limits.Validate();
 
     if (Convert.ToUInt64(park.SceneryPlacements.Count) > limits.MaximumPlacements)
@@ -101,7 +118,7 @@ public static class SceneryGeometryBuilder {
         $"placement count {park.SceneryPlacements.Count} exceeds " +
         $"the limit {limits.MaximumPlacements}");
 
-    var shapeCache = new Dictionary<StaticShape, IReadOnlyList<StaticShapeMeshBatch>>(
+    var shapeCache = new Dictionary<object, IReadOnlyList<StaticShapeMeshBatch>>(
       ReferenceEqualityComparer.Instance);
     var batchesByKey = new Dictionary<SceneryMaterialKey, MutableBatch>();
     var orderedBatches = new List<MutableBatch>();
@@ -134,17 +151,24 @@ public static class SceneryGeometryBuilder {
         }
         resolvedCount++;
 
-        var selected = SelectStaticLod(placement, resolved);
+        var selected = SelectShapeLod(placement, resolved);
         if (selected == null) {
           unsupportedCount++;
           continue;
         }
 
         if (!shapeCache.TryGetValue(selected.Shape, out var sourceBatches)) {
-          sourceBatches = adaptShape(selected.Shape)
-            ?? throw Invalid($"shape adapter returned null for '{selected.Shape.Name}'");
+          sourceBatches = selected.Shape switch {
+            StaticShape shape => adaptShape(shape),
+            BoneShape shape => adaptBoneShape(shape),
+            _ => throw Invalid(
+              $"shape '{selected.ShapeName}' has unsupported model type " +
+              $"'{selected.Shape.GetType().Name}'"),
+          };
+          if (sourceBatches == null)
+            throw Invalid($"shape adapter returned null for '{selected.ShapeName}'");
           if (sourceBatches.Count == 0)
-            throw Invalid($"shape adapter returned no batches for '{selected.Shape.Name}'");
+            throw Invalid($"shape adapter returned no batches for '{selected.ShapeName}'");
           shapeCache.Add(selected.Shape, sourceBatches);
         }
 
@@ -156,7 +180,7 @@ public static class SceneryGeometryBuilder {
             1,
             limits.MaximumSourceBatchInstances,
             "source batch instances");
-          ValidateSourceBatch(selected.Shape, sourceBatch);
+          ValidateSourceBatch(selected.ShapeName, sourceBatch);
 
           var key = new SceneryMaterialKey(
             placement.OverlayPath,
@@ -188,7 +212,7 @@ public static class SceneryGeometryBuilder {
           } else target = sharedTarget;
 
           AddTransformed(
-            selected.Shape,
+            selected.ShapeName,
             sourceBatch,
             transform,
             target,
@@ -251,7 +275,7 @@ public static class SceneryGeometryBuilder {
     return CalculateWorldAnchor(terrain, tileX, tileY, new PlacementAnchor(0.5d, 0.5d));
   }
 
-  private static ResolvedSceneryStaticLod? SelectStaticLod(
+  private static ResolvedShapeSelection? SelectShapeLod(
     SceneryPlacement placement,
     ResolvedSceneryObject resolved
   ) {
@@ -259,6 +283,8 @@ public static class SceneryGeometryBuilder {
       throw Invalid($"placement '{placement.ObjectKey}' resolved to a null SID");
     if (resolved.StaticLods == null)
       throw Invalid($"SID '{resolved.Item.Name}' resolved to a null static-LOD list");
+    if (resolved.BoneLods == null)
+      throw Invalid($"SID '{resolved.Item.Name}' resolved to a null bone-LOD list");
     if (string.IsNullOrWhiteSpace(resolved.Item.Name))
       throw Invalid("resolved SID has no name");
     if (!string.Equals(
@@ -289,46 +315,104 @@ public static class SceneryGeometryBuilder {
         throw Invalid(
           $"SID '{resolved.Item.Name}' resolved undeclared visual '{candidate.Visual.Name}'");
     }
+    foreach (var candidate in resolved.BoneLods) {
+      if (candidate == null || candidate.Visual == null ||
+          candidate.Lod == null || candidate.Shape == null)
+        throw Invalid($"SID '{resolved.Item.Name}' has a null resolved bone LOD");
+      if (!uniqueNames.Contains(candidate.Visual.Name))
+        throw Invalid(
+          $"SID '{resolved.Item.Name}' resolved undeclared visual '{candidate.Visual.Name}'");
+    }
 
     foreach (var declaredName in declaredNames) {
-      var candidates = resolved.StaticLods
+      var staticCandidates = resolved.StaticLods
         .Where(candidate => string.Equals(
           candidate.Visual.Name,
           declaredName,
           StringComparison.OrdinalIgnoreCase))
         .ToArray();
-      if (candidates.Length == 0) continue;
+      var boneCandidates = resolved.BoneLods
+        .Where(candidate => string.Equals(
+          candidate.Visual.Name,
+          declaredName,
+          StringComparison.OrdinalIgnoreCase))
+        .ToArray();
+      if (staticCandidates.Length == 0 && boneCandidates.Length == 0) continue;
 
-      var visual = candidates[0].Visual;
-      if (candidates.Any(candidate => !ReferenceEquals(candidate.Visual, visual)))
+      var visual = staticCandidates.Length > 0
+        ? staticCandidates[0].Visual
+        : boneCandidates[0].Visual;
+      if (staticCandidates.Any(candidate => !ReferenceEquals(candidate.Visual, visual)) ||
+          boneCandidates.Any(candidate => !ReferenceEquals(candidate.Visual, visual)))
         throw Invalid(
           $"SID '{resolved.Item.Name}' has conflicting SVD objects named '{declaredName}'");
       ValidateVisual(visual);
-      var staticLods = visual.Lods.Where(lod => lod.Type == SvdLodType.StaticShape).ToArray();
-      if (staticLods.Length != candidates.Length)
+      var shapeLods = visual.Lods.Where(lod =>
+        lod.Type is SvdLodType.StaticShape or SvdLodType.BoneShape).ToArray();
+      var candidateCount = staticCandidates.Length + boneCandidates.Length;
+      if (shapeLods.Length != candidateCount)
         throw Invalid(
-          $"SVD '{visual.Name}' resolved {candidates.Length} static LODs, expected " +
-          $"{staticLods.Length}");
+          $"SVD '{visual.Name}' resolved {candidateCount} supported shape LODs, expected " +
+          $"{shapeLods.Length}");
 
-      for (var index = 0; index < staticLods.Length; index++) {
-        var expected = staticLods[index];
-        var candidate = candidates[index];
-        if (!ReferenceEquals(candidate.Lod, expected) && candidate.Lod != expected)
-          throw Invalid(
-            $"SVD '{visual.Name}' static LOD order does not match its serialized order");
-        var shapeName = ParseTaggedReference(
-          expected.StaticShapeRef,
-          "shs",
-          $"SVD '{visual.Name}' LOD '{expected.Name}'");
-        if (!string.Equals(shapeName, candidate.Shape.Name, StringComparison.OrdinalIgnoreCase))
-          throw Invalid(
-            $"SVD '{visual.Name}' LOD '{expected.Name}' resolved shape " +
-            $"'{candidate.Shape.Name}', expected '{shapeName}'");
+      var ordered = new List<ResolvedShapeSelection>(shapeLods.Length);
+      var staticIndex = 0;
+      var boneIndex = 0;
+      foreach (var expected in shapeLods) {
+        switch (expected.Type) {
+          case SvdLodType.StaticShape:
+            if (staticIndex >= staticCandidates.Length)
+              throw Invalid(
+                $"SVD '{visual.Name}' is missing resolved static LOD '{expected.Name}'");
+            var staticCandidate = staticCandidates[staticIndex++];
+            if (!ReferenceEquals(staticCandidate.Lod, expected) &&
+                staticCandidate.Lod != expected)
+              throw Invalid(
+                $"SVD '{visual.Name}' static LOD order does not match its serialized order");
+            var staticShapeName = ParseTaggedReference(
+              expected.StaticShapeRef,
+              "shs",
+              $"SVD '{visual.Name}' LOD '{expected.Name}'");
+            if (!string.Equals(
+                  staticShapeName,
+                  staticCandidate.Shape.Name,
+                  StringComparison.OrdinalIgnoreCase))
+              throw Invalid(
+                $"SVD '{visual.Name}' LOD '{expected.Name}' resolved shape " +
+                $"'{staticCandidate.Shape.Name}', expected '{staticShapeName}'");
+            ordered.Add(new ResolvedShapeSelection(
+              visual, expected, staticShapeName, staticCandidate.Shape));
+            break;
+          case SvdLodType.BoneShape:
+            if (boneIndex >= boneCandidates.Length)
+              throw Invalid(
+                $"SVD '{visual.Name}' is missing resolved bone LOD '{expected.Name}'");
+            var boneCandidate = boneCandidates[boneIndex++];
+            if (!ReferenceEquals(boneCandidate.Lod, expected) && boneCandidate.Lod != expected)
+              throw Invalid(
+                $"SVD '{visual.Name}' bone LOD order does not match its serialized order");
+            var boneShapeName = ParseTaggedReference(
+              expected.BoneShapeRef,
+              "bsh",
+              $"SVD '{visual.Name}' LOD '{expected.Name}'");
+            if (!string.Equals(
+                  boneShapeName,
+                  boneCandidate.Shape.Name,
+                  StringComparison.OrdinalIgnoreCase))
+              throw Invalid(
+                $"SVD '{visual.Name}' LOD '{expected.Name}' resolved shape " +
+                $"'{boneCandidate.Shape.Name}', expected '{boneShapeName}'");
+            ordered.Add(new ResolvedShapeSelection(
+              visual, expected, boneShapeName, boneCandidate.Shape));
+            break;
+        }
       }
+      if (staticIndex != staticCandidates.Length || boneIndex != boneCandidates.Length)
+        throw Invalid($"SVD '{visual.Name}' resolved shape LOD types out of serialized order");
 
       // SID visual references are ordered alternatives, not additive components. Use exactly the
-      // first supported alternative and its first serialized static-shape LOD.
-      return candidates[0];
+      // first supported alternative and its first serialized supported shape LOD.
+      return ordered[0];
     }
 
     return null;
@@ -599,10 +683,10 @@ public static class SceneryGeometryBuilder {
     };
 
     // The executable writes these coefficients to row-vector matrix elements m01 and m21. The
-    // current SHS adapter and scenery quarter-turns map both axes with the opposite sign, so the
-    // equivalent local OpenRCT3 height plane is z += -m01*x + -m21*y. This also makes a direction-0
-    // full tile whose East corners rise four metres produce the physical plane z += x.
-    var result = new Vector2(-rct3Slope.M01, -rct3Slope.M21);
+    // native-to-park coordinate bridge preserves native X as OpenRCT3 X and maps native Z to OpenRCT3
+    // Y, so the equivalent local height plane is z += m01*x + m21*y. The placement quarter-turn then
+    // carries that plane into its physical world orientation.
+    var result = new Vector2(rct3Slope.M01, rct3Slope.M21);
     if (!IsFinite(result))
       throw Invalid($"placement '{placement.ObjectKey}' terrain slope is non-finite");
     return result;
@@ -773,31 +857,31 @@ public static class SceneryGeometryBuilder {
   }
 
   private static void ValidateSourceBatch(
-    StaticShape shape,
+    string shapeName,
     StaticShapeMeshBatch batch
   ) {
-    if (batch == null) throw Invalid($"shape adapter returned a null batch for '{shape.Name}'");
+    if (batch == null) throw Invalid($"shape adapter returned a null batch for '{shapeName}'");
     if (batch.Mesh == null)
-      throw Invalid($"shape adapter returned a null mesh for '{shape.Name}'");
+      throw Invalid($"shape adapter returned a null mesh for '{shapeName}'");
     if (batch.Mesh.Vertices == null || batch.Mesh.Vertices.Count == 0)
-      throw Invalid($"shape '{shape.Name}' batch {batch.SourceMeshIndex} has no vertices");
+      throw Invalid($"shape '{shapeName}' batch {batch.SourceMeshIndex} has no vertices");
     if (batch.Mesh.Indices == null || batch.Mesh.Indices.Count == 0 ||
         batch.Mesh.Indices.Count % 3 != 0)
       throw Invalid(
-        $"shape '{shape.Name}' batch {batch.SourceMeshIndex} is not a triangle list");
-    ValidateOptionalReference(batch.FtxRef, "ftx", shape.Name, batch.SourceMeshIndex);
-    ValidateOptionalReference(batch.TxsRef, "txs", shape.Name, batch.SourceMeshIndex);
+        $"shape '{shapeName}' batch {batch.SourceMeshIndex} is not a triangle list");
+    ValidateOptionalReference(batch.FtxRef, "ftx", shapeName, batch.SourceMeshIndex);
+    ValidateOptionalReference(batch.TxsRef, "txs", shapeName, batch.SourceMeshIndex);
     if (batch.Transparency > 2)
       throw Invalid(
-        $"shape '{shape.Name}' batch {batch.SourceMeshIndex} has invalid transparency " +
+        $"shape '{shapeName}' batch {batch.SourceMeshIndex} has invalid transparency " +
         $"{batch.Transparency}");
     if (batch.Sides is not 1 and not 3)
       throw Invalid(
-        $"shape '{shape.Name}' batch {batch.SourceMeshIndex} has invalid sides {batch.Sides}");
+        $"shape '{shapeName}' batch {batch.SourceMeshIndex} has invalid sides {batch.Sides}");
   }
 
   private static void AddTransformed(
-    StaticShape shape,
+    string shapeName,
     StaticShapeMeshBatch sourceBatch,
     PlacementTransform transform,
     MutableBatch target,
@@ -825,13 +909,13 @@ public static class SceneryGeometryBuilder {
       if (!IsFinite(vertex.Position) || !IsFinite(vertex.Normal) ||
           !IsFinite(vertex.TexCoord) || !IsFinite(vertex.Color))
         throw Invalid(
-          $"shape '{shape.Name}' batch {sourceBatch.SourceMeshIndex} vertex " +
+          $"shape '{shapeName}' batch {sourceBatch.SourceMeshIndex} vertex " +
           $"{vertexIndex} is non-finite");
       var position = TransformPosition(vertex.Position, transform);
       var normal = TransformNormal(vertex.Normal, transform);
       if (!IsFinite(position) || !IsFinite(normal))
         throw Invalid(
-          $"shape '{shape.Name}' batch {sourceBatch.SourceMeshIndex} vertex " +
+          $"shape '{shapeName}' batch {sourceBatch.SourceMeshIndex} vertex " +
           $"{vertexIndex} transforms to a non-finite value");
       target.Vertices.Add(new Vertex {
         Position = position,
@@ -846,7 +930,7 @@ public static class SceneryGeometryBuilder {
     foreach (var sourceIndex in source.Indices) {
       if (sourceIndex >= Convert.ToUInt32(source.Vertices.Count))
         throw Invalid(
-          $"shape '{shape.Name}' batch {sourceBatch.SourceMeshIndex} index {indexOffset} " +
+          $"shape '{shapeName}' batch {sourceBatch.SourceMeshIndex} index {indexOffset} " +
           $"references vertex {sourceIndex}, but only {source.Vertices.Count} exist");
       var combined = baseVertex + sourceIndex;
       if (combined > uint.MaxValue)
@@ -898,12 +982,13 @@ public static class SceneryGeometryBuilder {
   }
 
   private static Vector3 Rotate(Vector3 value, int direction) => direction switch {
-    // RCT3.exe's scenery routine uses 0 West, 1 North, 2 East, 3 South. This differs from
-    // path-record direction decoding, so use the preserved DAT ordinal rather than Edge.
-    0 => value,
-    1 => new Vector3(value.Y, -value.X, value.Z),
-    2 => new Vector3(-value.X, -value.Y, value.Z),
-    3 => new Vector3(-value.Y, value.X, value.Z),
+    // RCT3.exe's scenery routine uses 0 West, 1 North, 2 East, 3 South and constructs
+    // -(direction + 2) * pi/2. This differs from path-record direction decoding, so use the
+    // preserved DAT ordinal rather than Edge.
+    0 => new Vector3(-value.X, -value.Y, value.Z),
+    1 => new Vector3(-value.Y, value.X, value.Z),
+    2 => value,
+    3 => new Vector3(value.Y, -value.X, value.Z),
     _ => throw Invalid($"scenery serialized direction {direction} is unsupported"),
   };
 
@@ -979,6 +1064,13 @@ public static class SceneryGeometryBuilder {
 
   private static InvalidDataException Invalid(string message) =>
     new($"Scenery geometry is malformed: {message}.");
+
+  private sealed record ResolvedShapeSelection(
+    SceneryItemVisual Visual,
+    SceneryItemVisualLod Lod,
+    string ShapeName,
+    object Shape
+  );
 
   private sealed class MutableBatch(SceneryMaterialKey key) {
     public SceneryMaterialKey Key { get; } = key;

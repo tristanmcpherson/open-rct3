@@ -9,6 +9,7 @@ using DryIoc;
 using NLog;
 using OpenCobra.GDK;
 using OpenCobra.GDK.Game;
+using OpenCobra.GDK.GUI;
 using OpenCobra.GDK.Materials;
 using OpenCobra.GDK.Meshes;
 using OpenCobra.GDK.Platform;
@@ -16,6 +17,7 @@ using OpenRCT3.OpenGL;
 using OpenRCT3.Platforms;
 using OpenRCT3.Scenario;
 using OpenRCT3.Simulation;
+using Silk.NET.Input;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Threading;
@@ -48,6 +50,9 @@ public class Game : IGame {
   private IRenderer? renderer = ResolveRenderer(Game.IoC);
   private Scene? ownedScene;
   private Simulation.World? ownedWorld;
+  private readonly object cameraControllerGate = new();
+  private IInputContext? cameraInput;
+  private CameraController? cameraController;
   private bool disposed;
 
   public static Container IoC => IGame.IoC;
@@ -70,6 +75,37 @@ public class Game : IGame {
 
   internal void UnbindRenderer(IRenderer ownedRenderer) =>
     Interlocked.CompareExchange(ref renderer, null, ownedRenderer);
+
+  internal void BindCameraInput(IInputContext replacement) {
+    ArgumentNullException.ThrowIfNull(replacement);
+
+    CameraController? previous;
+    lock (cameraControllerGate) {
+      if (disposed) return;
+      previous = cameraController;
+      cameraController = new CameraController(
+        Scene.Camera,
+        replacement,
+        static () => Controller.CaptureKeyboard,
+        static () => Controller.CaptureMouse
+      );
+      cameraInput = replacement;
+    }
+    previous?.Dispose();
+  }
+
+  internal void UnbindCameraInput(IInputContext ownedInput) {
+    ArgumentNullException.ThrowIfNull(ownedInput);
+
+    CameraController? controller;
+    lock (cameraControllerGate) {
+      if (!ReferenceEquals(cameraInput, ownedInput)) return;
+      cameraInput = null;
+      controller = cameraController;
+      cameraController = null;
+    }
+    controller?.Dispose();
+  }
 
   /// <summary>
   /// Default frame rate of the game loop, in frames per second.
@@ -210,12 +246,14 @@ public class Game : IGame {
     // on XYZ keeps elevated maps aimed correctly, while the full 3D diagonal bounds the 45°-azimuth
     // "diamond" without the old buildable-area-only 1.8x heuristic (see CameraFramingTests).
     var framing = TerrainCameraFraming.Calculate(World.Terrain);
-    Scene.Camera.Frame(framing.Target, framing.Distance);
+    Scene.Camera.Frame(framing.Target, framing.Distance, framing.MinimumDistance);
     logger.Trace("Framed camera on terrain");
 
     // Keep normal gameplay unchanged while allowing native visual verification to capture the map
     // without an incidental editor panel obscuring it.
     if (GamePresentationOptions.ShowUserInterface) Scene.Windows.Add(new Editor());
+
+    BindCameraInput(IoC.Resolve<IInputContext>());
   }
 
   /// <summary>
@@ -278,6 +316,7 @@ public class Game : IGame {
 
       // Rendering can happen at arbitrary points between updates, and frames can
       // be dropped if the machine is slow.
+      lock (cameraControllerGate) cameraController?.Update(elapsed);
       Scene.Update(delta: elapsed);
       Volatile.Read(ref renderer)?.Render(Scene);
 
@@ -325,24 +364,36 @@ public class Game : IGame {
   }
 
   public void Dispose() {
-    if (disposed) return;
-    disposed = true;
-    var scene = ownedScene;
-    var world = ownedWorld;
-    ownedScene = null;
-    ownedWorld = null;
+    CameraController? controller;
+    Scene? scene;
+    Simulation.World? world;
+    lock (cameraControllerGate) {
+      if (disposed) return;
+      disposed = true;
+      scene = ownedScene;
+      world = ownedWorld;
+      controller = cameraController;
+      ownedScene = null;
+      ownedWorld = null;
+      cameraInput = null;
+      cameraController = null;
+    }
 
     // Dispose GPU-backed scene resources while the graphics context is still alive, then release
     // the world-owned texture catalog and simulation systems.
-    DisposeOwnedResources(
-      scene == null ? null : scene.Dispose,
-      world == null ? null : world.Dispose,
-      () => {
-        lifecycle.Stop();
-        resumeSignal.Set();
-        if (ReferenceEquals(Instance, this)) Instance = null;
-        GC.SuppressFinalize(this);
-      });
+    try {
+      controller?.Dispose();
+    } finally {
+      DisposeOwnedResources(
+        scene == null ? null : scene.Dispose,
+        world == null ? null : world.Dispose,
+        () => {
+          lifecycle.Stop();
+          resumeSignal.Set();
+          if (ReferenceEquals(Instance, this)) Instance = null;
+          GC.SuppressFinalize(this);
+        });
+    }
   }
 
   internal static void InitializeOwnedGame(

@@ -115,17 +115,19 @@ public class SceneryGeometryBuilderTests {
   }
 
   [Test]
-  public void Build_VisualRefsAreAlternativesAndUseFirstStaticLodOnly() {
+  public void Build_VisualRefsAndShapeLodsUseFirstSupportedSerializedEntries() {
     var terrain = new Terrain();
     var park = ParkWith(Placement("Item"));
     var billboard = Visual(
       "Billboard",
       Lod("billboard", SvdLodType.Billboard));
+    var boneLod = Lod(
+      "bones", SvdLodType.BoneShape, boneShapeRef: "Bones:bsh");
     var nearLod = Lod("near", SvdLodType.StaticShape, "Near:shs");
     var farLod = Lod("far", SvdLodType.StaticShape, "Far:shs");
     var threeDimensional = Visual(
       "ThreeDimensional",
-      Lod("bones", SvdLodType.BoneShape),
+      boneLod,
       nearLod,
       farLod);
     var alternateLod = Lod("alternate", SvdLodType.StaticShape, "Alternate:shs");
@@ -137,23 +139,28 @@ public class SceneryGeometryBuilderTests {
       new ResolvedSceneryStaticLod(threeDimensional, nearLod, Shape("Near", "Near:ftx")),
       new ResolvedSceneryStaticLod(threeDimensional, farLod, Shape("Far", "Far:ftx")),
       new ResolvedSceneryStaticLod(alternate, alternateLod, Shape("Alternate", "Alt:ftx")),
-    ]);
+    ]) {
+      BoneLods = [
+        new ResolvedSceneryBoneLod(
+          threeDimensional, boneLod, BoneShape("Bones", "Bone:ftx"))
+      ]
+    };
 
     var result = SceneryGeometryBuilder.Build(park, terrain, _ => resolved);
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(result.Batches, Has.Count.EqualTo(1));
-      Assert.That(result.Batches[0].Key.FtxRef, Is.EqualTo("Near:ftx"));
+      Assert.That(result.Batches[0].Key.FtxRef, Is.EqualTo("Bone:ftx"));
       Assert.That(result.VertexCount, Is.EqualTo(3));
       Assert.That(result.RenderedPlacementCount, Is.EqualTo(1));
       Assert.That(result.UnsupportedVisualPlacementCount, Is.Zero);
     }
   }
 
-  [TestCase(0, 1f, 2f, 1f, 2f)]
-  [TestCase(1, 2f, -1f, 2f, -1f)]
-  [TestCase(2, -1f, -2f, -1f, -2f)]
-  [TestCase(3, -2f, 1f, -2f, 1f)]
+  [TestCase(0, -1f, -2f, -1f, -2f)]
+  [TestCase(1, -2f, 1f, -2f, 1f)]
+  [TestCase(2, 1f, 2f, 1f, 2f)]
+  [TestCase(3, 2f, -1f, 2f, -1f)]
   public void Build_SerializedDirectionAppliesExecutableQuarterTurn(
     int direction,
     float expectedX,
@@ -186,6 +193,45 @@ public class SceneryGeometryBuilderTests {
         Is.EqualTo(new Vector3(anchor.X + expectedX, anchor.Y + expectedY, 3f)));
       Assert.That(vertex.Normal,
         Is.EqualTo(new Vector3(expectedNormalX, expectedNormalY, 0f)));
+    }
+  }
+
+  [TestCase(0, -1f, -3f, -4f, -6f)]
+  [TestCase(1, -3f, 1f, -6f, 4f)]
+  [TestCase(2, 1f, 3f, 4f, 6f)]
+  [TestCase(3, 3f, -1f, 6f, -4f)]
+  public void Build_RawNativeVertexUsesParkAxesAndExecutableYaw(
+    int direction,
+    float expectedX,
+    float expectedY,
+    float expectedNormalX,
+    float expectedNormalY
+  ) {
+    var terrain = new Terrain();
+    var placement = Placement("Item", Edge.South, serializedHeight: 0) with {
+      SerializedDirection = direction,
+      ForceAbsoluteHeight = true
+    };
+    var park = ParkWith(placement);
+    var lod = Lod("lod", SvdLodType.StaticShape, "Shape:shs");
+    var visual = Visual("Visual", lod);
+    var rawVertex = new StaticShapeVertex(
+      new Vector3(1f, 2f, 3f),
+      new Vector3(4f, 5f, 6f),
+      Vector2.Zero,
+      Vector4.One);
+    var shape = Shape("Shape", "Texture:ftx", rawVertex);
+    var resolved = Resolved(Item("Item", ["Visual:svd"]), visual, lod, shape);
+    var anchor = SceneryGeometryBuilder.CalculateTileAnchor(terrain, TileX, TileY);
+
+    var vertex = SceneryGeometryBuilder.Build(park, terrain, _ => resolved)
+      .Batches.Single().Mesh.Vertices[0];
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(vertex.Position,
+        Is.EqualTo(new Vector3(anchor.X + expectedX, anchor.Y + expectedY, 2f)));
+      Assert.That(vertex.Normal,
+        Is.EqualTo(new Vector3(expectedNormalX, expectedNormalY, 5f)));
     }
   }
 
@@ -223,8 +269,8 @@ public class SceneryGeometryBuilderTests {
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(vertex.Position,
-        Is.EqualTo(new Vector3(anchor.X + 1f, anchor.Y + 2f, 10.25f)));
-      Assert.That(vertex.Normal, Is.EqualTo(new Vector3(4f, 5f, 6f)));
+        Is.EqualTo(new Vector3(anchor.X - 1f, anchor.Y - 2f, 10.25f)));
+      Assert.That(vertex.Normal, Is.EqualTo(new Vector3(-4f, -5f, 6f)));
       Assert.That(vertex.TexCoord, Is.EqualTo(texCoord));
       Assert.That(vertex.Color, Is.EqualTo(color));
     }
@@ -448,16 +494,17 @@ public class SceneryGeometryBuilderTests {
     Assert.That(position.Z, Is.EqualTo(2.75f).Within(0.0001f));
   }
 
-  [TestCase(0, 3f)]
-  [TestCase(1, 4f)]
-  [TestCase(2, 1f)]
-  [TestCase(3, 0f)]
+  [TestCase(0, 1f)]
+  [TestCase(1, 0f)]
+  [TestCase(2, 3f)]
+  [TestCase(3, 4f)]
   public void Build_FullTileSmoothFenceFollowsPhysicalEastRisingPlane(
     int direction,
     float expectedZ
   ) {
     var terrain = new Terrain();
-    // Raw 400 means four world metres. The exact direction-0 invariant is z += local x.
+    // Raw 400 means four world metres. Every direction must retain the same physical east-rising
+    // terrain plane after its executable quarter-turn.
     SetCornerHeights(terrain, 0, 400, 0, 400);
     var placement = Placement("Item") with { SerializedDirection = direction };
     var item = Item(
@@ -481,10 +528,10 @@ public class SceneryGeometryBuilderTests {
     }
   }
 
-  [TestCase(0, 2f, 0f, -1f, 2f)]
-  [TestCase(1, 4f, -1f, 0f, 2f)]
-  [TestCase(2, 1f, 0f, -1.5f, 2f)]
-  [TestCase(3, 0f, -0.5f, 0f, 2f)]
+  [TestCase(0, 0f, 0f, -1f, 2f)]
+  [TestCase(1, 2f, -1f, 0f, 2f)]
+  [TestCase(2, 4f, 0f, -1.5f, 2f)]
+  [TestCase(3, 1f, -0.5f, 0f, 2f)]
   public void Build_RevisedSmoothFenceEdgeAppliesExecutableSlopeAndNormal(
     int direction,
     float expectedZ,
@@ -520,9 +567,9 @@ public class SceneryGeometryBuilderTests {
     }
   }
 
-  [TestCase(0, 2.5f, -1f, -1f, 2f)]
-  [TestCase(1, 3.25f, -1f, -1.5f, 2f)]
-  [TestCase(2, 0.75f, -0.5f, -1.5f, 2f)]
+  [TestCase(0, -0.5f, -1f, -1f, 2f)]
+  [TestCase(1, 2.75f, -1f, -1.5f, 2f)]
+  [TestCase(2, 4.25f, -0.5f, -1.5f, 2f)]
   [TestCase(3, 0.5f, -0.5f, -1f, 2f)]
   public void Build_RevisedSmoothFenceCornerAppliesExecutableSlopeAndNormal(
     int direction,
@@ -559,7 +606,7 @@ public class SceneryGeometryBuilderTests {
     }
   }
 
-  [TestCase(SidPosition.Wall, 0, SidFlags.SmoothHeight, 2f)]
+  [TestCase(SidPosition.Wall, 0, SidFlags.SmoothHeight, 0f)]
   [TestCase(SidPosition.Wall, 2, SidFlags.SmoothHeight, 1f)]
   [TestCase(
     SidPosition.Wall,
@@ -714,7 +761,7 @@ public class SceneryGeometryBuilderTests {
 
     var position = BuildFirstPosition(terrain, placement, item, localPosition);
 
-    AssertPosition(position, new Vector3(anchor.X + 2f, anchor.Y - 1f, 0f));
+    AssertPosition(position, new Vector3(anchor.X - 2f, anchor.Y + 1f, 0f));
   }
 
   [Test]
@@ -888,6 +935,46 @@ public class SceneryGeometryBuilderTests {
       Assert.That(adaptedMeshes.Select(mesh => mesh.State), Is.All.EqualTo(State.Disposed));
       Assert.That(result.Batches.Select(batch => batch.Mesh.State),
         Is.All.EqualTo(State.Uninitialized));
+    }
+  }
+
+  [Test]
+  public void Build_CachesBoneShapeAdaptationAndNeverUsesStaticAdapter() {
+    var terrain = new Terrain();
+    var park = ParkWith(Placement("First"), Placement("Second"));
+    var sharedShape = BoneShape("Shared", "Texture:ftx");
+    var first = BoneResolvedFor("First", sharedShape);
+    var second = BoneResolvedFor("Second", sharedShape);
+    var staticCalls = 0;
+    var boneCalls = 0;
+    var adaptedMeshes = new List<Mesh>();
+    IReadOnlyList<StaticShapeMeshBatch> AdaptStatic(StaticShape shape) {
+      staticCalls++;
+      throw new AssertionException("Static adapter should not run for a bone shape.");
+    }
+    IReadOnlyList<StaticShapeMeshBatch> AdaptBone(BoneShape shape) {
+      boneCalls++;
+      var batches = BoneShapeMeshBuilder.BuildBatches(shape);
+      adaptedMeshes.AddRange(batches.Select(batch => batch.Mesh));
+      return batches;
+    }
+
+    var result = SceneryGeometryBuilder.Build(
+      park,
+      terrain,
+      placement => placement.ObjectKey == "First" ? first : second,
+      AdaptStatic,
+      AdaptBone,
+      SceneryGeometryBuildLimits.Default);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(staticCalls, Is.Zero);
+      Assert.That(boneCalls, Is.EqualTo(1));
+      Assert.That(result.Batches, Has.Count.EqualTo(1));
+      Assert.That(result.Batches[0].Key.FtxRef, Is.EqualTo("Texture:ftx"));
+      Assert.That(result.Batches[0].Mesh.Vertices, Has.Count.EqualTo(6));
+      Assert.That(result.SourceBatchInstanceCount, Is.EqualTo(2));
+      Assert.That(adaptedMeshes.Select(mesh => mesh.State), Is.All.EqualTo(State.Disposed));
     }
   }
 
@@ -1071,7 +1158,37 @@ public class SceneryGeometryBuilderTests {
     var exception = Assert.Throws<InvalidDataException>(new Action(() =>
       SceneryGeometryBuilder.Build(park, terrain, _ => resolved)));
 
-    Assert.That(exception!.Message, Does.Contain("resolved 1 static LODs, expected 2"));
+    Assert.That(exception!.Message,
+      Does.Contain("resolved 1 supported shape LODs, expected 2"));
+  }
+
+  [Test]
+  public void Build_MixedShapeLodOrderMismatchFailsClosed() {
+    var terrain = new Terrain();
+    var park = ParkWith(Placement("Item"));
+    var firstBoneLod = Lod(
+      "first-bone", SvdLodType.BoneShape, boneShapeRef: "FirstBone:bsh");
+    var staticLod = Lod("static", SvdLodType.StaticShape, "Static:shs");
+    var secondBoneLod = Lod(
+      "second-bone", SvdLodType.BoneShape, boneShapeRef: "SecondBone:bsh");
+    var visual = Visual("Visual", firstBoneLod, staticLod, secondBoneLod);
+    var resolved = new ResolvedSceneryObject(
+      Item("Item", ["Visual:svd"]),
+      [new ResolvedSceneryStaticLod(
+        visual, staticLod, Shape("Static", "Static:ftx"))]) {
+      BoneLods = [
+        new ResolvedSceneryBoneLod(
+          visual, secondBoneLod, BoneShape("SecondBone", "Second:ftx")),
+        new ResolvedSceneryBoneLod(
+          visual, firstBoneLod, BoneShape("FirstBone", "First:ftx"))
+      ]
+    };
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      SceneryGeometryBuilder.Build(park, terrain, _ => resolved)));
+
+    Assert.That(exception!.Message,
+      Does.Contain("bone LOD order does not match its serialized order"));
   }
 
   [Test]
@@ -1212,6 +1329,15 @@ public class SceneryGeometryBuilderTests {
     return Resolved(Item(itemName, [$"{visual.Name}:svd"]), visual, lod, shape);
   }
 
+  private static ResolvedSceneryObject BoneResolvedFor(string itemName, BoneShape shape) {
+    var lod = Lod(
+      "lod", SvdLodType.BoneShape, boneShapeRef: $"{shape.Name}:bsh");
+    var visual = Visual($"{itemName}Visual", lod);
+    return new ResolvedSceneryObject(Item(itemName, [$"{visual.Name}:svd"]), []) {
+      BoneLods = [new ResolvedSceneryBoneLod(visual, lod, shape)]
+    };
+  }
+
   private static ResolvedSceneryObject Resolved(
     SceneryItem item,
     SceneryItemVisual visual,
@@ -1260,12 +1386,13 @@ public class SceneryGeometryBuilderTests {
   private static SceneryItemVisualLod Lod(
     string name,
     SvdLodType type,
-    string? staticShapeRef = null
+    string? staticShapeRef = null,
+    string? boneShapeRef = null
   ) => new(
     name,
     type,
     staticShapeRef,
-    null,
+    boneShapeRef,
     null,
     null,
     new SceneryVisualBillboardSettings(0f, 0f, 0f, 0f, 0f, 0f),
@@ -1281,6 +1408,30 @@ public class SceneryGeometryBuilderTests {
     Vector3.Zero,
     Vector3.One,
     [SourceMesh("mesh", ftxRef, firstVertex: firstVertex)],
+    []);
+
+  private static BoneShape BoneShape(string name, string ftxRef) => new(
+    name,
+    Vector3.Zero,
+    Vector3.One,
+    [new BoneShapeMesh(
+      "mesh",
+      0,
+      ftxRef,
+      "SIOpaque:txs",
+      0,
+      0,
+      3,
+      [
+        BoneVertex(Vector3.Zero),
+        BoneVertex(Vector3.UnitX),
+        BoneVertex(Vector3.UnitY),
+      ],
+      new uint[] { 0, 1, 2 }) {
+      IndexLayout = StaticShapeIndexLayout.TriangleList,
+      StoredIndexCount = 3,
+      LogicalIndexCount = 3
+    }],
     []);
 
   private static StaticShapeMesh SourceMesh(
@@ -1317,12 +1468,19 @@ public class SceneryGeometryBuilderTests {
     Vector2? texCoord = null,
     Vector4? color = null
   ) => new(
-    // StaticShapeMeshBuilder applies (-z, x, y); this is its exact inverse fixture transform.
-    new Vector3(openPosition.Y, openPosition.Z, -openPosition.X),
+    // StaticShapeMeshBuilder applies (x, z, y); this is its exact inverse fixture transform.
+    new Vector3(openPosition.X, openPosition.Z, openPosition.Y),
     new Vector3(
-      openNormal?.Y ?? 0f,
+      openNormal?.X ?? 0f,
       openNormal?.Z ?? 1f,
-      -(openNormal?.X ?? 0f)),
+      openNormal?.Y ?? 0f),
     texCoord ?? Vector2.Zero,
     color ?? Vector4.One);
+
+  private static BoneShapeVertex BoneVertex(Vector3 position) => new(
+    new Vector3(position.X, position.Z, position.Y),
+    Vector3.UnitY,
+    Vector2.Zero,
+    Vector4.One,
+    new BoneShapeSkinning(-1, -1, -1, -1, 0, 0, 0, 0));
 }

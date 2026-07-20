@@ -1,4 +1,4 @@
-// Static Shape Mesh Builder
+// Bone Shape Mesh Builder
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 
@@ -10,31 +10,22 @@ using System.Numerics;
 
 namespace OpenRCT3.Simulation;
 
-/// <summary>Builds renderable meshes from decoded RCT3 static-shape resources.</summary>
+/// <summary>Builds rest-pose render meshes from decoded RCT3 bone-shape resources.</summary>
 /// <remarks>
-/// RCT3 stores geometry in its native
-/// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/ovlmake/OvlCompiler_ReadMe.txt#L64-L67">
-/// left-handed, Y-up coordinate system</see>. The authoritative
-/// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/lib3DHelp/matrix.cpp#L169-L214">
-/// rct3-importer orientation transform</see> maps right-handed, Z-up authoring coordinates
-/// <c>(x, y, z)</c> to RCT3 coordinates <c>(y, z, -x)</c>. Decoded vertices are already in that native
-/// RCT3 frame. Park terrain and DAT placements retain native horizontal X/Z as OpenRCT3 X/Y, so the
-/// renderer bridge is <c>(X, Y, Z) -&gt; (X, Z, Y)</c>, not the inverse authoring transform. This axis
-/// swap has a negative determinant, so each triangle swaps its first two indices, matching
-/// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/lib3DHelp/3DLoader.cpp#L257-L287">
-/// rct3-importer's mirrored-transform handling</see> and preserving OpenRCT3's CCW winding. The
-/// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/include/vertex.h#L44-L49">
-/// serialized vertex</see> stores UVs and colors directly, and
-/// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/libOVLng/ManagerSHS.cpp#L118-L160">
-/// ManagerSHS</see> copies the full vertex unchanged. This adapter therefore preserves those
-/// fields; texture-image orientation remains the texture/material layer's responsibility.
+/// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/include/vertex.h">
+/// VERTEX2</see> stores position, normal, UV, color, and skinning bytes together. The authoritative
+/// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/libOVLng/ManagerBSH.cpp">
+/// ManagerBSH</see> copies those vertices directly and stores bone matrices separately. This adapter
+/// deliberately renders only the stored vertex rest pose. It does not apply bone matrices or infer
+/// animation semantics. Coordinates and winding use the same native RCT3-to-park conversion as static
+/// shapes.
 /// </remarks>
-public static class StaticShapeMeshBuilder {
+public static class BoneShapeMeshBuilder {
   /// <summary>
   /// Converts each decoded source mesh into one material-selectable render batch, retaining source
-  /// order.
+  /// order and one deterministic triangle order for placement-sorted meshes.
   /// </summary>
-  public static IReadOnlyList<StaticShapeMeshBatch> BuildBatches(StaticShape shape) {
+  public static IReadOnlyList<StaticShapeMeshBatch> BuildBatches(BoneShape shape) {
     ArgumentNullException.ThrowIfNull(shape);
     if (shape.Meshes == null || shape.Meshes.Count == 0)
       throw Invalid(shape, null, "contains no meshes");
@@ -53,8 +44,8 @@ public static class StaticShapeMeshBuilder {
   }
 
   private static StaticShapeMeshBatch BuildBatch(
-    StaticShape shape,
-    StaticShapeMesh source,
+    BoneShape shape,
+    BoneShapeMesh source,
     int meshIndex
   ) {
     if (source.Vertices == null || source.Vertices.Count == 0)
@@ -93,8 +84,8 @@ public static class StaticShapeMeshBuilder {
       ValidateIndex(shape, meshIndex, source.Indices[index + 1], index + 1, vertices.Count);
       ValidateIndex(shape, meshIndex, source.Indices[index + 2], index + 2, vertices.Count);
 
-      // The coordinate transform changes handedness. Match rct3-importer by swapping the first two
-      // vertices of each triangle so the transformed geometry remains counter-clockwise.
+      // The coordinate transform changes handedness. Swap the first two vertices so the rest-pose
+      // geometry stays counter-clockwise, exactly as for decoded static shapes.
       indices.Add(source.Indices[index + 1]);
       indices.Add(source.Indices[index]);
       indices.Add(source.Indices[index + 2]);
@@ -114,13 +105,18 @@ public static class StaticShapeMeshBuilder {
   }
 
   private static void ValidateIndexLayout(
-    StaticShape shape,
-    StaticShapeMesh source,
+    BoneShape shape,
+    BoneShapeMesh source,
     int meshIndex
   ) {
     var physicalCount = Convert.ToUInt64(source.Indices.Count);
+    if (physicalCount != source.LogicalIndexCount)
+      throw Invalid(shape, meshIndex,
+        $"logical index count {source.LogicalIndexCount} does not match " +
+        $"the {physicalCount} retained indices");
     if (source.PlacementSortPermutations == null)
       throw Invalid(shape, meshIndex, "has a null placement sort permutation list");
+
     switch (source.IndexLayout) {
       case StaticShapeIndexLayout.TriangleList:
         if (source.PlacementSortPermutations.Count != 0)
@@ -153,17 +149,23 @@ public static class StaticShapeMeshBuilder {
   }
 
   private static void ValidatePlacementSortPermutations(
-    StaticShape shape,
-    StaticShapeMesh source,
+    BoneShape shape,
+    BoneShapeMesh source,
     int meshIndex
   ) {
+    if (source.StoredIndexCount % 3 != 0)
+      throw Invalid(shape, meshIndex,
+        $"stored sorted-placement index count {source.StoredIndexCount} is not a triangle list");
     if (source.PlacementSortPermutations.Count != 3)
       throw Invalid(shape, meshIndex,
         $"has {source.PlacementSortPermutations.Count} placement sort permutations, expected 3");
+    if (source.PlacementSortPermutations[0] == null)
+      throw Invalid(shape, meshIndex, "placement sort permutation 0 is null");
     if (!source.Indices.SequenceEqual(source.PlacementSortPermutations[0]))
       throw Invalid(shape, meshIndex,
         "default indices do not match the first placement sort permutation");
 
+    BoneShapeTriangle[]? expectedTriangles = null;
     var permutationIndex = 0;
     foreach (var permutation in source.PlacementSortPermutations) {
       if (permutation == null || Convert.ToUInt64(permutation.Count) != source.StoredIndexCount)
@@ -175,12 +177,28 @@ public static class StaticShapeMeshBuilder {
         ValidateIndex(shape, meshIndex, vertexIndex, indexOffset, source.Vertices.Count);
         indexOffset++;
       }
+      var triangles = ReadSortedTriangles(permutation);
+      expectedTriangles ??= triangles;
+      if (!expectedTriangles.AsSpan().SequenceEqual(triangles))
+        throw Invalid(shape, meshIndex,
+          $"placement sort permutation {permutationIndex} does not contain the same triangles");
       permutationIndex++;
     }
   }
 
+  private static BoneShapeTriangle[] ReadSortedTriangles(IReadOnlyList<uint> indices) {
+    var triangles = new BoneShapeTriangle[indices.Count / 3];
+    for (var triangleIndex = 0; triangleIndex < triangles.Length; triangleIndex++) {
+      var indexOffset = triangleIndex * 3;
+      triangles[triangleIndex] = new BoneShapeTriangle(
+        indices[indexOffset], indices[indexOffset + 1], indices[indexOffset + 2]);
+    }
+    Array.Sort(triangles);
+    return triangles;
+  }
+
   private static void ValidateIndex(
-    StaticShape shape,
+    BoneShape shape,
     int meshIndex,
     uint vertexIndex,
     int indexOffset,
@@ -206,24 +224,21 @@ public static class StaticShapeMeshBuilder {
     float.IsFinite(value.Z) && float.IsFinite(value.W);
 
   private static InvalidDataException Invalid(
-    StaticShape shape,
+    BoneShape shape,
     int? meshIndex,
     string message
   ) {
     var mesh = meshIndex.HasValue ? $" mesh {meshIndex.Value}" : string.Empty;
-    return new InvalidDataException($"Static shape '{shape.Name}'{mesh} {message}.");
+    return new InvalidDataException($"Bone shape '{shape.Name}'{mesh} {message}.");
+  }
+
+  private readonly record struct BoneShapeTriangle(uint A, uint B, uint C)
+    : IComparable<BoneShapeTriangle> {
+    public int CompareTo(BoneShapeTriangle other) {
+      var a = A.CompareTo(other.A);
+      if (a != 0) return a;
+      var b = B.CompareTo(other.B);
+      return b != 0 ? b : C.CompareTo(other.C);
+    }
   }
 }
-
-/// <summary>A source static-shape mesh plus the metadata needed to choose its material.</summary>
-public sealed record StaticShapeMeshBatch(
-  int SourceMeshIndex,
-  string SourceMeshName,
-  int SupportType,
-  string? FtxRef,
-  string? TxsRef,
-  uint Transparency,
-  uint TextureFlags,
-  uint Sides,
-  Mesh Mesh
-);

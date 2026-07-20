@@ -979,6 +979,33 @@ public class SceneryGeometryBuilderTests {
   }
 
   [Test]
+  public void Build_PersistedAnimationStateKeepsRestPoseUntilSamplingIsProven() {
+    var terrain = new Terrain();
+    var shape = BoneShape("Shared", "Texture:ftx");
+    var animation = new BoneAnimation(
+      "Move",
+      10f,
+      [new BoneAnimationBone(
+        "root",
+        [new BoneAnimationKeyframe(0f, new Vector3(100, 200, 300))],
+        [])]);
+    var resolved = BoneResolvedFor("Item", shape, [animation]);
+    var restPlacement = Placement("Item");
+    var savedPlacement = restPlacement with {
+      AnimationStates = [new SceneryAnimationState(true, 0, 5f, false)]
+    };
+
+    var rest = SceneryGeometryBuilder.Build(
+      ParkWith(restPlacement), terrain, _ => resolved);
+    var saved = SceneryGeometryBuilder.Build(
+      ParkWith(savedPlacement), terrain, _ => resolved);
+
+    Assert.That(
+      saved.Batches.Single().Mesh.Vertices.Select(value => value.Position),
+      Is.EqualTo(rest.Batches.Single().Mesh.Vertices.Select(value => value.Position)));
+  }
+
+  [Test]
   public void Build_FlexiColoursArePartOfOpaqueMaterialIdentity() {
     var terrain = new Terrain();
     var first = Placement("First") with {
@@ -1329,12 +1356,18 @@ public class SceneryGeometryBuilderTests {
     return Resolved(Item(itemName, [$"{visual.Name}:svd"]), visual, lod, shape);
   }
 
-  private static ResolvedSceneryObject BoneResolvedFor(string itemName, BoneShape shape) {
+  private static ResolvedSceneryObject BoneResolvedFor(
+    string itemName,
+    BoneShape shape,
+    IReadOnlyList<BoneAnimation>? animations = null
+  ) {
     var lod = Lod(
       "lod", SvdLodType.BoneShape, boneShapeRef: $"{shape.Name}:bsh");
     var visual = Visual($"{itemName}Visual", lod);
     return new ResolvedSceneryObject(Item(itemName, [$"{visual.Name}:svd"]), []) {
-      BoneLods = [new ResolvedSceneryBoneLod(visual, lod, shape)]
+      BoneLods = [new ResolvedSceneryBoneLod(visual, lod, shape) {
+        Animations = animations ?? []
+      }]
     };
   }
 

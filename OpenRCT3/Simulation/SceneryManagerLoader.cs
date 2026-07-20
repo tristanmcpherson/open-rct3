@@ -9,6 +9,8 @@ namespace OpenRCT3.Simulation;
 
 /// <summary>Converts ordinary RCT3 DAT scenery items into renderable park placements.</summary>
 internal static class SceneryManagerLoader {
+  private const int MaximumAnimationStateCount = 64 * 1024;
+
   public static void Load(
     Park park,
     Terrain terrain,
@@ -57,6 +59,7 @@ internal static class SceneryManagerLoader {
         $"Decoded SceneryItem entry {source.EntryId} has a non-finite HEIGHTADJUST value.");
 
     var colours = source.FlexiColourField;
+    var animationStates = ConvertAnimationStates(source);
     return new SceneryPlacement(
       databaseEntry.SymbolName,
       field.PosX,
@@ -78,7 +81,32 @@ internal static class SceneryManagerLoader {
       FlexiColour1 = colours.Col1,
       FlexiColour2 = colours.Col2,
       FrameOffset = source.FrameOffset,
+      AnimationStates = animationStates,
     };
+  }
+
+  private static IReadOnlyList<SceneryAnimationState> ConvertAnimationStates(
+    DatSceneryItemData source
+  ) {
+    if (source.AnimInfoList.Count > MaximumAnimationStateCount)
+      throw new InvalidDataException(
+        $"Decoded SceneryItem entry {source.EntryId} has {source.AnimInfoList.Count} animation " +
+        $"states, exceeding the limit {MaximumAnimationStateCount}.");
+
+    var states = new SceneryAnimationState[source.AnimInfoList.Count];
+    for (var index = 0; index < states.Length; index++) {
+      var value = source.AnimInfoList[index];
+      if (!float.IsFinite(value.CurrentAnimationTime))
+        throw new InvalidDataException(
+          $"Decoded SceneryItem entry {source.EntryId} animation state {index} has a non-finite " +
+          "current time.");
+      states[index] = new SceneryAnimationState(
+        value.AutoLoop,
+        value.CurrentAnimation,
+        value.CurrentAnimationTime,
+        value.MarkedForDeletion);
+    }
+    return Array.AsReadOnly(states);
   }
 
   private static void ValidatePlacementSingles(

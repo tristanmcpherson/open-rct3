@@ -87,6 +87,93 @@ public class PathMeshBuilderTests {
   }
 
   [Test]
+  public void BuildBatches_GroupsByKindAndSurfaceNameInDeterministicOrder() {
+    var terrain = new Terrain(4, 1, 0);
+    var park = new Park(buildableWidth: 4, buildableHeight: 1);
+    park.PathPlacements.Add(new PathPlacement(3, 0, new PathTile {
+      IsQueue = true,
+      SurfaceSystemName = "QueueBlue",
+    }));
+    park.PathPlacements.Add(new PathPlacement(2, 0, new PathTile {
+      SurfaceSystemName = "Stone",
+    }));
+    park.PathPlacements.Add(new PathPlacement(1, 0, new PathTile {
+      SurfaceSystemName = "Brick",
+    }));
+    park.PathPlacements.Add(new PathPlacement(0, 0, new PathTile {
+      IsQueue = true,
+      SurfaceSystemName = "Brick",
+    }));
+
+    var batches = PathMeshBuilder.BuildBatches(
+      park, terrain, Vector4.UnitX, Vector4.UnitY);
+
+    Assert.That(batches.Select(batch => (batch.Kind, batch.SurfaceSystemName)), Is.EqualTo(new[] {
+      (PathMaterialKind.Ordinary, "Brick"),
+      (PathMaterialKind.Ordinary, "Stone"),
+      (PathMaterialKind.Queue, "Brick"),
+      (PathMaterialKind.Queue, "QueueBlue"),
+    }));
+    Assert.That(batches.All(batch => batch.Mesh.Vertices.Count == 4), Is.True);
+    Assert.That(batches.Take(2).SelectMany(batch => batch.Mesh.Vertices)
+      .All(vertex => vertex.Color == Vector4.UnitX), Is.True);
+    Assert.That(batches.Skip(2).SelectMany(batch => batch.Mesh.Vertices)
+      .All(vertex => vertex.Color == Vector4.UnitY), Is.True);
+  }
+
+  [Test]
+  public void BuildBatches_RetainsPerTileSurfaceColoursInGeometryOrder() {
+    var terrain = new Terrain(2, 1, 0);
+    var park = new Park(buildableWidth: 2, buildableHeight: 1);
+    var westColours = new PathSurfaceColours(1, 2, 3);
+    var eastColours = new PathSurfaceColours(4, 5, 6);
+    park.PathPlacements.Add(new PathPlacement(1, 0, new PathTile {
+      IsQueue = true,
+      SurfaceSystemName = "QueueStone",
+      SurfaceColours = eastColours,
+    }));
+    park.PathPlacements.Add(new PathPlacement(0, 0, new PathTile {
+      IsQueue = true,
+      SurfaceSystemName = "QueueStone",
+      SurfaceColours = westColours,
+    }));
+
+    var batch = PathMeshBuilder.BuildBatches(
+      park, terrain, Vector4.One, Vector4.UnitY).Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(batch.Kind, Is.EqualTo(PathMaterialKind.Queue));
+      Assert.That(batch.SurfaceSystemName, Is.EqualTo("QueueStone"));
+      Assert.That(batch.SurfaceColours,
+        Is.EqualTo(new PathSurfaceColours?[] { westColours, eastColours }));
+      Assert.That(batch.Mesh.Vertices, Has.Count.EqualTo(8));
+      Assert.That(batch.Mesh.Indices, Has.Count.EqualTo(12));
+      Assert.That(batch.Mesh.Vertices[0].Position.X,
+        Is.LessThan(batch.Mesh.Vertices[4].Position.X));
+    }
+  }
+
+  [Test]
+  public void BuildBatches_SeparatesUnresolvedOrdinaryAndQueueSurfaces() {
+    var terrain = new Terrain(2, 1, 0);
+    var park = new Park(buildableWidth: 2, buildableHeight: 1);
+    park.PathPlacements.Add(new PathPlacement(0, 0, new PathTile()));
+    park.PathPlacements.Add(new PathPlacement(1, 0, new PathTile { IsQueue = true }));
+
+    var batches = PathMeshBuilder.BuildBatches(
+      park, terrain, Vector4.One, Vector4.UnitY, "Park Paths");
+
+    Assert.That(batches.Select(batch => (batch.Kind, batch.SurfaceSystemName)), Is.EqualTo(new[] {
+      (PathMaterialKind.Ordinary, (string?)null),
+      (PathMaterialKind.Queue, (string?)null),
+    }));
+    Assert.That(batches.Select(batch => batch.Mesh.Name), Is.EqualTo(new[] {
+      "Park Paths Ordinary Unresolved",
+      "Park Paths Queue Unresolved",
+    }));
+  }
+
+  [Test]
   public void Build_RejectsPathOutsideTerrain() {
     var terrain = new Terrain(1, 1, 0);
     var park = new Park(buildableWidth: 1, buildableHeight: 1);

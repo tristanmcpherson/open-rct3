@@ -4,33 +4,18 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using System.Collections.Immutable;
 using System.Linq;
-using System.Resources;
 
 namespace OpenCobra.Analyzers;
-
-internal static class Resources {
-  public static readonly ResourceManager ResourceManager = new(typeof(Resources));
-
-  public const string Title = "Unowned reference accessed unsafely";
-  public const string MessageFormat = "{0}";
-  public const string Description =
-      "Fields marked with [Unowned] should use WeakReference<T> and " +
-      "should always check if the target is alive before accessing it.";
-}
 
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public class UnownedReferenceAnalyzer : DiagnosticAnalyzer {
   public static readonly string UnownedRefId = "GDK001";
 
-  private static readonly LocalizableString Title =
-      new LocalizableResourceString(nameof(Resources.Title),
-          Resources.ResourceManager, typeof(Resources));
-  private static readonly LocalizableString MessageFormat =
-      new LocalizableResourceString(nameof(Resources.MessageFormat),
-          Resources.ResourceManager, typeof(Resources));
-  private static readonly LocalizableString Description =
-      new LocalizableResourceString(nameof(Resources.Description),
-          Resources.ResourceManager, typeof(Resources));
+  private const string Title = "Unowned reference accessed unsafely";
+  private const string MessageFormat = "{0}";
+  private const string Description =
+      "Fields marked with [Unowned] should use WeakReference<T> and " +
+      "should always check if the target is alive before accessing it.";
 
   private const string Category = "Design";
 

@@ -100,6 +100,7 @@ public class CameraControllerTests {
   [Test]
   public void Update_RightMouseDragOrbitsWithoutChangingFraming() {
     var camera = CreateCamera();
+    var expectedCamera = CreateCamera();
     var input = new TestInputContext();
     using var controller = new CameraController(
       camera,
@@ -107,20 +108,46 @@ public class CameraControllerTests {
       static () => false,
       static () => false
     );
-    var initialEye = camera.Eye;
     var initialTarget = camera.Target;
 
     input.Mouse.MoveTo(new Vector2(100f, 100f));
     input.Mouse.Press(MouseButton.Right);
-    input.Mouse.MoveTo(new Vector2(220f, 160f));
+    input.Mouse.MoveTo(new Vector2(220f, 100f));
     controller.Update(TimeSpan.Zero);
+    expectedCamera.Orbit(120f * CameraController.MouseOrbitRadiansPerPixel);
 
     Assert.Multiple(new Action(() => {
       Assert.That(camera.Target, Is.EqualTo(initialTarget));
       Assert.That(camera.Distance, Is.EqualTo(100f).Within(Epsilon));
-      Assert.That(Vector3.Distance(camera.Eye, initialEye), Is.GreaterThan(0f));
-      Assert.That(camera.Eye.Z, Is.EqualTo(initialEye.Z).Within(Epsilon));
+      Assert.That(
+        Vector3.Distance(camera.Eye, expectedCamera.Eye),
+        Is.EqualTo(0f).Within(Epsilon)
+      );
     }));
+  }
+
+  [Test]
+  public void Update_UpwardRightMouseDragRaisesCameraElevation() {
+    var camera = CreateCamera();
+    var expectedCamera = CreateCamera();
+    var input = new TestInputContext();
+    using var controller = new CameraController(
+      camera,
+      input,
+      static () => false,
+      static () => false
+    );
+
+    input.Mouse.MoveTo(new Vector2(100f, 220f));
+    input.Mouse.Press(MouseButton.Right);
+    input.Mouse.MoveTo(new Vector2(100f, 100f));
+    controller.Update(TimeSpan.Zero);
+    expectedCamera.OrbitElevation(120f * CameraController.MouseOrbitRadiansPerPixel);
+
+    Assert.That(
+      Vector3.Distance(camera.Eye, expectedCamera.Eye),
+      Is.EqualTo(0f).Within(Epsilon)
+    );
   }
 
   [Test]
@@ -171,10 +198,10 @@ public class CameraControllerTests {
     input.Mouse.Press(MouseButton.Right);
     input.Mouse.MoveTo(new Vector2(float.NaN, 0f));
     input.Mouse.MoveTo(Vector2.Zero);
-    input.Mouse.MoveTo(new Vector2(float.MaxValue, 0f));
-    input.Mouse.MoveTo(new Vector2(float.MaxValue, 1f));
+    input.Mouse.MoveTo(new Vector2(float.MaxValue, -float.MaxValue));
     controller.Update(TimeSpan.Zero);
     expectedCamera.Orbit(CameraController.MaxPendingMouseOrbitRadians);
+    expectedCamera.OrbitElevation(CameraController.MaxPendingMouseOrbitRadians);
 
     Assert.That(
       Vector3.Distance(camera.Eye, expectedCamera.Eye),

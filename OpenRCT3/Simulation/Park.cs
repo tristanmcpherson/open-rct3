@@ -7,6 +7,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using OpenRCT3.Serialization;
 
 namespace OpenRCT3.Simulation;
 
@@ -97,6 +98,21 @@ public class Park {
   /// not a separate "scenery layer" type — see <c>.agents/plans/features/scenery-placement-registry.md</c>.
   /// </summary>
   public List<SceneryPlacement> SceneryPlacements { get; } = [];
+
+  /// <summary>
+  /// Semantic ride-track placements decoded from DAT <c>TrackPiece</c> entries. Their visible meshes
+  /// remain owned by the linked entries in <see cref="SceneryPlacements"/>.
+  /// </summary>
+  public List<RideTrackPlacement> RideTrackPlacements { get; } = [];
+
+  /// <summary>Semantic DAT <c>Track</c> roots, without generated or duplicated geometry.</summary>
+  public List<RideTrack> RideTracks { get; } = [];
+
+  /// <summary>Semantic DAT <c>TrackSegment</c> records linked to their ride-track roots.</summary>
+  public List<RideTrackSegment> RideTrackSegments { get; } = [];
+
+  /// <summary>Decoded DAT ride-instance identities awaiting the semantic ride graph.</summary>
+  internal List<DatTrackedRideInstanceData> TrackedRideInstances { get; } = [];
 
   public Park(int buildableWidth = DefaultMapSize, int buildableHeight = DefaultMapSize) {
     float halfWidth = (buildableWidth * TileSize) / 2.0f;

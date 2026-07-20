@@ -109,6 +109,87 @@ public class SceneryVisualResolverTests {
   }
 
   [Test]
+  public void Resolve_BoneLodResolvesBansInSvdOrderAndCachesTheArchive() {
+    using var archive = new Ovl("all.ovl");
+    var animationCalls = 0;
+    var shape = BoneShape("Bones", "root");
+    var idle = Animation("Idle", "root");
+    var loop = Animation("Loop", "root");
+    var resources = Resources(
+      ("Item", FileType.SceneryItem, archive),
+      ("Visual", FileType.SceneryItemVisual, archive),
+      ("Bones", FileType.BoneShape, archive),
+      ("Idle", FileType.BoneAnim, archive),
+      ("Loop", FileType.BoneAnim, archive));
+    var resolver = Resolver(
+      resources,
+      _ => [Item("Item", "Visual:svd")],
+      _ => [Visual("Visual", Lod(
+        "bone",
+        SvdLodType.BoneShape,
+        boneShapeRef: "Bones:bsh",
+        animationRefs: ["Idle:ban", "Loop:ban"]))],
+      _ => [],
+      _ => [shape],
+      _ => { animationCalls++; return [loop, idle]; });
+
+    var first = resolver.Resolve("Item");
+    var second = resolver.Resolve("ITEM");
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(first?.BoneLods.Single().Animations.Select(value => value.Name),
+        Is.EqualTo(new[] { "Idle", "Loop" }));
+      Assert.That(second?.BoneLods.Single().Animations.Select(value => value.Name),
+        Is.EqualTo(new[] { "Idle", "Loop" }));
+      Assert.That(animationCalls, Is.EqualTo(1));
+    }
+  }
+
+  [Test]
+  public void Resolve_UsesReferencingArchiveForNestedResources() {
+    using var sidArchive = new Ovl("sid.ovl");
+    using var visualArchive = new Ovl("visual.ovl");
+    using var shapeArchive = new Ovl("shape.ovl");
+    var resources = Resources(
+      ("Item", FileType.SceneryItem, sidArchive),
+      ("Visual", FileType.SceneryItemVisual, visualArchive),
+      ("Bones", FileType.BoneShape, shapeArchive),
+      ("Idle", FileType.BoneAnim, shapeArchive));
+    var ownerLookups = new List<(Ovl Archive, string Name, FileType Type)>();
+    SceneryResourceEntry? FindFrom(
+      SceneryResourceEntry owner,
+      string name,
+      FileType type
+    ) {
+      ownerLookups.Add((owner.Archive, name, type));
+      return resources.GetValueOrDefault((name.ToLowerInvariant(), type));
+    }
+    var resolver = Resolver(
+      resources,
+      _ => [Item("Item", "Visual:svd")],
+      _ => [Visual("Visual", Lod(
+        "bone",
+        SvdLodType.BoneShape,
+        boneShapeRef: "Bones:bsh",
+        animationRefs: ["Idle:ban"]))],
+      _ => [],
+      _ => [BoneShape("Bones", "root")],
+      _ => [Animation("Idle", "root")],
+      FindFrom);
+
+    Assert.That(resolver.Resolve("Item"), Is.Not.Null);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(ownerLookups[0], Is.EqualTo(
+        (sidArchive, "Visual", FileType.SceneryItemVisual)));
+      Assert.That(ownerLookups[1], Is.EqualTo(
+        (visualArchive, "Bones", FileType.BoneShape)));
+      Assert.That(ownerLookups[2], Is.EqualTo(
+        (visualArchive, "Idle", FileType.BoneAnim)));
+    }
+  }
+
+  [Test]
   public void Resolve_CachesEachArchiveDecoder() {
     using var archive = new Ovl("all.ovl");
     var itemCalls = 0;
@@ -211,18 +292,74 @@ public class SceneryVisualResolverTests {
     Assert.That(exception!.Message, Does.Contain("Missing:bsh"));
   }
 
+  [Test]
+  public void Resolve_MissingDeclaredBoneAnimationFailsClosed() {
+    using var archive = new Ovl("all.ovl");
+    var resources = Resources(
+      ("Item", FileType.SceneryItem, archive),
+      ("Visual", FileType.SceneryItemVisual, archive),
+      ("Bones", FileType.BoneShape, archive));
+    var resolver = Resolver(
+      resources,
+      _ => [Item("Item", "Visual:svd")],
+      _ => [Visual("Visual", Lod(
+        "bone",
+        SvdLodType.BoneShape,
+        boneShapeRef: "Bones:bsh",
+        animationRefs: ["Missing:ban"]))],
+      _ => [],
+      _ => [BoneShape("Bones", "root")],
+      _ => []);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      resolver.Resolve("Item")));
+
+    Assert.That(exception!.Message, Does.Contain("Missing:ban"));
+  }
+
+  [Test]
+  public void Resolve_PreservesAnimationChannelsNotPresentInShape() {
+    using var archive = new Ovl("all.ovl");
+    var resources = Resources(
+      ("Item", FileType.SceneryItem, archive),
+      ("Visual", FileType.SceneryItemVisual, archive),
+      ("Bones", FileType.BoneShape, archive),
+      ("Idle", FileType.BoneAnim, archive));
+    var resolver = Resolver(
+      resources,
+      _ => [Item("Item", "Visual:svd")],
+      _ => [Visual("Visual", Lod(
+        "bone",
+        SvdLodType.BoneShape,
+        boneShapeRef: "Bones:bsh",
+        animationRefs: ["Idle:ban"]))],
+      _ => [],
+      _ => [BoneShape("Bones", "root")],
+      _ => [Animation("Idle", "root", "particlestart01_dustspray")]);
+
+    var result = resolver.Resolve("Item");
+
+    Assert.That(
+      result?.BoneLods.Single().Animations.Single().Bones.Select(bone => bone.Name),
+      Is.EqualTo(new[] { "root", "particlestart01_dustspray" }));
+  }
+
   private static SceneryVisualResolver Resolver(
     IReadOnlyDictionary<(string Name, FileType Type), SceneryResourceEntry> resources,
     Func<Ovl, IReadOnlyList<SceneryItem>> items,
     Func<Ovl, IReadOnlyList<SceneryItemVisual>> visuals,
     Func<Ovl, IReadOnlyList<StaticShape>> shapes,
-    Func<Ovl, IReadOnlyList<BoneShape>>? boneShapes = null
+    Func<Ovl, IReadOnlyList<BoneShape>>? boneShapes = null,
+    Func<Ovl, IReadOnlyList<BoneAnimation>>? boneAnimations = null,
+    Func<SceneryResourceEntry, string, FileType, SceneryResourceEntry?>? findFrom = null
   ) => new(
     (name, type) => resources.GetValueOrDefault((name.ToLowerInvariant(), type)),
     items,
     visuals,
     shapes,
-    boneShapes ?? (_ => []));
+    boneShapes ?? (_ => []),
+    boneAnimations ?? (_ => []),
+    findFrom);
 
   private static IReadOnlyDictionary<(string Name, FileType Type), SceneryResourceEntry> Resources(
     params (string Name, FileType Type, Ovl Archive)[] resources
@@ -257,7 +394,8 @@ public class SceneryVisualResolverTests {
     string name,
     SvdLodType type,
     string? staticShapeRef = null,
-    string? boneShapeRef = null
+    string? boneShapeRef = null,
+    string[]? animationRefs = null
   ) => new(
     name,
     type,
@@ -267,7 +405,7 @@ public class SceneryVisualResolverTests {
     null,
     new SceneryVisualBillboardSettings(0f, 0f, 0f, 0f, 0f, 0f),
     100f,
-    []);
+    animationRefs ?? []);
 
   private static StaticShape Shape(string name) => new(
     name,
@@ -276,10 +414,19 @@ public class SceneryVisualResolverTests {
     [],
     []);
 
-  private static BoneShape BoneShape(string name) => new(
+  private static BoneShape BoneShape(string name, params string[] boneNames) => new(
     name,
     Vector3.Zero,
     Vector3.One,
     [],
-    []);
+    boneNames.Select((boneName, index) => new BoneShapeBone(
+      boneName,
+      index - 1,
+      Matrix4x4.Identity,
+      Matrix4x4.Identity)).ToArray());
+
+  private static BoneAnimation Animation(string name, params string[] boneNames) => new(
+    name,
+    1f,
+    boneNames.Select(boneName => new BoneAnimationBone(boneName, [], [])).ToArray());
 }

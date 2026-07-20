@@ -29,7 +29,7 @@ public partial class GameViewController(NativeHandle handle) : NSViewController(
     inspector.LoadRequest(new NSUrlRequest(new NSUrl("https://google.com")));
 
     game.WantsLayer = true;
-    game.Layer = new OpenGLLayer();
+    game.Layer = new OpenGLLayer(game);
     game.PostsFrameChangedNotifications = true;
     Surface.SurfaceCreated += SurfaceCreated;
 

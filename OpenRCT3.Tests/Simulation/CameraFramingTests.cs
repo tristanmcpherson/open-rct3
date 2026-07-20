@@ -101,7 +101,7 @@ public class CameraFramingTests {
   }
 
   [Test]
-  public void Calculate_MinimumDistanceUsesOrbitSafeSupportForAsymmetricTallBounds() {
+  public void Calculate_MinimumDistanceUsesAllDirectionSupportForAsymmetricTallBounds() {
     var minHeight = Terrain.WorldZToCornerHeight(-20f);
     var maxHeight = Terrain.WorldZToCornerHeight(180f);
     var terrain = new Terrain(width: 3, height: 11, initialHeight: minHeight);
@@ -117,14 +117,7 @@ public class CameraFramingTests {
     var min = new Vector3(minXY, Terrain.CornerHeightToWorldZ(minHeight));
     var max = new Vector3(maxXY, Terrain.CornerHeightToWorldZ(maxHeight));
     var halfExtents = (max - min) * 0.5f;
-    var horizontalViewMagnitude = new Vector2(
-      Camera.DefaultViewDirection.X,
-      Camera.DefaultViewDirection.Y
-    ).Length();
-    var expected = (
-      horizontalViewMagnitude * new Vector2(halfExtents.X, halfExtents.Y).Length()
-    ) + (MathF.Abs(Camera.DefaultViewDirection.Z) * halfExtents.Z)
-      + TerrainCameraFraming.MinimumDistanceClearance;
+    var expected = halfExtents.Length() + TerrainCameraFraming.MinimumDistanceClearance;
 
     Assert.That(framing.MinimumDistance, Is.EqualTo(expected).Within(Epsilon));
   }
@@ -150,6 +143,39 @@ public class CameraFramingTests {
     camera.Frame(framing.Target, framing.Distance, framing.MinimumDistance);
     camera.SetDistance(framing.MinimumDistance);
     camera.Orbit(orbitRadians);
+    camera.Update(aspectRatio: 16f / 9f);
+    var minZ = Terrain.CornerHeightToWorldZ(minHeight);
+    var maxZ = Terrain.CornerHeightToWorldZ(maxHeight);
+
+    foreach (var corner in FullMeshCorners(terrain, minZ, maxZ)) {
+      var clip = ProjectToClip(camera, corner);
+      Assert.That(clip.W, Is.GreaterThan(0f), $"corner {corner} is behind the camera");
+      Assert.That(clip.Z, Is.InRange(-clip.W, clip.W), $"corner {corner} is depth-clipped");
+    }
+  }
+
+  [TestCase(-2.5f)]
+  [TestCase(-1.0f)]
+  [TestCase(0f)]
+  [TestCase(1.0f)]
+  [TestCase(2.5f)]
+  public void MinimumDistance_KeepsTerrainBoundsInFrontAcrossElevations(
+    float elevationRadians
+  ) {
+    var minHeight = Terrain.WorldZToCornerHeight(-20f);
+    var maxHeight = Terrain.WorldZToCornerHeight(180f);
+    var terrain = new Terrain(width: 3, height: 11, initialHeight: minHeight);
+    terrain.SetCornerHeight(
+      terrain.Width - 1,
+      terrain.Height - 1,
+      TerrainCornerSlot.NorthEast,
+      maxHeight
+    );
+    var framing = TerrainCameraFraming.Calculate(terrain);
+    var camera = new Camera();
+    camera.Frame(framing.Target, framing.Distance, framing.MinimumDistance);
+    camera.SetDistance(framing.MinimumDistance);
+    camera.OrbitElevation(elevationRadians);
     camera.Update(aspectRatio: 16f / 9f);
     var minZ = Terrain.CornerHeightToWorldZ(minHeight);
     var maxZ = Terrain.CornerHeightToWorldZ(maxHeight);

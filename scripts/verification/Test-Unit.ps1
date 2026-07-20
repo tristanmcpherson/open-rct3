@@ -17,6 +17,33 @@ $requiredUnitProjects = @(
 $solutionUnitProjects = @($requiredUnitProjects[0], $requiredUnitProjects[1])
 $dumperProject = $requiredUnitProjects[2]
 $approvedDumperSkip = 'Dumper.Tests.TruncatedLabelTests.TestVeryLongPath_PreservesFilename'
+$approvedInstalledAssetSkips = @(
+  'OpenCobra.Tests.OVL.BoneAnimationsTests.Extract_InstalledVintageCar_DecodesDeclaredBanResources',
+  'OpenCobra.Tests.OVL.PathTypesTests.Extract_InstalledAsphalt_PreservesDeclaredResources',
+  'OpenCobra.Tests.OVL.QueueTypesTests.Extract_InstalledQueueSet1_PreservesDeclaredResources',
+  'OpenCobra.Tests.OVL.RideCarsTests.Extract_FromInstalledWoodenCoasterArchiveDecodesRideCars',
+  'OpenCobra.Tests.OVL.RideResourceGraphTests.Resolve_InstalledLogFlumeLinksCrocLogThroughRealDependencyClosures',
+  'OpenCobra.Tests.OVL.RideTrainsTests.Extract_FromInstalledWoodenCoasterArchiveDecodesTrainComposition',
+  'OpenCobra.Tests.OVL.SplinesTests.Extract_FromInstalledCoasterArchiveDecodesExactSplines("Track16")',
+  'OpenCobra.Tests.OVL.SplinesTests.Extract_FromInstalledCoasterArchiveDecodesExactSplines("Track59")',
+  'OpenCobra.Tests.OVL.TrackSectionResourceGraphTests.Resolve_InstalledTrackArchiveLinksEverySidAndSpline("Track16",Vanilla,15)',
+  'OpenCobra.Tests.OVL.TrackSectionResourceGraphTests.Resolve_InstalledTrackArchiveLinksEverySidAndSpline("Track59",Wild,145)',
+  'OpenCobra.Tests.OVL.TrackSectionsTests.Extract_FromInstalledCoasterArchiveDecodesTrackSections("Track16",Vanilla)',
+  'OpenCobra.Tests.OVL.TrackSectionsTests.Extract_FromInstalledCoasterArchiveDecodesTrackSections("Track59",Wild)',
+  'OpenCobra.Tests.OVL.TrackSectionsTests.Extract_FromInstalledTrackBased10AcceptsMismatchedEndpointFlags',
+  'OpenCobra.Tests.OVL.TrackedRideTrackResourceGraphTests.Resolve_InstalledRideLinksExternalTrackSectionsAndLocalSplines("LogFlume","TrackBased10",33,39)',
+  'OpenCobra.Tests.OVL.TrackedRideTrackResourceGraphTests.Resolve_InstalledRideLinksExternalTrackSectionsAndLocalSplines("Mono","TrackBased07",15,15)',
+  'OpenCobra.Tests.OVL.TrackedRidesTests.Extract_FromInstalledLogFlumeArchiveDecodesTrackedRideCore',
+  'OpenRCT3.Tests.Serialization.DatTrackReaderTests.Read_InstalledCampaignsAcrossExpansionsFullyParse',
+  'OpenRCT3.Tests.Serialization.DatTrackedRideInstanceReaderTests.Read_InstalledCampaignCapturesRideInstanceLinkage("Campaigns/Base/BoxOffice.dat")',
+  'OpenRCT3.Tests.Serialization.DatTrackedRideInstanceReaderTests.Read_InstalledCampaignCapturesRideInstanceLinkage("Campaigns/Base/Soaked/Atlantis.dat")',
+  'OpenRCT3.Tests.Serialization.DatTrackedRideInstanceReaderTests.Read_InstalledCampaignCapturesRideInstanceLinkage("Campaigns/Base/Wild/GeminiBasin.dat")',
+  'OpenRCT3.Tests.Simulation.PathSurfaceResourceResolverTests.TryResolve_InstalledAsphaltAndQueueSet1MatchDatSystemNames',
+  'OpenRCT3.Tests.Simulation.RideInstanceResourceResolverTests.Resolve_InstalledCampaignIdentitiesAgainstTheirExactOvlOverlays',
+  'OpenRCT3.Tests.Simulation.RideInstanceTrackGraphTests.Build_InstalledCampaignsHaveExactNonSentinelReciprocalLinks',
+  'OpenRCT3.Tests.Simulation.RideTrackSectionResourceResolverTests.Resolve_InstalledCampaignsLinkExactDatOverlayAndTksIdentities'
+)
+$approvedSkippedTests = @($approvedDumperSkip) + $approvedInstalledAssetSkips
 $results = Join-Path $repo 'TestResults\unit'
 $solutionDirectory = $repo.Replace('\', '/') + '/'
 
@@ -109,6 +136,6 @@ try {
 $summary = Get-TrxSummary `
   -ResultsDirectory $results `
   -MinimumRuns $requiredUnitProjects.Count `
-  -ApprovedSkippedTests @($approvedDumperSkip) `
+  -ApprovedSkippedTests $approvedSkippedTests `
   -ExpectedTestAssemblies $requiredTestAssemblies
 Write-TestSummary -Name 'Unit' -Summary $summary

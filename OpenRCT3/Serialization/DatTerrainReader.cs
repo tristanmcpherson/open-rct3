@@ -4,13 +4,14 @@
 
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace OpenRCT3.Serialization;
 
 /// <summary>
-/// Reads terrain, water, and proven ordinary path/scenery structures from an RCT3 DAT file while
-/// consuming every declared value.
+/// Reads terrain, water, and proven ordinary path/scenery/track-placement structures from an RCT3
+/// DAT file while consuming every declared value.
 /// </summary>
 internal static class DatTerrainReader {
   private const string TargetFieldName = "EngineTerrain";
@@ -117,6 +118,25 @@ internal static class DatTerrainReader {
     new("SurfaceType", FieldKind.UInt8, 1),
     new("UndergroundFlag", FieldKind.Bool, 1),
     new("bool", FieldKind.UInt8, 1),
+  ];
+  private static readonly ExpectedField[] PathDatabaseEntrySchema = [
+    new("IsAvailable", FieldKind.Bool, 1),
+    new("IsHidden", FieldKind.Bool, 1),
+    new("IsInvented", FieldKind.Bool, 1),
+    new("SystemName", FieldKind.String, 0),
+  ];
+  private static readonly ExpectedField PathSurfaceColoursField = new(
+    "Colours",
+    FieldKind.Struct,
+    12,
+    [
+      new("COL0", FieldKind.Int32, 4),
+      new("COL1", FieldKind.Int32, 4),
+      new("COL2", FieldKind.Int32, 4),
+    ]);
+  private static readonly ExpectedField[] QueueTypeGroundSurfaceSchema = [
+    PathSurfaceColoursField,
+    new("QueueType", FieldKind.ManagedObjectPtr, 8),
   ];
   private static readonly ExpectedField AnimInfoListField = new(
     "AnimInfoList",
@@ -280,6 +300,198 @@ internal static class DatTerrainReader {
     new("SceneryItem", FieldKind.ManagedObjectPtr, 8),
     SceneryItemDataField20,
   ];
+  private static readonly ExpectedField RideEventTriggersField = new(
+    "RideEventTriggers",
+    FieldKind.List,
+    0,
+    [
+      new("PreTrigger", FieldKind.Bool, 1),
+      new("SourceObject", FieldKind.Reference, 8),
+      new("TargetObject", FieldKind.Reference, 8),
+      new("Trigger", FieldKind.Bool, 1),
+    ]);
+  private static readonly ExpectedField[] TrackPieceSchema = [
+    new("BrakeSpeed", FieldKind.Int32, 4),
+    new("CarTransformBone", FieldKind.Int32, 4),
+    new("CurrentAnim", FieldKind.Int32, 4),
+    new("CurrentAnimIndex", FieldKind.Int32, 4),
+    new("CurrentAnimTime", FieldKind.Float32, 4),
+    new("FirstAdvance", FieldKind.Bool, 1),
+    FlexiColourField,
+    new("HoldingTime", FieldKind.Int32, 4),
+    new("HoldingTrain", FieldKind.ManagedObjectPtr, 8),
+    new("Next", FieldKind.ManagedObjectPtr, 8),
+    new("Owner", FieldKind.ManagedObjectPtr, 8),
+    new("PlatformPiece", FieldKind.ManagedObjectPtr, 8),
+    new("Prev", FieldKind.ManagedObjectPtr, 8),
+    new("Reversed", FieldKind.Bool, 1),
+    RideEventTriggersField,
+    new("SIDDatabaseEntry", FieldKind.ManagedObjectPtr, 8),
+    new("SYMBOLNAME", FieldKind.String, 0),
+    new("SceneryItem", FieldKind.ManagedObjectPtr, 8),
+    SceneryItemDataField20,
+    new("Segment", FieldKind.ManagedObjectPtr, 8),
+    new("StartDistance", FieldKind.Float32, 4),
+    new("StartDistanceBackwardsSpline", FieldKind.Float32, 4),
+    new("TargetAnimState", FieldKind.Int32, 4),
+    new("UserAngleDegrees", FieldKind.Int32, 4),
+    new("m_carTransformAtRestInverse", FieldKind.Matrix44, 64),
+  ];
+  private static readonly ExpectedField[] ExpansionTrackPieceSchema = [
+    new("AnimToPlayOnNextFrame", FieldKind.Int32, 4),
+    new("BrakeSpeed", FieldKind.Int32, 4),
+    new("CurrentAnim", FieldKind.Int32, 4),
+    new("CurrentAnimIndex", FieldKind.Int32, 4),
+    new("CurrentAnimTime", FieldKind.Float32, 4),
+    new("FirstAdvance", FieldKind.Bool, 1),
+    FlexiColourField,
+    new("HoldingTime", FieldKind.Int32, 4),
+    new("HoldingTrain", FieldKind.ManagedObjectPtr, 8),
+    new("Next", FieldKind.ManagedObjectPtr, 8),
+    new("Owner", FieldKind.ManagedObjectPtr, 8),
+    new("PlatformPiece", FieldKind.ManagedObjectPtr, 8),
+    new("Prev", FieldKind.ManagedObjectPtr, 8),
+    new("Reversed", FieldKind.Bool, 1),
+    RideEventTriggersField,
+    RobotArmAnglesField("RobotArmAngles"),
+    RobotArmAnglesField("RobotArmUerAngles"),
+    new("SIDDatabaseEntry", FieldKind.ManagedObjectPtr, 8),
+    new("SYMBOLNAME", FieldKind.String, 0),
+    new("SceneryItem", FieldKind.ManagedObjectPtr, 8),
+    SceneryItemDataField20,
+    new("Segment", FieldKind.ManagedObjectPtr, 8),
+    new("Speed", FieldKind.Int32, 4),
+    new("SpinLockAngle", FieldKind.Float32, 4),
+    new("SpiralLiftHillDistance", FieldKind.Float32, 4),
+    new("StartDistance", FieldKind.Float32, 4),
+    new("StartDistanceBackwardsSpline", FieldKind.Float32, 4),
+    new("TargetAnimState", FieldKind.Int32, 4),
+    new("TunnelLightColours", FieldKind.Int32, 4),
+    new("UserAngleDegrees", FieldKind.Int32, 4),
+    new("WalkAlongTrackPersonInfosOnTrackPiece", FieldKind.ManagedObjectPtr, 8),
+  ];
+  private static readonly ExpectedField[] SoakedTrackPieceSchema = [
+    new("BrakeSpeed", FieldKind.Int32, 4),
+    new("CarTransformBone", FieldKind.Int32, 4),
+    new("CurrentAnim", FieldKind.Int32, 4),
+    new("CurrentAnimIndex", FieldKind.Int32, 4),
+    new("CurrentAnimTime", FieldKind.Float32, 4),
+    new("FirstAdvance", FieldKind.Bool, 1),
+    FlexiColourField,
+    new("HoldingTime", FieldKind.Int32, 4),
+    new("HoldingTrain", FieldKind.ManagedObjectPtr, 8),
+    new("Next", FieldKind.ManagedObjectPtr, 8),
+    new("Owner", FieldKind.ManagedObjectPtr, 8),
+    new("PlatformPiece", FieldKind.ManagedObjectPtr, 8),
+    new("Prev", FieldKind.ManagedObjectPtr, 8),
+    new("Reversed", FieldKind.Bool, 1),
+    RideEventTriggersField,
+    new("SIDDatabaseEntry", FieldKind.ManagedObjectPtr, 8),
+    new("SYMBOLNAME", FieldKind.String, 0),
+    new("SceneryItem", FieldKind.ManagedObjectPtr, 8),
+    SceneryItemDataField20,
+    new("Segment", FieldKind.ManagedObjectPtr, 8),
+    new("Speed", FieldKind.Int32, 4),
+    new("SpiralLiftHillDistance", FieldKind.Float32, 4),
+    new("StartDistance", FieldKind.Float32, 4),
+    new("StartDistanceBackwardsSpline", FieldKind.Float32, 4),
+    new("TargetAnimState", FieldKind.Int32, 4),
+    new("TunnelLightColours", FieldKind.Int32, 4),
+    new("UserAngleDegrees", FieldKind.Int32, 4),
+    new("WalkAlongTrackPersonInfosOnTrackPiece", FieldKind.ManagedObjectPtr, 8),
+    new("m_carTransformAtRestInverse", FieldKind.Matrix44, 64),
+  ];
+  private static readonly ExpectedField TrackPiecesField = new(
+    "Track",
+    FieldKind.List,
+    0,
+    [new("TrackPiece", FieldKind.ManagedObjectPtr, 8)]);
+  private static readonly ExpectedField TrackFlexiColoursField = new(
+    "TrackFlexiColours",
+    FieldKind.Struct,
+    12,
+    [
+      new("COL0", FieldKind.Int32, 4),
+      new("COL1", FieldKind.Int32, 4),
+      new("COL2", FieldKind.Int32, 4),
+    ]);
+  private static readonly ExpectedField[] RideTrackSchema = [
+    new("Direction", FieldKind.Int32, 4),
+    new("FirstSegment", FieldKind.ManagedObjectPtr, 8),
+    new("IsCircuit", FieldKind.Bool, 1),
+    new("LastSegment", FieldKind.ManagedObjectPtr, 8),
+    new("Prototype", FieldKind.Bool, 1),
+    TrackPiecesField,
+    TrackFlexiColoursField,
+    new("TrackedRideInstance", FieldKind.ManagedObjectPtr, 8),
+  ];
+  private static readonly ExpectedField[] ExpansionRideTrackSchema = [
+    new("Direction", FieldKind.Int32, 4),
+    new("FirstSegment", FieldKind.ManagedObjectPtr, 8),
+    new("FlippedTrackSections", FieldKind.Bool, 1),
+    new("LastSegment", FieldKind.ManagedObjectPtr, 8),
+    new("Prototype", FieldKind.Bool, 1),
+    TrackFlexiColoursField,
+    new("TrackedRideInstance", FieldKind.ManagedObjectPtr, 8),
+    new("TunnelLightColour", FieldKind.Int32, 4),
+  ];
+  private static readonly ExpectedField[] TrackSegmentSchema = [
+    new("Direction", FieldKind.Int32, 4),
+    new("FirstPiece", FieldKind.ManagedObjectPtr, 8),
+    new("LastPiece", FieldKind.ManagedObjectPtr, 8),
+    new("NextSegment", FieldKind.ManagedObjectPtr, 8),
+    new("PrevSegment", FieldKind.ManagedObjectPtr, 8),
+    new("Prototype", FieldKind.Bool, 1),
+    new("Track", FieldKind.ManagedObjectPtr, 8),
+  ];
+  private static readonly ExpectedField[] ExpansionTrackSegmentSchema = [
+    new(
+      "BlockSections",
+      FieldKind.Array,
+      0,
+      [new("Train", FieldKind.ManagedObjectPtr, 8)]),
+    new(
+      "CableLiftTrains",
+      FieldKind.Array,
+      0,
+      [new("Train", FieldKind.ManagedObjectPtr, 8)]),
+    new("Direction", FieldKind.Int32, 4),
+    new("FirstPiece", FieldKind.ManagedObjectPtr, 8),
+    new("LastPiece", FieldKind.ManagedObjectPtr, 8),
+    new("NextSegment", FieldKind.ManagedObjectPtr, 8),
+    new("PrevSegment", FieldKind.ManagedObjectPtr, 8),
+    new("Prototype", FieldKind.Bool, 1),
+    new(
+      "ReverseCableLiftTrains",
+      FieldKind.Array,
+      0,
+      [new("Train", FieldKind.ManagedObjectPtr, 8)]),
+    new(
+      "SortedTrains",
+      FieldKind.Array,
+      0,
+      [new("Index", FieldKind.Int32, 4)]),
+    new(
+      "ThrillLiftTrains",
+      FieldKind.Array,
+      0,
+      [new("Train", FieldKind.ManagedObjectPtr, 8)]),
+    new("Track", FieldKind.ManagedObjectPtr, 8),
+  ];
+  private static readonly ExpectedField[] TrackedRideInstanceIdentityFields = [
+    new("Name", FieldKind.String, 0),
+    new("Track", FieldKind.ManagedObjectPtr, 8),
+    new("TrackedRideOverlayName", FieldKind.String, 0),
+    new("TrackedRideSymbolName", FieldKind.String, 0),
+    new("NTrains", FieldKind.Int32, 4),
+    new("NCarsPerTrain", FieldKind.Int32, 4),
+    new("TrainSelection", FieldKind.Int32, 4),
+    new(
+      "Trains",
+      FieldKind.Array,
+      0,
+      [new("Train", FieldKind.ManagedObjectPtr, 8)]),
+  ];
 
   public static DatTerrainData Read(string path) {
     if (string.IsNullOrWhiteSpace(path))
@@ -306,7 +518,23 @@ internal static class DatTerrainReader {
 
       var entryId = reader.ReadUInt64();
       var structure = structures[Convert.ToInt32(structureIndex)];
-      if (TryGetPathStructureKind(structure.Name, out var pathKind))
+      if (structure.Name == "TrackedRideInstance")
+        state.CaptureTrackedRideInstance(
+          ReadTrackedRideInstance(reader, structure, entryId, state));
+      else if (structure.Name == "Track")
+        state.CaptureRideTrack(ReadRideTrack(reader, structure, entryId, state));
+      else if (structure.Name == "TrackSegment")
+        state.CaptureTrackSegment(ReadTrackSegment(reader, structure, entryId, state));
+      else if (structure.Name == "TrackPiece")
+        state.CaptureTrackPiece(ReadTrackPiece(reader, structure, entryId, state));
+      else if (TryGetPathSurfaceStructureKind(structure.Name, out var pathSurfaceKind))
+        state.CapturePathSurface(ReadPathSurfaceEntry(
+          reader,
+          structure,
+          entryId,
+          pathSurfaceKind,
+          state));
+      else if (TryGetPathStructureKind(structure.Name, out var pathKind))
         state.CapturePath(ReadPathEntry(reader, structure, entryId, pathKind, state));
       else if (TryGetSceneryStructureKind(structure.Name, out var sceneryKind))
         state.CaptureScenery(ReadSceneryEntry(reader, structure, entryId, sceneryKind, state));
@@ -319,12 +547,18 @@ internal static class DatTerrainReader {
     var terrain = state.Terrain
       ?? throw new InvalidDataException(
         "The DAT file does not contain an EngineTerrain/GE_Terrain field.");
+    DatPathSurfaceResolver.Resolve(state.Paths, state.PathSurfaceEntries);
     state.ResolveSceneryDatabaseEntries();
     return AttachDecodedData(
       terrain,
       state.WaterManager,
       state.Paths,
-      state.SceneryEntries);
+      state.SceneryEntries,
+      state.TrackPieces,
+      state.RideTracks,
+      state.TrackSegments,
+      state.PathSurfaceEntries,
+      state.TrackedRideInstances);
   }
 
   private static int ReadStructureCount(DatBinaryReader reader) {
@@ -363,7 +597,17 @@ internal static class DatTerrainReader {
     for (var index = 0; index < fieldCount; index++)
       fields[index] = ReadFieldDefinition(reader, state, depth: 1);
     var structure = new DataStructure(name, fields);
-    if (TryGetPathStructureKind(name, out var pathKind))
+    if (name == "TrackedRideInstance")
+      ValidateTrackedRideInstanceStructureSchema(structure);
+    else if (name == "Track")
+      ValidateRideTrackStructureSchema(structure);
+    else if (name == "TrackSegment")
+      ValidateTrackSegmentStructureSchema(structure);
+    else if (name == "TrackPiece")
+      ValidateTrackPieceStructureSchema(structure);
+    else if (TryGetPathSurfaceStructureKind(name, out var pathSurfaceKind))
+      ValidatePathSurfaceStructureSchema(structure, pathSurfaceKind);
+    else if (TryGetPathStructureKind(name, out var pathKind))
       ValidatePathStructureSchema(structure, pathKind);
     else if (TryGetSceneryStructureKind(name, out var sceneryKind))
       ValidateSceneryStructureSchema(structure, sceneryKind);
@@ -417,6 +661,26 @@ internal static class DatTerrainReader {
     }
   }
 
+  private static bool TryGetPathSurfaceStructureKind(
+    string name,
+    out DatPathSurfaceStructureKind pathSurfaceKind
+  ) {
+    switch (name) {
+      case "PathTypeDatabaseEntry":
+        pathSurfaceKind = DatPathSurfaceStructureKind.PathTypeDatabaseEntry;
+        return true;
+      case "QueueTypeDatabaseEntry":
+        pathSurfaceKind = DatPathSurfaceStructureKind.QueueTypeDatabaseEntry;
+        return true;
+      case "QueueTypeGroundSurface":
+        pathSurfaceKind = DatPathSurfaceStructureKind.QueueTypeGroundSurface;
+        return true;
+      default:
+        pathSurfaceKind = default;
+        return false;
+    }
+  }
+
   private static bool TryGetSceneryStructureKind(
     string name,
     out SceneryStructureKind sceneryKind
@@ -457,6 +721,20 @@ internal static class DatTerrainReader {
         $"DAT structure '{structure.Name}' does not match a supported exact schema.");
   }
 
+  private static void ValidatePathSurfaceStructureSchema(
+    DataStructure structure,
+    DatPathSurfaceStructureKind pathSurfaceKind
+  ) {
+    var schema = pathSurfaceKind switch {
+      DatPathSurfaceStructureKind.PathTypeDatabaseEntry => PathDatabaseEntrySchema,
+      DatPathSurfaceStructureKind.QueueTypeDatabaseEntry => PathDatabaseEntrySchema,
+      DatPathSurfaceStructureKind.QueueTypeGroundSurface => QueueTypeGroundSurfaceSchema,
+      _ => throw new InvalidDataException(
+        $"Unsupported path surface structure kind '{pathSurfaceKind}'."),
+    };
+    ValidateExactStructureSchema(structure, schema);
+  }
+
   private static void ValidateSceneryStructureSchema(
     DataStructure structure,
     SceneryStructureKind sceneryKind
@@ -474,6 +752,101 @@ internal static class DatTerrainReader {
     if (!valid)
       throw new InvalidDataException(
         $"DAT structure '{structure.Name}' does not match a supported exact schema.");
+  }
+
+  private static ExpectedField RobotArmAnglesField(string name) => new(
+    name,
+    FieldKind.Struct,
+    0,
+    [
+      new(
+        "Angles",
+        FieldKind.Array,
+        0,
+        [new("Angle", FieldKind.Float32, 4)]),
+      new("Set", FieldKind.Bool, 1),
+    ]);
+
+  private static void ValidateTrackPieceStructureSchema(DataStructure structure) {
+    if (SchemaMatches(structure.Fields, TrackPieceSchema)
+      || SchemaMatches(structure.Fields, SoakedTrackPieceSchema)
+      || SchemaMatches(structure.Fields, ExpansionTrackPieceSchema)) return;
+    ValidateExactStructureSchema(structure, TrackPieceSchema);
+  }
+
+  private static void ValidateTrackSegmentStructureSchema(DataStructure structure) {
+    if (SchemaMatches(structure.Fields, TrackSegmentSchema)
+      || SchemaMatches(structure.Fields, ExpansionTrackSegmentSchema)) return;
+    ValidateExactStructureSchema(structure, TrackSegmentSchema);
+  }
+
+  private static void ValidateRideTrackStructureSchema(DataStructure structure) {
+    if (SchemaMatches(structure.Fields, RideTrackSchema)
+      || SchemaMatches(structure.Fields, ExpansionRideTrackSchema)) return;
+    ValidateExactStructureSchema(structure, RideTrackSchema);
+  }
+
+  private static void ValidateTrackedRideInstanceStructureSchema(DataStructure structure) {
+    foreach (var expected in TrackedRideInstanceIdentityFields) {
+      var matches = structure.Fields.Where(field => field.Name == expected.Name).ToArray();
+      if (matches.Length != 1)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' must declare exactly one " +
+          $"'{expected.Name}' field; found {matches.Length}.");
+
+      var mismatch = DescribeSchemaMismatch(matches, [expected], structure.Name);
+      if (mismatch != null)
+        throw new InvalidDataException(
+          $"DAT structure '{structure.Name}' has an unsupported identity field: {mismatch}");
+    }
+  }
+
+  private static void ValidateExactStructureSchema(
+    DataStructure structure,
+    ExpectedField[] expected
+  ) {
+    var mismatch = DescribeSchemaMismatch(structure.Fields, expected, structure.Name);
+    if (mismatch != null)
+      throw new InvalidDataException(
+        $"DAT structure '{structure.Name}' does not match the supported exact schema: {mismatch}");
+  }
+
+  private static string? DescribeSchemaMismatch(
+    FieldDefinition[] actual,
+    ExpectedField[] expected,
+    string path
+  ) {
+    if (actual.Length != expected.Length)
+      return $"{path} declares {actual.Length} fields instead of {expected.Length}: " +
+        $"[{string.Join(", ", actual.Select(FieldSignature))}].";
+
+    for (var index = 0; index < actual.Length; index++) {
+      var actualField = actual[index];
+      var expectedField = expected[index];
+      if (actualField.Name != expectedField.Name)
+        return $"{path}[{index}] is '{actualField.Name}' instead of '{expectedField.Name}': " +
+          $"[{string.Join(", ", actual.Select(FieldSignature))}].";
+      if (actualField.Kind != expectedField.Kind)
+        return $"{path}.{actualField.Name} has kind {actualField.Kind} instead of " +
+          $"{expectedField.Kind}.";
+      if (actualField.FixedSize != expectedField.FixedSize)
+        return $"{path}.{actualField.Name} has size {actualField.FixedSize} instead of " +
+          $"{expectedField.FixedSize}.";
+
+      var expectedChildren = expectedField.Children ?? Array.Empty<ExpectedField>();
+      var childMismatch = DescribeSchemaMismatch(
+        actualField.Children,
+        expectedChildren,
+        $"{path}.{actualField.Name}");
+      if (childMismatch != null) return childMismatch;
+    }
+    return null;
+  }
+
+  private static string FieldSignature(FieldDefinition field) {
+    var signature = $"{field.Name}:{field.Kind}:{field.FixedSize}";
+    if (field.Children.Length == 0) return signature;
+    return $"{signature}{{{string.Join(", ", field.Children.Select(FieldSignature))}}}";
   }
 
   private static bool TryGetSceneryItemSchemaKind(
@@ -650,6 +1023,393 @@ internal static class DatTerrainReader {
     ValueReadState state) {
     foreach (var child in field.Children)
       ReadFieldValue(reader, child, state);
+  }
+
+  private static DatTrackedRideInstanceData ReadTrackedRideInstance(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    string? name = null;
+    ulong? track = null;
+    string? trackedRideOverlayName = null;
+    string? trackedRideSymbolName = null;
+    int? nTrains = null;
+    int? nCarsPerTrain = null;
+    int? trainSelection = null;
+    ulong[]? trains = null;
+
+    foreach (var field in structure.Fields) {
+      switch (field.Name) {
+        case "Name":
+          state.AddValue();
+          name = ReadDatString(reader, "TrackedRideInstance Name");
+          break;
+        case "Track":
+          state.AddValue();
+          track = reader.ReadUInt64();
+          break;
+        case "TrackedRideOverlayName":
+          state.AddValue();
+          trackedRideOverlayName = ReadDatString(
+            reader,
+            "TrackedRideInstance TrackedRideOverlayName");
+          break;
+        case "TrackedRideSymbolName":
+          state.AddValue();
+          trackedRideSymbolName = ReadDatString(
+            reader,
+            "TrackedRideInstance TrackedRideSymbolName");
+          break;
+        case "NTrains":
+          state.AddValue();
+          nTrains = reader.ReadInt32();
+          break;
+        case "NCarsPerTrain":
+          state.AddValue();
+          nCarsPerTrain = reader.ReadInt32();
+          break;
+        case "TrainSelection":
+          state.AddValue();
+          trainSelection = reader.ReadInt32();
+          break;
+        case "Trains":
+          state.AddValue();
+          trains = ReadReferenceCollection(reader, state, "TrackedRideInstance Trains");
+          break;
+        default:
+          // DAT structures are self-describing. Keep unrelated ride state opaque, but consume it
+          // recursively and within the same global bounds used by the generic reader.
+          ReadFieldValue(reader, field, state);
+          break;
+      }
+    }
+
+    return new DatTrackedRideInstanceData(
+      entryId,
+      name ?? throw MissingTrackedRideInstanceValue("Name"),
+      track ?? throw MissingTrackedRideInstanceValue("Track"),
+      trackedRideOverlayName
+        ?? throw MissingTrackedRideInstanceValue("TrackedRideOverlayName"),
+      trackedRideSymbolName
+        ?? throw MissingTrackedRideInstanceValue("TrackedRideSymbolName"),
+      nTrains ?? throw MissingTrackedRideInstanceValue("NTrains"),
+      nCarsPerTrain ?? throw MissingTrackedRideInstanceValue("NCarsPerTrain"),
+      trainSelection ?? throw MissingTrackedRideInstanceValue("TrainSelection"),
+      trains ?? throw MissingTrackedRideInstanceValue("Trains"));
+  }
+
+  private static InvalidDataException MissingTrackedRideInstanceValue(string name) =>
+    new($"TrackedRideInstance schema validation did not provide '{name}'.");
+
+  private static DatRideTrackData ReadRideTrack(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    foreach (var field in structure.Fields)
+      CountSemanticSchemaValues(field, state);
+
+    if (SchemaMatches(structure.Fields, ExpansionRideTrackSchema))
+      return ReadExpansionRideTrack(reader, entryId);
+
+    var direction = reader.ReadInt32();
+    var firstSegment = reader.ReadUInt64();
+    var isCircuit = ReadBoolean(reader, "Track IsCircuit");
+    var lastSegment = reader.ReadUInt64();
+    var prototype = ReadBoolean(reader, "Track Prototype");
+    var trackPieces = ReadReferenceCollection(reader, state, "Track Track");
+    var trackFlexiColours = ReadSceneryFlexiColour(reader);
+    var trackedRideInstance = reader.ReadUInt64();
+    return new DatRideTrackData(
+      entryId,
+      direction,
+      firstSegment,
+      isCircuit,
+      lastSegment,
+      prototype,
+      trackPieces,
+      trackFlexiColours,
+      trackedRideInstance);
+  }
+
+  private static DatRideTrackData ReadExpansionRideTrack(
+    DatBinaryReader reader,
+    ulong entryId
+  ) {
+    var direction = reader.ReadInt32();
+    var firstSegment = reader.ReadUInt64();
+    var flippedTrackSections = ReadBoolean(reader, "Track FlippedTrackSections");
+    var lastSegment = reader.ReadUInt64();
+    var prototype = ReadBoolean(reader, "Track Prototype");
+    var trackFlexiColours = ReadSceneryFlexiColour(reader);
+    var trackedRideInstance = reader.ReadUInt64();
+    var tunnelLightColour = reader.ReadInt32();
+    return new DatRideTrackData(
+      entryId,
+      direction,
+      firstSegment,
+      isCircuit: null,
+      lastSegment,
+      prototype,
+      trackPieces: null,
+      trackFlexiColours,
+      trackedRideInstance,
+      flippedTrackSections,
+      tunnelLightColour);
+  }
+
+  private static DatTrackSegmentData ReadTrackSegment(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    foreach (var field in structure.Fields)
+      CountSemanticSchemaValues(field, state);
+
+    var hasExpansionArrays = SchemaMatches(structure.Fields, ExpansionTrackSegmentSchema);
+    if (hasExpansionArrays) {
+      ReadReferenceCollection(reader, state, "TrackSegment BlockSections");
+      ReadReferenceCollection(reader, state, "TrackSegment CableLiftTrains");
+    }
+    var direction = reader.ReadInt32();
+    var firstPiece = reader.ReadUInt64();
+    var lastPiece = reader.ReadUInt64();
+    var nextSegment = reader.ReadUInt64();
+    var prevSegment = reader.ReadUInt64();
+    var prototype = ReadBoolean(reader, "TrackSegment Prototype");
+    if (hasExpansionArrays) {
+      ReadReferenceCollection(reader, state, "TrackSegment ReverseCableLiftTrains");
+      ReadInt32Collection(reader, state, "TrackSegment SortedTrains");
+      ReadReferenceCollection(reader, state, "TrackSegment ThrillLiftTrains");
+    }
+    return new DatTrackSegmentData(
+      entryId,
+      direction,
+      firstPiece,
+      lastPiece,
+      nextSegment,
+      prevSegment,
+      prototype,
+      reader.ReadUInt64());
+  }
+
+  private static DatTrackPieceData ReadTrackPiece(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    foreach (var field in structure.Fields)
+      CountSemanticSchemaValues(field, state);
+
+    if (SchemaMatches(structure.Fields, ExpansionTrackPieceSchema))
+      return ReadExpansionTrackPiece(reader, entryId, state);
+
+    var hasSoakedFields = SchemaMatches(structure.Fields, SoakedTrackPieceSchema);
+    reader.ReadInt32();
+    reader.ReadInt32();
+    reader.ReadInt32();
+    reader.ReadInt32();
+    ReadFiniteSingle(reader, "TrackPiece CurrentAnimTime");
+    ReadBoolean(reader, "TrackPiece FirstAdvance");
+    var flexiColourField = ReadSceneryFlexiColour(reader);
+    reader.ReadInt32();
+    reader.ReadUInt64();
+    var next = reader.ReadUInt64();
+    var owner = reader.ReadUInt64();
+    var platformPiece = reader.ReadUInt64();
+    var prev = reader.ReadUInt64();
+    var reversed = ReadBoolean(reader, "TrackPiece Reversed");
+    ReadRideEventTriggers(reader, state);
+    var sidDatabaseEntry = reader.ReadUInt64();
+    var symbolName = ReadDatString(reader, "TrackPiece SYMBOLNAME");
+    var sceneryItem = reader.ReadUInt64();
+    var sceneryItemDataField = ReadSceneryItemDataField(
+      reader,
+      hasHeightAdjust: false,
+      "TrackPiece SceneryItemDataField");
+    var segment = reader.ReadUInt64();
+    if (hasSoakedFields) {
+      reader.ReadInt32();
+      ReadFiniteSingle(reader, "TrackPiece SpiralLiftHillDistance");
+    }
+    ReadFiniteSingle(reader, "TrackPiece StartDistance");
+    ReadFiniteSingle(reader, "TrackPiece StartDistanceBackwardsSpline");
+    reader.ReadInt32();
+    if (hasSoakedFields) reader.ReadInt32();
+    var userAngleDegrees = reader.ReadInt32();
+    if (hasSoakedFields) reader.ReadUInt64();
+    reader.Skip(64);
+    return new DatTrackPieceData(
+      entryId,
+      flexiColourField,
+      next,
+      owner,
+      platformPiece,
+      prev,
+      reversed,
+      sidDatabaseEntry,
+      symbolName,
+      sceneryItem,
+      sceneryItemDataField,
+      segment,
+      userAngleDegrees);
+  }
+
+  private static DatTrackPieceData ReadExpansionTrackPiece(
+    DatBinaryReader reader,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    reader.ReadInt32();
+    reader.ReadInt32();
+    reader.ReadInt32();
+    reader.ReadInt32();
+    ReadFiniteSingle(reader, "TrackPiece CurrentAnimTime");
+    ReadBoolean(reader, "TrackPiece FirstAdvance");
+    var flexiColourField = ReadSceneryFlexiColour(reader);
+    reader.ReadInt32();
+    reader.ReadUInt64();
+    var next = reader.ReadUInt64();
+    var owner = reader.ReadUInt64();
+    var platformPiece = reader.ReadUInt64();
+    var prev = reader.ReadUInt64();
+    var reversed = ReadBoolean(reader, "TrackPiece Reversed");
+    ReadRideEventTriggers(reader, state);
+    ReadRobotArmAngles(reader, state, "TrackPiece RobotArmAngles");
+    ReadRobotArmAngles(reader, state, "TrackPiece RobotArmUerAngles");
+    var sidDatabaseEntry = reader.ReadUInt64();
+    var symbolName = ReadDatString(reader, "TrackPiece SYMBOLNAME");
+    var sceneryItem = reader.ReadUInt64();
+    var sceneryItemDataField = ReadSceneryItemDataField(
+      reader,
+      hasHeightAdjust: false,
+      "TrackPiece SceneryItemDataField");
+    var segment = reader.ReadUInt64();
+    reader.ReadInt32();
+    ReadFiniteSingle(reader, "TrackPiece SpinLockAngle");
+    ReadFiniteSingle(reader, "TrackPiece SpiralLiftHillDistance");
+    ReadFiniteSingle(reader, "TrackPiece StartDistance");
+    ReadFiniteSingle(reader, "TrackPiece StartDistanceBackwardsSpline");
+    reader.ReadInt32();
+    reader.ReadInt32();
+    var userAngleDegrees = reader.ReadInt32();
+    reader.ReadUInt64();
+    return new DatTrackPieceData(
+      entryId,
+      flexiColourField,
+      next,
+      owner,
+      platformPiece,
+      prev,
+      reversed,
+      sidDatabaseEntry,
+      symbolName,
+      sceneryItem,
+      sceneryItemDataField,
+      segment,
+      userAngleDegrees);
+  }
+
+  private static void ReadRobotArmAngles(
+    DatBinaryReader reader,
+    ValueReadState state,
+    string description
+  ) {
+    ReadSizedValueLength(reader, 0, $"{description} payload");
+    var length = ReadCollectionLength(reader, state, $"{description} Angles");
+    state.AddValues(length);
+    // dat.rs treats these unused values as raw floats, and shipped Wild parks use non-finite
+    // sentinels. Consume them without assigning animation semantics.
+    for (var index = 0; index < length; index++)
+      reader.ReadSingle();
+    ReadBoolean(reader, $"{description} Set");
+  }
+
+  private static void CountSemanticSchemaValues(
+    FieldDefinition field,
+    ValueReadState state
+  ) {
+    state.AddValue();
+    if (field.Kind is FieldKind.Array or FieldKind.List) return;
+    foreach (var child in field.Children)
+      CountSemanticSchemaValues(child, state);
+  }
+
+  private static void ReadRideEventTriggers(
+    DatBinaryReader reader,
+    ValueReadState state
+  ) {
+    var length = ReadCollectionLength(reader, state, "TrackPiece RideEventTriggers");
+    state.AddValues(checked(length * 4));
+    for (var index = 0; index < length; index++) {
+      ReadBoolean(reader, $"TrackPiece RideEventTriggers[{index}] PreTrigger");
+      reader.ReadUInt64();
+      reader.ReadUInt64();
+      ReadBoolean(reader, $"TrackPiece RideEventTriggers[{index}] Trigger");
+    }
+  }
+
+  private static DatPathSurfaceEntryData ReadPathSurfaceEntry(
+    DatBinaryReader reader,
+    DataStructure structure,
+    ulong entryId,
+    DatPathSurfaceStructureKind pathSurfaceKind,
+    ValueReadState state
+  ) {
+    foreach (var field in structure.Fields)
+      CountSemanticSchemaValues(field, state);
+
+    return pathSurfaceKind switch {
+      DatPathSurfaceStructureKind.PathTypeDatabaseEntry =>
+        ReadPathDatabaseEntry(reader, entryId, pathSurfaceKind),
+      DatPathSurfaceStructureKind.QueueTypeDatabaseEntry =>
+        ReadPathDatabaseEntry(reader, entryId, pathSurfaceKind),
+      DatPathSurfaceStructureKind.QueueTypeGroundSurface =>
+        new DatQueueTypeGroundSurfaceData(
+          entryId,
+          new DatPathSurfaceColours(
+            reader.ReadInt32(),
+            reader.ReadInt32(),
+            reader.ReadInt32()),
+          reader.ReadUInt64()),
+      _ => throw new InvalidDataException(
+        $"Unsupported path surface structure kind '{pathSurfaceKind}'."),
+    };
+  }
+
+  private static DatPathSurfaceEntryData ReadPathDatabaseEntry(
+    DatBinaryReader reader,
+    ulong entryId,
+    DatPathSurfaceStructureKind pathSurfaceKind
+  ) {
+    var structureName = pathSurfaceKind.ToString();
+    var isAvailable = ReadBoolean(reader, $"{structureName} IsAvailable");
+    var isHidden = ReadBoolean(reader, $"{structureName} IsHidden");
+    var isInvented = ReadBoolean(reader, $"{structureName} IsInvented");
+    var systemName = ReadDatString(reader, $"{structureName} SystemName");
+    return pathSurfaceKind switch {
+      DatPathSurfaceStructureKind.PathTypeDatabaseEntry =>
+        new DatPathTypeDatabaseEntryData(
+          entryId,
+          isAvailable,
+          isHidden,
+          isInvented,
+          systemName),
+      DatPathSurfaceStructureKind.QueueTypeDatabaseEntry =>
+        new DatQueueTypeDatabaseEntryData(
+          entryId,
+          isAvailable,
+          isHidden,
+          isInvented,
+          systemName),
+      _ => throw new InvalidDataException(
+        $"Unsupported path database structure kind '{pathSurfaceKind}'."),
+    };
   }
 
   private static DatPathData ReadPathEntry(
@@ -867,6 +1627,17 @@ internal static class DatTerrainReader {
     for (var index = 0; index < length; index++)
       values[index] = reader.ReadUInt64();
     return values;
+  }
+
+  private static void ReadInt32Collection(
+    DatBinaryReader reader,
+    ValueReadState state,
+    string description
+  ) {
+    var length = ReadCollectionLength(reader, state, description);
+    state.AddValues(length);
+    for (var index = 0; index < length; index++)
+      reader.ReadInt32();
   }
 
   private static int ReadCollectionLength(
@@ -1202,7 +1973,12 @@ internal static class DatTerrainReader {
     DatTerrainData terrain,
     DatWaterManagerData? waterManager,
     IReadOnlyList<DatPathData> paths,
-    IReadOnlyList<DatSceneryEntryData> sceneryEntries
+    IReadOnlyList<DatSceneryEntryData> sceneryEntries,
+    IReadOnlyList<DatTrackPieceData> trackPieces,
+    IReadOnlyList<DatRideTrackData> rideTracks,
+    IReadOnlyList<DatTrackSegmentData> trackSegments,
+    IReadOnlyList<DatPathSurfaceEntryData> pathSurfaceEntries,
+    IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances
   ) {
     if (waterManager != null
       && (waterManager.Width != terrain.Width || waterManager.Height != terrain.Height))
@@ -1215,7 +1991,10 @@ internal static class DatTerrainReader {
           $"DAT path entry {path.EntryId} is outside the decoded GE_Terrain dimensions.");
     }
 
-    if (waterManager == null && paths.Count == 0 && sceneryEntries.Count == 0) return terrain;
+    if (waterManager == null && paths.Count == 0 && sceneryEntries.Count == 0 &&
+        trackPieces.Count == 0 && rideTracks.Count == 0 && trackSegments.Count == 0 &&
+        pathSurfaceEntries.Count == 0 && trackedRideInstances.Count == 0)
+      return terrain;
 
     var cells = new DatTerrainCell[terrain.Cells.Count];
     for (var index = 0; index < cells.Length; index++)
@@ -1230,7 +2009,12 @@ internal static class DatTerrainReader {
       cells,
       waterManager,
       [.. paths],
-      [.. sceneryEntries]);
+      [.. sceneryEntries],
+      [.. trackPieces],
+      [.. rideTracks],
+      [.. trackSegments],
+      [.. pathSurfaceEntries],
+      [.. trackedRideInstances]);
   }
 
   private static DatTerrainData ReadTerrain(DatBinaryReader reader, int payloadSize) {
@@ -1438,12 +2222,23 @@ internal static class DatTerrainReader {
     private int _collectionElementCount;
     private int _valueReadCount;
     private readonly List<DatPathData> _paths = [];
+    private readonly List<DatPathSurfaceEntryData> _pathSurfaceEntries = [];
     private readonly List<DatSceneryEntryData> _sceneryEntries = [];
+    private readonly List<DatTrackPieceData> _trackPieces = [];
+    private readonly List<DatRideTrackData> _rideTracks = [];
+    private readonly List<DatTrackSegmentData> _trackSegments = [];
+    private readonly List<DatTrackedRideInstanceData> _trackedRideInstances = [];
 
     public DatTerrainData? Terrain { get; private set; }
     public DatWaterManagerData? WaterManager { get; private set; }
     public IReadOnlyList<DatPathData> Paths => _paths;
+    public IReadOnlyList<DatPathSurfaceEntryData> PathSurfaceEntries => _pathSurfaceEntries;
     public IReadOnlyList<DatSceneryEntryData> SceneryEntries => _sceneryEntries;
+    public IReadOnlyList<DatTrackPieceData> TrackPieces => _trackPieces;
+    public IReadOnlyList<DatRideTrackData> RideTracks => _rideTracks;
+    public IReadOnlyList<DatTrackSegmentData> TrackSegments => _trackSegments;
+    public IReadOnlyList<DatTrackedRideInstanceData> TrackedRideInstances =>
+      _trackedRideInstances;
 
     public void AddCollectionElements(int count) {
       if (count > MaxTotalCollectionElements - _collectionElementCount)
@@ -1471,8 +2266,23 @@ internal static class DatTerrainReader {
 
     public void CapturePath(DatPathData path) => _paths.Add(path);
 
+    public void CapturePathSurface(DatPathSurfaceEntryData pathSurfaceEntry) =>
+      _pathSurfaceEntries.Add(pathSurfaceEntry);
+
     public void CaptureScenery(DatSceneryEntryData sceneryEntry) =>
       _sceneryEntries.Add(sceneryEntry);
+
+    public void CaptureTrackPiece(DatTrackPieceData trackPiece) =>
+      _trackPieces.Add(trackPiece);
+
+    public void CaptureRideTrack(DatRideTrackData rideTrack) =>
+      _rideTracks.Add(rideTrack);
+
+    public void CaptureTrackSegment(DatTrackSegmentData trackSegment) =>
+      _trackSegments.Add(trackSegment);
+
+    public void CaptureTrackedRideInstance(DatTrackedRideInstanceData trackedRideInstance) =>
+      _trackedRideInstances.Add(trackedRideInstance);
 
     public void ResolveSceneryDatabaseEntries() {
       var sidEntries = new Dictionary<ulong, DatSidDatabaseEntryData>();

@@ -200,14 +200,16 @@ public class Game : IGame {
 
     Debug.Assert(World.Park != null);
     if (World.Park.PathPlacements.Count > 0) {
-      var pathModel = new Model(PathMeshBuilder.Build(
+      foreach (var batch in PathMeshBuilder.BuildBatches(
         World.Park,
         World.Terrain,
         new Vector4(0.72f, 0.64f, 0.50f, 1f),
         new Vector4(0.28f, 0.48f, 0.70f, 1f))) {
-        Material = new Flat()
-      };
-      Scene.Models.Add(pathModel);
+        // The batch retains exact RCT3 queue flexi-colour indices. Until the palette is decoded,
+        // keep the established ordinary/queue vertex tints instead of inventing a conversion.
+        var pathModel = new Model(batch.Mesh) { Material = new Flat() };
+        Scene.Models.Add(pathModel);
+      }
     }
     logger.Debug("Added {Count} path tiles", World.Park.PathPlacements.Count);
 

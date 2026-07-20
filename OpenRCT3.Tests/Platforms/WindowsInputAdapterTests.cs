@@ -30,6 +30,54 @@ public class WindowsInputAdapterTests {
     }
   }
 
+  [TestCase(Keys.B, Key.B)]
+  [TestCase(Keys.D7, Key.Number7)]
+  [TestCase(Keys.Enter, Key.Enter)]
+  [TestCase(Keys.Escape, Key.Escape)]
+  [TestCase(Keys.Back, Key.Backspace)]
+  [TestCase(Keys.Delete, Key.Delete)]
+  [TestCase(Keys.F12, Key.F12)]
+  [TestCase(Keys.NumPad7, Key.Keypad7)]
+  [TestCase(Keys.OemQuestion, Key.Slash)]
+  [TestCase(Keys.RControlKey, Key.ControlRight)]
+  public void KeyboardEvents_MapNonCameraKeysToSilkKeys(
+    Keys windowsKey,
+    Key expected
+  ) {
+    using var control = new TestControl();
+    using var adapter = new InputAdapter(control, []);
+    var keyboard = adapter.Keyboards.Single();
+    var received = Key.Unknown;
+    keyboard.KeyDown += (_, key, _) => received = key;
+
+    control.EmitKeyDown(windowsKey);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(received, Is.EqualTo(expected));
+      Assert.That(keyboard.IsKeyPressed(expected), Is.True);
+      Assert.That(keyboard.SupportedKeys, Does.Contain(expected));
+    }
+
+    control.EmitKeyUp(windowsKey);
+    Assert.That(keyboard.IsKeyPressed(expected), Is.False);
+  }
+
+  [Test]
+  public void UnsupportedWindowsKey_RemainsUnknownAndIsNotAdvertised() {
+    using var control = new TestControl();
+    using var adapter = new InputAdapter(control, []);
+    var keyboard = adapter.Keyboards.Single();
+    var received = Key.Space;
+    keyboard.KeyDown += (_, key, _) => received = key;
+
+    control.EmitKeyDown(Keys.VolumeUp);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(received, Is.EqualTo(Key.Unknown));
+      Assert.That(keyboard.SupportedKeys, Does.Not.Contain(Key.Unknown));
+    }
+  }
+
   [Test]
   public void MouseButtonEvents_UpdatePositionBeforeNotification() {
     using var control = new TestControl();

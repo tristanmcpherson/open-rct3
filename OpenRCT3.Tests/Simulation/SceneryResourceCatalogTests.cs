@@ -141,6 +141,38 @@ public class SceneryResourceCatalogTests {
   }
 
   [Test]
+  public void FindFrom_UsesReferencingOwnerWhenLoadedPairsReuseAResourceName() {
+    var source = new FakeCatalogSource();
+    var exact = PairPath("Style", "Vanilla", "style");
+    var left = PairPath("Style", "Vanilla", "LeftOwner");
+    var right = PairPath("Style", "Vanilla", "RightOwner");
+    source.AddPair(exact);
+    source.AddPair(
+      left,
+      Resource("LeftOwner", FileType.SceneryItemVisual),
+      Resource("SharedAnimation", FileType.BoneAnim));
+    source.AddPair(
+      right,
+      Resource("RightOwner", FileType.SceneryItemVisual),
+      Resource("SharedAnimation", FileType.BoneAnim));
+    source.TargetedPaths.AddRange(new[] { right, left });
+    using var catalog = Catalog(source);
+    var leftOwner = catalog.Find("LeftOwner", FileType.SceneryItemVisual);
+    var rightOwner = catalog.Find("RightOwner", FileType.SceneryItemVisual);
+
+    var leftAnimation = catalog.FindFrom(
+      leftOwner!, "SharedAnimation", FileType.BoneAnim);
+    var rightAnimation = catalog.FindFrom(
+      rightOwner!, "SharedAnimation", FileType.BoneAnim);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(leftAnimation?.Archive, Is.SameAs(leftOwner?.Archive));
+      Assert.That(rightAnimation?.Archive, Is.SameAs(rightOwner?.Archive));
+      Assert.That(rightAnimation?.Archive, Is.Not.SameAs(leftAnimation?.Archive));
+    }
+  }
+
+  [Test]
   public void Find_FallsBackToRecursiveDescendantWhenOwnerFilenameDiffers() {
     var source = new FakeCatalogSource();
     var exact = PairPath("Style", "Vanilla", "style");

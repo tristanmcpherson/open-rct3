@@ -15,6 +15,7 @@ internal abstract class DatPathData {
   public ulong Surface { get; }
   public byte SurfaceType { get; }
   public byte BoolValue { get; }
+  public DatPathSurfaceEntryData? ResolvedSurface { get; private set; }
 
   protected DatPathData(
     ulong entryId,
@@ -36,5 +37,14 @@ internal abstract class DatPathData {
     Surface = surface;
     SurfaceType = surfaceType;
     BoolValue = boolValue;
+  }
+
+  internal void ResolveSurface(DatPathSurfaceEntryData surface) {
+    ArgumentNullException.ThrowIfNull(surface);
+    if (surface.EntryId != Surface)
+      throw new ArgumentException(
+        "The path surface entry does not match this path reference.",
+        nameof(surface));
+    ResolvedSurface = surface;
   }
 }

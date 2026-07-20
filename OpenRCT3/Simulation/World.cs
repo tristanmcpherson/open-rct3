@@ -31,14 +31,22 @@ public class World : GDK.Game.World {
           out var waterManager,
           out var paths,
           out var sceneryItems,
-          out var sceneryItemPlacements);
+          out var sceneryItemPlacements,
+          out var trackPieces,
+          out var rideTracks,
+          out var trackSegments,
+          out var trackedRideInstances);
         try {
           var park = BuildPark(
             terrain,
             waterManager,
             paths,
             sceneryItems,
-            sceneryItemPlacements);
+            sceneryItemPlacements,
+            trackPieces,
+            rideTracks,
+            trackSegments,
+            trackedRideInstances);
           Terrain = terrain;
           Park = park;
         } catch {
@@ -56,12 +64,39 @@ public class World : GDK.Game.World {
     DatWaterManagerData? waterManager,
     IReadOnlyList<DatPathData> paths,
     IReadOnlyList<DatSceneryItemData> sceneryItems,
-    IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements
+    IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    IReadOnlyList<DatTrackPieceData> trackPieces,
+    IReadOnlyList<DatRideTrackData> rideTracks,
+    IReadOnlyList<DatTrackSegmentData> trackSegments
+  ) => BuildPark(
+    terrain,
+    waterManager,
+    paths,
+    sceneryItems,
+    sceneryItemPlacements,
+    trackPieces,
+    rideTracks,
+    trackSegments,
+    Array.Empty<DatTrackedRideInstanceData>());
+
+  internal static Park BuildPark(
+    Terrain terrain,
+    DatWaterManagerData? waterManager,
+    IReadOnlyList<DatPathData> paths,
+    IReadOnlyList<DatSceneryItemData> sceneryItems,
+    IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    IReadOnlyList<DatTrackPieceData> trackPieces,
+    IReadOnlyList<DatRideTrackData> rideTracks,
+    IReadOnlyList<DatTrackSegmentData> trackSegments,
+    IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances
   ) {
     var park = new Park(terrain);
     if (waterManager != null) WaterManagerLoader.Load(park, terrain, waterManager);
     PathManagerLoader.Load(park, terrain, paths);
     SceneryManagerLoader.Load(park, terrain, sceneryItems, sceneryItemPlacements);
+    RideTrackManagerLoader.Load(park, terrain, trackPieces);
+    RideTrackTopologyLoader.Load(park, rideTracks, trackSegments);
+    park.TrackedRideInstances.AddRange(trackedRideInstances);
     return park;
   }
 

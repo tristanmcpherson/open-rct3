@@ -20,7 +20,8 @@ internal readonly record struct CameraControlInput(
   float ZoomSteps,
   bool CaptureKeyboard = false,
   bool CaptureMouse = false,
-  float MouseOrbitRadians = 0f
+  float MouseOrbitRadians = 0f,
+  float MouseElevationRadians = 0f
 );
 
 /// <summary>
@@ -50,6 +51,7 @@ internal sealed class CameraController : IDisposable {
   private IMouse? mouse;
   private float pendingZoomSteps;
   private float pendingMouseOrbitRadians;
+  private float pendingMouseElevationRadians;
   private Vector2? lastMousePosition;
   private bool mouseOrbitActive;
   private bool disposed;
@@ -112,10 +114,12 @@ internal sealed class CameraController : IDisposable {
         ZoomSteps: pendingZoomSteps,
         CaptureKeyboard: IsCaptured(captureKeyboard),
         CaptureMouse: mouseCaptured,
-        MouseOrbitRadians: pendingMouseOrbitRadians
+        MouseOrbitRadians: pendingMouseOrbitRadians,
+        MouseElevationRadians: pendingMouseElevationRadians
       );
       pendingZoomSteps = 0f;
       pendingMouseOrbitRadians = 0f;
+      pendingMouseElevationRadians = 0f;
     }
 
     Update(delta, input);
@@ -139,6 +143,14 @@ internal sealed class CameraController : IDisposable {
       );
     var orbit = keyboardOrbit + mouseOrbit;
     if (orbit != 0f) camera.Orbit(orbit);
+    var mouseElevation = input.CaptureMouse
+      ? 0f
+      : Math.Clamp(
+        input.MouseElevationRadians,
+        -MaxPendingMouseOrbitRadians,
+        MaxPendingMouseOrbitRadians
+      );
+    if (mouseElevation != 0f) camera.OrbitElevation(mouseElevation);
 
     if (!input.CaptureKeyboard && elapsed > 0f)
       Pan(input.PanRight, input.PanForward, elapsed);
@@ -159,6 +171,7 @@ internal sealed class CameraController : IDisposable {
       pressedKeys.Clear();
       pendingZoomSteps = 0f;
       pendingMouseOrbitRadians = 0f;
+      pendingMouseElevationRadians = 0f;
       lastMousePosition = null;
       mouseOrbitActive = false;
     }
@@ -251,6 +264,7 @@ internal sealed class CameraController : IDisposable {
     lock (inputGate) {
       if (disposed) return;
       pendingMouseOrbitRadians = 0f;
+      pendingMouseElevationRadians = 0f;
       if (IsCaptured(captureMouse)) {
         mouseOrbitActive = false;
         lastMousePosition = null;
@@ -285,10 +299,17 @@ internal sealed class CameraController : IDisposable {
 
       lastMousePosition = position;
       var deltaX = position.X - previous.X;
-      if (!float.IsFinite(deltaX)) return;
-      var boundedDelta = Math.Clamp(deltaX, -MaxMouseMovePixels, MaxMouseMovePixels);
+      var deltaY = position.Y - previous.Y;
+      if (!float.IsFinite(deltaX) || !float.IsFinite(deltaY)) return;
+      var boundedDeltaX = Math.Clamp(deltaX, -MaxMouseMovePixels, MaxMouseMovePixels);
+      var boundedDeltaY = Math.Clamp(deltaY, -MaxMouseMovePixels, MaxMouseMovePixels);
       pendingMouseOrbitRadians = Math.Clamp(
-        pendingMouseOrbitRadians + (boundedDelta * MouseOrbitRadiansPerPixel),
+        pendingMouseOrbitRadians + (boundedDeltaX * MouseOrbitRadiansPerPixel),
+        -MaxPendingMouseOrbitRadians,
+        MaxPendingMouseOrbitRadians
+      );
+      pendingMouseElevationRadians = Math.Clamp(
+        pendingMouseElevationRadians - (boundedDeltaY * MouseOrbitRadiansPerPixel),
         -MaxPendingMouseOrbitRadians,
         MaxPendingMouseOrbitRadians
       );
@@ -308,7 +329,8 @@ internal sealed class CameraController : IDisposable {
     && float.IsFinite(input.PanForward)
     && float.IsFinite(input.Rotation)
     && float.IsFinite(input.ZoomSteps)
-    && float.IsFinite(input.MouseOrbitRadians);
+    && float.IsFinite(input.MouseOrbitRadians)
+    && float.IsFinite(input.MouseElevationRadians);
 
   private static bool IsFinite(Vector2 value) =>
     float.IsFinite(value.X) && float.IsFinite(value.Y);

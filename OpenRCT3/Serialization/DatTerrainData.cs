@@ -19,10 +19,18 @@ internal sealed class DatTerrainData {
   public IReadOnlyList<DatTerrainCell> Cells { get; }
   public DatWaterManagerData? WaterManager { get; }
   public IReadOnlyList<DatPathData> Paths { get; }
+  public IReadOnlyList<DatPathSurfaceEntryData> PathSurfaceEntries { get; }
+  public IReadOnlyList<DatPathTypeDatabaseEntryData> PathTypeDatabaseEntries { get; }
+  public IReadOnlyList<DatQueueTypeDatabaseEntryData> QueueTypeDatabaseEntries { get; }
+  public IReadOnlyList<DatQueueTypeGroundSurfaceData> QueueTypeGroundSurfaces { get; }
   public IReadOnlyList<DatSceneryEntryData> SceneryEntries { get; }
   public IReadOnlyList<DatSidDatabaseEntryData> SidDatabaseEntries { get; }
   public IReadOnlyList<DatSceneryItemData> SceneryItems { get; }
   public IReadOnlyList<DatSceneryItemPlacementSingleData> SceneryItemPlacements { get; }
+  public IReadOnlyList<DatTrackPieceData> TrackPieces { get; }
+  public IReadOnlyList<DatRideTrackData> RideTracks { get; }
+  public IReadOnlyList<DatTrackSegmentData> TrackSegments { get; }
+  public IReadOnlyList<DatTrackedRideInstanceData> TrackedRideInstances { get; }
 
   public DatTerrainData(
     int width,
@@ -34,7 +42,12 @@ internal sealed class DatTerrainData {
     DatTerrainCell[] cells,
     DatWaterManagerData? waterManager = null,
     DatPathData[]? paths = null,
-    DatSceneryEntryData[]? sceneryEntries = null) {
+    DatSceneryEntryData[]? sceneryEntries = null,
+    DatTrackPieceData[]? trackPieces = null,
+    DatRideTrackData[]? rideTracks = null,
+    DatTrackSegmentData[]? trackSegments = null,
+    DatPathSurfaceEntryData[]? pathSurfaceEntries = null,
+    DatTrackedRideInstanceData[]? trackedRideInstances = null) {
     if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
     if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
     ArgumentNullException.ThrowIfNull(cells);
@@ -51,6 +64,29 @@ internal sealed class DatTerrainData {
     WaterManager = waterManager;
     var pathData = (DatPathData[])(paths?.Clone() ?? Array.Empty<DatPathData>());
     Paths = Array.AsReadOnly(pathData);
+    var rawPathSurfaceEntries = (DatPathSurfaceEntryData[])(
+      pathSurfaceEntries?.Clone() ?? Array.Empty<DatPathSurfaceEntryData>());
+    var pathTypeDatabaseEntries = new List<DatPathTypeDatabaseEntryData>();
+    var queueTypeDatabaseEntries = new List<DatQueueTypeDatabaseEntryData>();
+    var queueTypeGroundSurfaces = new List<DatQueueTypeGroundSurfaceData>();
+    foreach (var entry in rawPathSurfaceEntries) {
+      switch (entry) {
+        case DatPathTypeDatabaseEntryData pathType:
+          pathTypeDatabaseEntries.Add(pathType);
+          break;
+        case DatQueueTypeDatabaseEntryData queueType:
+          queueTypeDatabaseEntries.Add(queueType);
+          break;
+        case DatQueueTypeGroundSurfaceData queueGround:
+          queueTypeGroundSurfaces.Add(queueGround);
+          break;
+      }
+    }
+
+    PathSurfaceEntries = Array.AsReadOnly(rawPathSurfaceEntries);
+    PathTypeDatabaseEntries = pathTypeDatabaseEntries.AsReadOnly();
+    QueueTypeDatabaseEntries = queueTypeDatabaseEntries.AsReadOnly();
+    QueueTypeGroundSurfaces = queueTypeGroundSurfaces.AsReadOnly();
     var rawSceneryEntries = (DatSceneryEntryData[])(
       sceneryEntries?.Clone() ?? Array.Empty<DatSceneryEntryData>());
     var sidDatabaseEntries = new List<DatSidDatabaseEntryData>();
@@ -74,5 +110,17 @@ internal sealed class DatTerrainData {
     SidDatabaseEntries = sidDatabaseEntries.AsReadOnly();
     SceneryItems = sceneryItems.AsReadOnly();
     SceneryItemPlacements = sceneryItemPlacements.AsReadOnly();
+    var rawTrackPieces = (DatTrackPieceData[])(
+      trackPieces?.Clone() ?? Array.Empty<DatTrackPieceData>());
+    TrackPieces = Array.AsReadOnly(rawTrackPieces);
+    var rawRideTracks = (DatRideTrackData[])(
+      rideTracks?.Clone() ?? Array.Empty<DatRideTrackData>());
+    RideTracks = Array.AsReadOnly(rawRideTracks);
+    var rawTrackSegments = (DatTrackSegmentData[])(
+      trackSegments?.Clone() ?? Array.Empty<DatTrackSegmentData>());
+    TrackSegments = Array.AsReadOnly(rawTrackSegments);
+    var rawTrackedRideInstances = (DatTrackedRideInstanceData[])(
+      trackedRideInstances?.Clone() ?? Array.Empty<DatTrackedRideInstanceData>());
+    TrackedRideInstances = Array.AsReadOnly(rawTrackedRideInstances);
   }
 }

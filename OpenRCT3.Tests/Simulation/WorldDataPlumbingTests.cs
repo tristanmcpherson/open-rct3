@@ -9,6 +9,8 @@ namespace OpenRCT3.Tests.Simulation;
 
 [TestFixture]
 public class WorldDataPlumbingTests {
+  private const ulong SceneryItemEntryId = 100;
+
   [Test]
   public void FromData_ReturnsEveryDecodedParkObjectCollection() {
     var data = Data();
@@ -18,7 +20,11 @@ public class WorldDataPlumbingTests {
       out var waterManager,
       out var paths,
       out var sceneryItems,
-      out var sceneryItemPlacements);
+      out var sceneryItemPlacements,
+      out var trackPieces,
+      out var rideTracks,
+      out var trackSegments,
+      out var trackedRideInstances);
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(terrain.Width, Is.EqualTo(data.Width));
@@ -26,6 +32,10 @@ public class WorldDataPlumbingTests {
       Assert.That(paths, Is.SameAs(data.Paths));
       Assert.That(sceneryItems, Is.SameAs(data.SceneryItems));
       Assert.That(sceneryItemPlacements, Is.SameAs(data.SceneryItemPlacements));
+      Assert.That(trackPieces, Is.SameAs(data.TrackPieces));
+      Assert.That(rideTracks, Is.SameAs(data.RideTracks));
+      Assert.That(trackSegments, Is.SameAs(data.TrackSegments));
+      Assert.That(trackedRideInstances, Is.SameAs(data.TrackedRideInstances));
     }
   }
 
@@ -37,20 +47,35 @@ public class WorldDataPlumbingTests {
       out var waterManager,
       out var paths,
       out var sceneryItems,
-      out var sceneryItemPlacements);
+      out var sceneryItemPlacements,
+      out var trackPieces,
+      out var rideTracks,
+      out var trackSegments,
+      out var trackedRideInstances);
 
     var park = World.BuildPark(
       terrain,
       waterManager,
       paths,
       sceneryItems,
-      sceneryItemPlacements);
+      sceneryItemPlacements,
+      trackPieces,
+      rideTracks,
+      trackSegments,
+      trackedRideInstances);
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(park.PathPlacements, Has.Count.EqualTo(1));
       Assert.That(park.Paths, Does.ContainKey((1, 1)));
       Assert.That(park.SceneryPlacements, Has.Count.EqualTo(1));
       Assert.That(park.SceneryPlacements[0].ObjectKey, Is.EqualTo("Test_SID"));
+      Assert.That(park.RideTrackPlacements, Has.Count.EqualTo(1));
+      Assert.That(park.RideTracks, Has.Count.EqualTo(1));
+      Assert.That(park.RideTrackSegments, Has.Count.EqualTo(1));
+      Assert.That(park.TrackedRideInstances, Is.EqualTo(data.TrackedRideInstances));
+      Assert.That(
+        park.RideTrackPlacements[0].SceneryPlacementSourceEntryId,
+        Is.EqualTo(SceneryItemEntryId));
     }
   }
 
@@ -63,7 +88,7 @@ public class WorldDataPlumbingTests {
       overlayFilename: "Style\\Themed\\Test",
       symbolName: "Test_SID");
     var item = new DatSceneryItemData(
-      entryId: 100,
+      entryId: SceneryItemEntryId,
       variant: DatSceneryItemVariant.Base,
       adSpend: null,
       animInfoList: [],
@@ -101,6 +126,49 @@ public class WorldDataPlumbingTests {
       surface: 0,
       surfaceType: byte.MaxValue,
       boolValue: 0);
+    var trackPiece = new DatTrackPieceData(
+      entryId: 500,
+      flexiColourField: new DatSceneryFlexiColour(1, 2, 3),
+      next: 0,
+      owner: 800,
+      platformPiece: 0,
+      prev: 0,
+      reversed: false,
+      sidDatabaseEntry: sid.EntryId,
+      symbolName: "Test_SID:tks",
+      sceneryItem: item.EntryId,
+      sceneryItemDataField: new DatSceneryItemDataField(0, 0, 0, null, 1, 1),
+      segment: 800,
+      userAngleDegrees: 0);
+    var rideTrack = new DatRideTrackData(
+      entryId: 700,
+      direction: 2,
+      firstSegment: 800,
+      isCircuit: false,
+      lastSegment: 800,
+      prototype: false,
+      trackPieces: [trackPiece.EntryId],
+      trackFlexiColours: new DatSceneryFlexiColour(1, 2, 3),
+      trackedRideInstance: 900);
+    var trackSegment = new DatTrackSegmentData(
+      entryId: 800,
+      direction: 2,
+      firstPiece: trackPiece.EntryId,
+      lastPiece: trackPiece.EntryId,
+      nextSegment: 1697,
+      prevSegment: 1697,
+      prototype: false,
+      track: rideTrack.EntryId);
+    var trackedRideInstance = new DatTrackedRideInstanceData(
+      entryId: 900,
+      name: "Synthetic coaster",
+      track: rideTrack.EntryId,
+      trackedRideOverlayName: "rides\\synthetic",
+      trackedRideSymbolName: "Synthetic_Ride",
+      nTrains: 1,
+      nCarsPerTrain: 4,
+      trainSelection: 0,
+      trains: [1_000]);
 
     return new DatTerrainData(
       width: 12,
@@ -112,6 +180,10 @@ public class WorldDataPlumbingTests {
       cells: new DatTerrainCell[12 * 12],
       waterManager: new DatWaterManagerData(12, 12, []),
       paths: [path],
-      sceneryEntries: [sid, item, placementSingle]);
+      sceneryEntries: [sid, item, placementSingle],
+      trackPieces: [trackPiece],
+      rideTracks: [rideTrack],
+      trackSegments: [trackSegment],
+      trackedRideInstances: [trackedRideInstance]);
   }
 }

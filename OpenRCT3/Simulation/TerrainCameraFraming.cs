@@ -51,14 +51,10 @@ public static class TerrainCameraFraming {
     var target = (min + max) * 0.5f;
     var halfExtents = (max - min) * 0.5f;
     var distance = Vector3.Distance(min, max) * DistanceMargin;
-    var horizontalViewMagnitude = new Vector2(
-      Camera.DefaultViewDirection.X,
-      Camera.DefaultViewDirection.Y
-    ).Length();
-    var horizontalSupport = horizontalViewMagnitude
-      * new Vector2(halfExtents.X, halfExtents.Y).Length();
-    var verticalSupport = MathF.Abs(Camera.DefaultViewDirection.Z) * halfExtents.Z;
-    var minimumDistance = horizontalSupport + verticalSupport + MinimumDistanceClearance;
+    // The camera can orbit to any azimuth and within one degree of either vertical pole. The AABB's
+    // half-diagonal is its maximum support over every unit view direction, so this minimum keeps the
+    // eye and near plane outside the rendered terrain at every allowed yaw and elevation.
+    var minimumDistance = halfExtents.Length() + MinimumDistanceClearance;
     return (target, distance, minimumDistance);
   }
 }

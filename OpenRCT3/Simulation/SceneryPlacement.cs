@@ -4,7 +4,17 @@
 //   - Chance Snow <git@chancesnow.me>
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
+using System.Collections.Generic;
+
 namespace OpenRCT3.Simulation;
+
+/// <summary>One persisted DAT animation-state entry retained for future pose evaluation.</summary>
+public readonly record struct SceneryAnimationState(
+  bool AutoLoop,
+  int CurrentAnimation,
+  float CurrentAnimationTime,
+  bool MarkedForDeletion
+);
 
 /// <summary>
 /// A single placed scenery instance: object reference, anchor position, elevation, and orientation. Stored
@@ -87,6 +97,13 @@ public struct SceneryPlacement {
   /// <summary>The source object's serialized animation-frame offset.</summary>
   public int FrameOffset;
 
+  /// <summary>
+  /// The source object's persisted animation states. Rendering remains in the decoded BSH rest pose
+  /// until the original game's sampling and blending behavior is implemented from authoritative
+  /// evidence.
+  /// </summary>
+  public IReadOnlyList<SceneryAnimationState> AnimationStates;
+
   public SceneryPlacement(
     string objectKey,
     int tileX,
@@ -119,5 +136,6 @@ public struct SceneryPlacement {
     FlexiColour1 = 0;
     FlexiColour2 = 0;
     FrameOffset = 0;
+    AnimationStates = [];
   }
 }

@@ -117,8 +117,12 @@ namespace OpenRCT3.Platforms.macOS {
     private NSObject? keyMonitor;
     private readonly MacMouse mouse;
     private readonly MacKeyboard keyboard;
+    private readonly NSView gameView;
 
-    public MacInputContext(nint handle) : base(handle) {
+    public MacInputContext(nint ownerWindowHandle) : this(ResolveGameView(ownerWindowHandle)) { }
+
+    public MacInputContext(NSView gameView) : base((nint)gameView.Handle) {
+      this.gameView = gameView;
       mouse = new MacMouse();
       keyboard = new MacKeyboard();
       mice.Add(mouse);
@@ -143,19 +147,81 @@ namespace OpenRCT3.Platforms.macOS {
     }
 
     private NSEvent MonitorMouseEvent(NSEvent ev) {
-      HandleMouseEvent(ev);
+      if (OwnsMouseEvent(ev)) HandleMouseEvent(ev);
       return ev;
     }
 
     private NSEvent MonitorKeyEvent(NSEvent ev) {
-      HandleKeyEvent(ev);
+      if (OwnsKeyEvent(ev)) HandleKeyEvent(ev);
       return ev;
     }
 
+    private bool OwnsMouseEvent(NSEvent ev) {
+      var eventWindow = ev.Window;
+      var ownerWindowHandle = GetWindowHandle(gameView.Window);
+      var eventWindowHandle = GetWindowHandle(eventWindow);
+      if (!IsOwnedWindow(ownerWindowHandle, eventWindowHandle)) return false;
+
+      var location = gameView.ConvertPointFromView(ev.LocationInWindow, null);
+      return IsOwnedViewTarget(
+        ownerWindowHandle,
+        eventWindowHandle,
+        gameView.HitTest(location) != null);
+    }
+
+    private bool OwnsKeyEvent(NSEvent ev) {
+      var eventWindow = ev.Window;
+      var ownerWindowHandle = GetWindowHandle(gameView.Window);
+      var eventWindowHandle = GetWindowHandle(eventWindow);
+      var ownsResponder = eventWindow?.FirstResponder is NSView responderView &&
+        IsViewInAncestry((nint)gameView.Handle, GetViewAncestry(responderView));
+      return IsOwnedViewTarget(ownerWindowHandle, eventWindowHandle, ownsResponder);
+    }
+
+    internal static bool IsOwnedWindow(nint ownerWindow, nint eventWindow) =>
+      ownerWindow != nint.Zero && eventWindow == ownerWindow;
+
+    internal static bool IsOwnedViewTarget(
+      nint ownerWindow,
+      nint eventWindow,
+      bool targetsGameView) =>
+      targetsGameView && IsOwnedWindow(ownerWindow, eventWindow);
+
+    internal static bool IsViewInAncestry(nint gameView, IEnumerable<nint> ancestry) {
+      if (gameView == nint.Zero) return false;
+      foreach (var view in ancestry)
+        if (view == gameView) return true;
+      return false;
+    }
+
+    private static IEnumerable<nint> GetViewAncestry(NSView view) {
+      for (var current = (NSView?)view; current != null; current = current.Superview)
+        yield return (nint)current.Handle;
+    }
+
+    private static nint GetWindowHandle(NSWindow? window) => window == null
+      ? nint.Zero
+      : (nint)window.Handle;
+
+    private static NSView ResolveGameView(nint ownerWindowHandle) {
+      foreach (var window in NSApplication.SharedApplication.Windows) {
+        if ((nint)window.Handle != ownerWindowHandle) continue;
+        if (window.ContentViewController is GameViewController controller)
+          return controller.Game;
+      }
+      throw new InvalidOperationException("The input owner window has no game view.");
+    }
+
     private void HandleMouseEvent(NSEvent ev) {
-      // ev.LocationInWindow is in window coordinates; for our purposes supply raw window coords
+      // AppKit window coordinates are bottom-up, while Silk/WinForms mouse coordinates are top-down.
+      // Normalize here so shared gestures (especially vertical camera orbit) behave identically.
       var loc = ev.LocationInWindow;
-      var pos = new Vector2((float)loc.X, (float)loc.Y);
+      var window = ev.Window
+        ?? throw new InvalidOperationException("A monitored mouse event has no owning window.");
+      var height = window.ContentView?.Bounds.Height ?? window.Frame.Height;
+      var pos = ToTopLeftPosition(
+        new Vector2((float)loc.X, (float)loc.Y),
+        (float)height);
       switch (ev.Type) {
         case NSEventType.LeftMouseDown:
           mouse.OnMouseDown(MouseButton.Left, pos);
@@ -188,6 +254,9 @@ namespace OpenRCT3.Platforms.macOS {
           break;
       }
     }
+
+    internal static Vector2 ToTopLeftPosition(Vector2 position, float height) =>
+      new(position.X, height - position.Y);
 
     private void HandleKeyEvent(NSEvent ev) {
       switch (ev.Type) {

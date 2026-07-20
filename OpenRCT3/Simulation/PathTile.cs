@@ -37,6 +37,17 @@ public struct PathTile {
   /// <summary>RCT3's legacy surface fallback selector; 255 means the reference is authoritative.</summary>
   public byte SurfaceType;
 
+  /// <summary>
+  /// Internal PTD/QTD resource name resolved through the DAT surface database, or <c>null</c> when
+  /// the park uses a legacy fallback or the referenced database entry is unavailable.
+  /// </summary>
+  public string? SurfaceSystemName;
+
+  /// <summary>
+  /// Queue ground-surface flexi colours, when the DAT stores a ground-surface wrapper.
+  /// </summary>
+  public PathSurfaceColours? SurfaceColours;
+
   /// <summary>Whether the expansion-era path record marks this tile as underground.</summary>
   public bool Underground;
 

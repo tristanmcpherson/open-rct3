@@ -5,6 +5,7 @@
 using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace OpenRCT3.Simulation;
 
@@ -20,7 +21,10 @@ public sealed record ResolvedSceneryBoneLod(
   SceneryItemVisual Visual,
   SceneryItemVisualLod Lod,
   BoneShape Shape
-);
+) {
+  /// <summary>The BAN resources declared by this LOD, retained in serialized SVD order.</summary>
+  public IReadOnlyList<BoneAnimation> Animations { get; init; } = [];
+}
 
 /// <summary>
 /// A decoded SID plus the shape LODs from its first supported visual alternative.
@@ -35,14 +39,21 @@ public sealed record ResolvedSceneryObject(
 /// <summary>Resolves SID-to-SVD-to-SHS/BSH resource chains for scenery rendering.</summary>
 public sealed class SceneryVisualResolver {
   private readonly Func<string, FileType, SceneryResourceEntry?> find;
+  private readonly Func<
+    SceneryResourceEntry,
+    string,
+    FileType,
+    SceneryResourceEntry?> findFrom;
   private readonly Func<Ovl, IReadOnlyList<SceneryItem>> decodeItems;
   private readonly Func<Ovl, IReadOnlyList<SceneryItemVisual>> decodeVisuals;
   private readonly Func<Ovl, IReadOnlyList<StaticShape>> decodeShapes;
   private readonly Func<Ovl, IReadOnlyList<BoneShape>> decodeBoneShapes;
+  private readonly Func<Ovl, IReadOnlyList<BoneAnimation>> decodeBoneAnimations;
   private readonly Dictionary<Ovl, IReadOnlyDictionary<string, SceneryItem>> itemCache = [];
   private readonly Dictionary<Ovl, IReadOnlyDictionary<string, SceneryItemVisual>> visualCache = [];
   private readonly Dictionary<Ovl, IReadOnlyDictionary<string, StaticShape>> shapeCache = [];
   private readonly Dictionary<Ovl, IReadOnlyDictionary<string, BoneShape>> boneShapeCache = [];
+  private readonly Dictionary<Ovl, IReadOnlyDictionary<string, BoneAnimation>> boneAnimationCache = [];
 
   public SceneryVisualResolver(SceneryResourceCatalog catalog)
     : this(
@@ -50,14 +61,18 @@ public sealed class SceneryVisualResolver {
       SceneryItems.Extract,
       SceneryItemVisuals.Extract,
       StaticShapes.Extract,
-      BoneShapes.Extract) { }
+      BoneShapes.Extract,
+      BoneAnimations.Extract,
+      catalog.FindFrom) { }
 
   internal SceneryVisualResolver(
     Func<string, FileType, SceneryResourceEntry?> find,
     Func<Ovl, IReadOnlyList<SceneryItem>> decodeItems,
     Func<Ovl, IReadOnlyList<SceneryItemVisual>> decodeVisuals,
     Func<Ovl, IReadOnlyList<StaticShape>> decodeShapes,
-    Func<Ovl, IReadOnlyList<BoneShape>> decodeBoneShapes
+    Func<Ovl, IReadOnlyList<BoneShape>> decodeBoneShapes,
+    Func<Ovl, IReadOnlyList<BoneAnimation>>? decodeBoneAnimations = null,
+    Func<SceneryResourceEntry, string, FileType, SceneryResourceEntry?>? findFrom = null
   ) {
     ArgumentNullException.ThrowIfNull(find);
     ArgumentNullException.ThrowIfNull(decodeItems);
@@ -69,6 +84,8 @@ public sealed class SceneryVisualResolver {
     this.decodeVisuals = decodeVisuals;
     this.decodeShapes = decodeShapes;
     this.decodeBoneShapes = decodeBoneShapes;
+    this.decodeBoneAnimations = decodeBoneAnimations ?? BoneAnimations.Extract;
+    this.findFrom = findFrom ?? ((_, name, type) => find(name, type));
   }
 
   /// <summary>
@@ -88,7 +105,8 @@ public sealed class SceneryVisualResolver {
       decodeItems,
       "SID");
     foreach (var visualRef in item.VisualRefs) {
-      var visualEntry = FindRequired(visualRef, FileType.SceneryItemVisual, item.Name);
+      var visualEntry = FindRequired(
+        itemEntry, visualRef, FileType.SceneryItemVisual, item.Name);
       var visual = GetExact(
         visualEntry.Archive,
         visualEntry.File.Name,
@@ -105,7 +123,7 @@ public sealed class SceneryVisualResolver {
                 $"SVD '{visual.Name}' static LOD '{lod.Name}' has no SHS reference.");
 
             var shapeEntry = FindRequired(
-              lod.StaticShapeRef, FileType.StaticShape, visual.Name);
+              visualEntry, lod.StaticShapeRef, FileType.StaticShape, visual.Name);
             var shape = GetExact(
               shapeEntry.Archive,
               shapeEntry.File.Name,
@@ -120,14 +138,31 @@ public sealed class SceneryVisualResolver {
                 $"SVD '{visual.Name}' bone LOD '{lod.Name}' has no BSH reference.");
 
             var boneShapeEntry = FindRequired(
-              lod.BoneShapeRef, FileType.BoneShape, visual.Name);
+              visualEntry, lod.BoneShapeRef, FileType.BoneShape, visual.Name);
             var boneShape = GetExact(
               boneShapeEntry.Archive,
               boneShapeEntry.File.Name,
               boneShapeCache,
               decodeBoneShapes,
               "BSH");
-            boneLods.Add(new ResolvedSceneryBoneLod(visual, lod, boneShape));
+            if (lod.AnimationRefs == null)
+              throw new InvalidDataException(
+                $"SVD '{visual.Name}' bone LOD '{lod.Name}' has a null BAN reference list.");
+            var animations = new List<BoneAnimation>(lod.AnimationRefs.Count);
+            foreach (var animationRef in lod.AnimationRefs) {
+              var animationEntry = FindRequired(
+                visualEntry, animationRef, FileType.BoneAnim, visual.Name);
+              var animation = GetExact(
+                animationEntry.Archive,
+                animationEntry.File.Name,
+                boneAnimationCache,
+                this.decodeBoneAnimations,
+                "BAN");
+              animations.Add(animation);
+            }
+            boneLods.Add(new ResolvedSceneryBoneLod(visual, lod, boneShape) {
+              Animations = animations.ToArray()
+            });
             break;
         }
       }
@@ -140,6 +175,7 @@ public sealed class SceneryVisualResolver {
   }
 
   private SceneryResourceEntry FindRequired(
+    SceneryResourceEntry owner,
     string taggedReference,
     FileType expectedType,
     string ownerName
@@ -149,7 +185,7 @@ public sealed class SceneryVisualResolver {
       throw new InvalidDataException(
         $"Resource '{ownerName}' references '{taggedReference}', expected " +
         $"{expectedType.ToTagString()}.");
-    return find(name, type)
+    return findFrom(owner, name, type)
       ?? throw new InvalidDataException(
         $"Resource '{ownerName}' references missing '{taggedReference}'.");
   }
@@ -204,6 +240,7 @@ public sealed class SceneryVisualResolver {
     SceneryItemVisual visual => visual.Name,
     StaticShape shape => shape.Name,
     BoneShape shape => shape.Name,
+    BoneAnimation animation => animation.Name,
     _ => throw new ArgumentException(
       $"Unsupported scenery resource model '{typeof(T).Name}'.", nameof(resource)),
   };

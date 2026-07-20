@@ -45,7 +45,7 @@ internal static class Program {
       var selectedPath = picker.PickFolder("Select your RCT3 Assets folder");
 
       if (!string.IsNullOrEmpty(selectedPath) && InstallFinder.Validate(selectedPath)) {
-        config = config with { InstallPath = selectedPath };
+        config.InstallPath = selectedPath;
         config.Save();
         return config;
       }
@@ -67,7 +67,9 @@ internal static class Program {
     // NSApplication.Init() must be called before any UI elements are created.
     // LoadConfigAndFindInstall may show a dialog to the user.
     NSApplication.Init();
+    var launchOptions = LaunchOptions.Parse(args, allowPositionalDat: false);
     LoadConfigAndFindInstall();
+    launchOptions.Apply();
     NSApplication.SharedApplication.Delegate = new AppDelegate();
     NSApplication.Main(args);
   }

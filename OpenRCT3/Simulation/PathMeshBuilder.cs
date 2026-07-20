@@ -26,16 +26,9 @@ public static class PathMeshBuilder {
 
     var vertices = new List<Vertex>();
     var indices = new List<uint>();
-    var placements = park.PathPlacements.Count > 0
-      ? park.PathPlacements
-      : park.Paths.Select(path => new PathPlacement(path.Key.X, path.Key.Y, path.Value)).ToList();
-    foreach (var placement in placements
-      .OrderBy(path => path.TileY)
-      .ThenBy(path => path.TileX)
-      .ThenBy(path => path.Tile.Raised)) {
+    foreach (var placement in OrderedPlacements(park)) {
       var (tileX, tileY, tile) = placement;
-      if (!terrain.HasTile(tileX, tileY))
-        throw new InvalidDataException($"Path tile ({tileX}, {tileY}) is outside the terrain grid.");
+      ValidatePlacement(terrain, tileX, tileY);
 
       AddTile(
         terrain,
@@ -48,6 +41,76 @@ public static class PathMeshBuilder {
     }
 
     return new Mesh(vertices, indices) { Name = name };
+  }
+
+  /// <summary>
+  /// Builds deterministic surface-aware batches without interpreting RCT3's flexi-colour indices.
+  /// </summary>
+  /// <remarks>
+  /// Geometry is keyed only by ordinary/queue kind and the exact decoded surface system name.
+  /// <see cref="PathMeshBatch.SurfaceColours"/> retains one raw value per emitted tile, in the same
+  /// row-major order as that tile's four vertices. Colour-index-to-palette conversion belongs in a
+  /// future path material implementation, not this geometry builder.
+  /// </remarks>
+  public static IReadOnlyList<PathMeshBatch> BuildBatches(
+    Park park,
+    Terrain terrain,
+    Vector4 pathColor,
+    Vector4 queueColor,
+    string name = "Paths"
+  ) {
+    ArgumentNullException.ThrowIfNull(park);
+    ArgumentNullException.ThrowIfNull(terrain);
+
+    var geometry =
+      new Dictionary<(PathMaterialKind Kind, string? SurfaceSystemName), MeshGeometry>();
+    foreach (var placement in OrderedPlacements(park)) {
+      var (tileX, tileY, tile) = placement;
+      ValidatePlacement(terrain, tileX, tileY);
+
+      var kind = tile.IsQueue ? PathMaterialKind.Queue : PathMaterialKind.Ordinary;
+      var key = (kind, tile.SurfaceSystemName);
+      if (!geometry.TryGetValue(key, out var batch)) {
+        batch = new MeshGeometry();
+        geometry.Add(key, batch);
+      }
+      AddTile(
+        terrain,
+        tileX,
+        tileY,
+        tile,
+        tile.IsQueue ? queueColor : pathColor,
+        batch.Vertices,
+        batch.Indices);
+      batch.SurfaceColours.Add(tile.SurfaceColours);
+    }
+
+    return geometry
+      .OrderBy(batch => batch.Key.Kind)
+      .ThenBy(batch => batch.Key.SurfaceSystemName, StringComparer.Ordinal)
+      .Select(batch => new PathMeshBatch(
+        batch.Key.Kind,
+        batch.Key.SurfaceSystemName,
+        batch.Value.SurfaceColours.ToArray(),
+        new Mesh(batch.Value.Vertices, batch.Value.Indices) {
+          Name = $"{name} {batch.Key.Kind} {batch.Key.SurfaceSystemName ?? "Unresolved"}"
+        }))
+      .ToArray();
+  }
+
+  private static IEnumerable<PathPlacement> OrderedPlacements(Park park) {
+    var placements = park.PathPlacements.Count > 0
+      ? park.PathPlacements
+      : park.Paths.Select(path => new PathPlacement(path.Key.X, path.Key.Y, path.Value)).ToList();
+    return placements
+      .OrderBy(path => path.TileY)
+      .ThenBy(path => path.TileX)
+      .ThenBy(path => path.Tile.Raised);
+  }
+
+  private static void ValidatePlacement(Terrain terrain, int tileX, int tileY) {
+    if (!terrain.HasTile(tileX, tileY))
+      throw new InvalidDataException($"Path tile ({tileX}, {tileY}) is outside the terrain grid.");
   }
 
   private static void AddTile(
@@ -143,4 +206,24 @@ public static class PathMeshBuilder {
     };
     return baseHeight + (rise * factor);
   }
+
+  private sealed class MeshGeometry {
+    public List<Vertex> Vertices { get; } = [];
+    public List<uint> Indices { get; } = [];
+    public List<PathSurfaceColours?> SurfaceColours { get; } = [];
+  }
 }
+
+/// <summary>Identifies whether one path mesh batch contains ordinary or queue tiles.</summary>
+public enum PathMaterialKind {
+  Ordinary,
+  Queue,
+}
+
+/// <summary>A path mesh whose tiles share one decoded surface resource.</summary>
+public sealed record PathMeshBatch(
+  PathMaterialKind Kind,
+  string? SurfaceSystemName,
+  IReadOnlyList<PathSurfaceColours?> SurfaceColours,
+  Mesh Mesh
+);

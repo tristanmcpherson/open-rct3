@@ -104,6 +104,63 @@ public class CameraTests {
   }
 
   [Test]
+  public void OrbitElevation_PreservesTargetDistanceAndAzimuth() {
+    var camera = new Camera();
+    camera.Frame(
+      new Vector3(10f, 20f, 30f),
+      distance: 100f,
+      minimumDistance: 25f
+    );
+    var initialTarget = camera.Target;
+    var initialDistance = camera.Distance;
+    var initialAzimuth = MathF.Atan2(
+      camera.Eye.Y - camera.Target.Y,
+      camera.Eye.X - camera.Target.X
+    );
+
+    camera.OrbitElevation(0.2f);
+    var finalAzimuth = MathF.Atan2(
+      camera.Eye.Y - camera.Target.Y,
+      camera.Eye.X - camera.Target.X
+    );
+
+    Assert.Multiple(new Action(() => {
+      Assert.That(camera.Target, Is.EqualTo(initialTarget));
+      Assert.That(camera.Distance, Is.EqualTo(initialDistance).Within(Epsilon));
+      Assert.That(camera.MinimumDistance, Is.EqualTo(25f));
+      Assert.That(finalAzimuth, Is.EqualTo(initialAzimuth).Within(Epsilon));
+    }));
+  }
+
+  [Test]
+  public void OrbitElevation_ClampsAwayFromBothWorldZPoles() {
+    var camera = new Camera();
+    camera.Frame(Vector3.Zero, distance: 100f);
+
+    camera.OrbitElevation(float.MaxValue);
+    AssertSafeElevation(camera, Camera.MaximumAbsoluteElevation);
+    camera.Update(aspectRatio: 1f);
+    Assert.That(MatrixIsFinite(camera.Value!.Value), Is.True);
+
+    camera.OrbitElevation(-float.MaxValue);
+    AssertSafeElevation(camera, -Camera.MaximumAbsoluteElevation);
+    camera.Update(aspectRatio: 1f);
+    Assert.That(MatrixIsFinite(camera.Value!.Value), Is.True);
+  }
+
+  [Test]
+  public void OrbitElevation_RejectsNonFiniteAngles() {
+    var camera = new Camera();
+
+    Assert.Multiple(new Action(() => {
+      Assert.Throws<ArgumentOutOfRangeException>(new Action(() =>
+        camera.OrbitElevation(float.NaN)));
+      Assert.Throws<ArgumentOutOfRangeException>(new Action(() =>
+        camera.OrbitElevation(float.PositiveInfinity)));
+    }));
+  }
+
+  [Test]
   public void Update_TargetProjectsNearScreenCenter() {
     var camera = new Camera();
     camera.Frame(new Vector3(1000, -1000, 0), distance: 500f);
@@ -245,4 +302,24 @@ public class CameraTests {
         $"far plane did not land at 2x the framing distance ({distance})");
     }
   }
+
+  private static void AssertSafeElevation(Camera camera, float expectedElevation) {
+    var offset = camera.Eye - camera.Target;
+    var horizontalDistance = new Vector2(offset.X, offset.Y).Length();
+    var elevation = MathF.Atan2(offset.Z, horizontalDistance);
+
+    Assert.Multiple(new Action(() => {
+      Assert.That(elevation, Is.EqualTo(expectedElevation).Within(Epsilon));
+      Assert.That(horizontalDistance, Is.GreaterThan(0f));
+      Assert.That(camera.Distance, Is.EqualTo(100f).Within(Epsilon));
+    }));
+  }
+
+  private static bool MatrixIsFinite(Matrix4x4 matrix) =>
+    new[] {
+      matrix.M11, matrix.M12, matrix.M13, matrix.M14,
+      matrix.M21, matrix.M22, matrix.M23, matrix.M24,
+      matrix.M31, matrix.M32, matrix.M33, matrix.M34,
+      matrix.M41, matrix.M42, matrix.M43, matrix.M44
+    }.All(float.IsFinite);
 }

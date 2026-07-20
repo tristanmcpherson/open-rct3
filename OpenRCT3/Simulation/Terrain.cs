@@ -147,7 +147,7 @@ public class Terrain {
     out DatWaterManagerData? waterManager,
     out IReadOnlyList<DatPathData> paths,
     string? mapPath = null
-  ) => Load(out waterManager, out paths, out _, out _, mapPath);
+  ) => Load(out waterManager, out paths, out _, out _, out _, mapPath);
 
   /// <summary>Loads terrain plus all decoded park-object records for world construction.</summary>
   internal static Terrain Load(
@@ -155,6 +155,64 @@ public class Terrain {
     out IReadOnlyList<DatPathData> paths,
     out IReadOnlyList<DatSceneryItemData> sceneryItems,
     out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    string? mapPath = null
+  ) => Load(
+    out waterManager,
+    out paths,
+    out sceneryItems,
+    out sceneryItemPlacements,
+    out _,
+    mapPath);
+
+  /// <summary>Loads terrain plus every decoded park-object record for world construction.</summary>
+  internal static Terrain Load(
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    out IReadOnlyList<DatTrackPieceData> trackPieces,
+    string? mapPath = null
+  ) => Load(
+    out waterManager,
+    out paths,
+    out sceneryItems,
+    out sceneryItemPlacements,
+    out trackPieces,
+    out _,
+    out _,
+    mapPath);
+
+  /// <summary>Loads terrain plus the complete proven ride-track topology for world construction.</summary>
+  internal static Terrain Load(
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    out IReadOnlyList<DatTrackPieceData> trackPieces,
+    out IReadOnlyList<DatRideTrackData> rideTracks,
+    out IReadOnlyList<DatTrackSegmentData> trackSegments,
+    string? mapPath = null
+  ) => Load(
+    out waterManager,
+    out paths,
+    out sceneryItems,
+    out sceneryItemPlacements,
+    out trackPieces,
+    out rideTracks,
+    out trackSegments,
+    out _,
+    mapPath);
+
+  /// <summary>Loads terrain plus decoded ride-instance identity and linkage.</summary>
+  internal static Terrain Load(
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    out IReadOnlyList<DatTrackPieceData> trackPieces,
+    out IReadOnlyList<DatRideTrackData> rideTracks,
+    out IReadOnlyList<DatTrackSegmentData> trackSegments,
+    out IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances,
     string? mapPath = null
   ) {
     var config = AppConfig.Instance;
@@ -196,7 +254,11 @@ public class Terrain {
       out waterManager,
       out paths,
       out sceneryItems,
-      out sceneryItemPlacements);
+      out sceneryItemPlacements,
+      out trackPieces,
+      out rideTracks,
+      out trackSegments,
+      out trackedRideInstances);
 
     // Load textures from terrain/RCT3/Terrain_RCT3.common.ovl
     var terrainOvl = Path.Combine(installPath, "terrain", "RCT3", "Terrain_RCT3.common.ovl");
@@ -212,12 +274,74 @@ public class Terrain {
     out IReadOnlyList<DatPathData> paths,
     out IReadOnlyList<DatSceneryItemData> sceneryItems,
     out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements
+  ) => FromData(
+    data,
+    out waterManager,
+    out paths,
+    out sceneryItems,
+    out sceneryItemPlacements,
+    out _);
+
+  /// <summary>Builds terrain while preserving every decoded park-object collection for loaders.</summary>
+  internal static Terrain FromData(
+    DatTerrainData data,
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    out IReadOnlyList<DatTrackPieceData> trackPieces
+  ) => FromData(
+    data,
+    out waterManager,
+    out paths,
+    out sceneryItems,
+    out sceneryItemPlacements,
+    out trackPieces,
+    out _,
+    out _);
+
+  /// <summary>Builds terrain while preserving the complete proven ride-track topology.</summary>
+  internal static Terrain FromData(
+    DatTerrainData data,
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    out IReadOnlyList<DatTrackPieceData> trackPieces,
+    out IReadOnlyList<DatRideTrackData> rideTracks,
+    out IReadOnlyList<DatTrackSegmentData> trackSegments
+  ) => FromData(
+    data,
+    out waterManager,
+    out paths,
+    out sceneryItems,
+    out sceneryItemPlacements,
+    out trackPieces,
+    out rideTracks,
+    out trackSegments,
+    out _);
+
+  /// <summary>Builds terrain while preserving decoded ride-instance identity and linkage.</summary>
+  internal static Terrain FromData(
+    DatTerrainData data,
+    out DatWaterManagerData? waterManager,
+    out IReadOnlyList<DatPathData> paths,
+    out IReadOnlyList<DatSceneryItemData> sceneryItems,
+    out IReadOnlyList<DatSceneryItemPlacementSingleData> sceneryItemPlacements,
+    out IReadOnlyList<DatTrackPieceData> trackPieces,
+    out IReadOnlyList<DatRideTrackData> rideTracks,
+    out IReadOnlyList<DatTrackSegmentData> trackSegments,
+    out IReadOnlyList<DatTrackedRideInstanceData> trackedRideInstances
   ) {
     var terrain = FromData(data);
     waterManager = data.WaterManager;
     paths = data.Paths;
     sceneryItems = data.SceneryItems;
     sceneryItemPlacements = data.SceneryItemPlacements;
+    trackPieces = data.TrackPieces;
+    rideTracks = data.RideTracks;
+    trackSegments = data.TrackSegments;
+    trackedRideInstances = data.TrackedRideInstances;
     return terrain;
   }
 

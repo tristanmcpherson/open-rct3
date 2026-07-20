@@ -32,6 +32,11 @@ public class Camera : Uniform<Matrix4x4> {
   /// <summary>Near clip distance, in world-space meters. 1cm is close enough for any placeable object.</summary>
   public const float NearPlaneDistance = 0.01f;
   /// <summary>
+  /// Maximum camera elevation above or below the horizon, leaving one degree between the view
+  /// direction and either world-Z pole so <see cref="Matrix4x4.CreateLookAt"/> remains well-defined.
+  /// </summary>
+  public const float MaximumAbsoluteElevation = (MathF.PI / 2f) - (MathF.PI / 180f);
+  /// <summary>
   /// Far clip distance, expressed as a multiple of the greater of the current eye-to-target distance
   /// and the distance supplied to the last <see cref="Frame"/> call. Frame callers (see <c>Game.cs</c>)
   /// already pick a distance that keeps an entire park's mesh on-screen, scaled to that park's actual
@@ -99,6 +104,41 @@ public class Camera : Uniform<Matrix4x4> {
     var normalizedRadians = MathF.IEEERemainder(radians, MathF.Tau);
     var rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, normalizedRadians);
     var eye = Target + Vector3.Transform(Eye - Target, rotation);
+    if (!IsFinite(eye)) throw new ArgumentOutOfRangeException(nameof(radians));
+
+    Eye = eye;
+  }
+
+  /// <summary>
+  /// Rotates the eye vertically around the target while preserving its azimuth and distance.
+  /// Positive angles raise the eye above the horizon; negative angles lower it.
+  /// </summary>
+  public void OrbitElevation(float radians) {
+    if (!float.IsFinite(radians)) throw new ArgumentOutOfRangeException(nameof(radians));
+    if (radians == 0f) return;
+
+    var offset = Eye - Target;
+    var distance = offset.Length();
+    if (!float.IsFinite(distance) || distance <= 0f)
+      throw new InvalidOperationException("Camera eye and target must be distinct.");
+
+    var horizontalDistance = new Vector2(offset.X, offset.Y).Length();
+    if (!float.IsFinite(horizontalDistance))
+      throw new InvalidOperationException("Camera eye and target must be finite.");
+
+    var azimuth = MathF.Atan2(offset.Y, offset.X);
+    var elevation = MathF.Atan2(offset.Z, horizontalDistance);
+    var nextElevation = Math.Clamp(
+      elevation + radians,
+      -MaximumAbsoluteElevation,
+      MaximumAbsoluteElevation
+    );
+    var nextHorizontalDistance = MathF.Cos(nextElevation) * distance;
+    var eye = Target + new Vector3(
+      MathF.Cos(azimuth) * nextHorizontalDistance,
+      MathF.Sin(azimuth) * nextHorizontalDistance,
+      MathF.Sin(nextElevation) * distance
+    );
     if (!IsFinite(eye)) throw new ArgumentOutOfRangeException(nameof(radians));
 
     Eye = eye;

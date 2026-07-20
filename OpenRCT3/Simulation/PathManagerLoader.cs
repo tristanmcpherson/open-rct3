@@ -45,6 +45,7 @@ internal static class PathManagerLoader {
         SurfaceReference = source.Surface,
         SurfaceType = source.SurfaceType,
       };
+      ApplyResolvedSurface(ref tile, source);
       switch (source) {
         case DatPathFlyingData flying:
           ApplyElevatedFields(ref tile, flying, direction);
@@ -66,6 +67,25 @@ internal static class PathManagerLoader {
       park.PathPlacements.Add(new PathPlacement(tileX, tileY, tile));
       if (!park.Paths.TryGetValue((tileX, tileY), out var primary) || primary.Raised)
         park.Paths[(tileX, tileY)] = tile;
+    }
+  }
+
+  private static void ApplyResolvedSurface(ref PathTile tile, DatPathData source) {
+    switch (source.ResolvedSurface) {
+      case DatPathTypeDatabaseEntryData pathType:
+        tile.SurfaceSystemName = pathType.SystemName;
+        break;
+      case DatQueueTypeDatabaseEntryData queueType:
+        tile.SurfaceSystemName = queueType.SystemName;
+        break;
+      case DatQueueTypeGroundSurfaceData queueGround:
+        tile.SurfaceSystemName = queueGround.ResolvedQueueType?.SystemName;
+        var colours = queueGround.Colours;
+        tile.SurfaceColours = new PathSurfaceColours(
+          colours.Col0,
+          colours.Col1,
+          colours.Col2);
+        break;
     }
   }
 

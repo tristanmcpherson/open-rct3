@@ -44,6 +44,8 @@ public sealed class SceneryResourceCatalog : IDisposable {
   private readonly ISceneryResourceCatalogSource source;
   private readonly Dictionary<string, Ovl> loadedPairs =
     new(StringComparer.OrdinalIgnoreCase);
+  private readonly Dictionary<Ovl, string> loadedPathsByArchive =
+    new(ReferenceEqualityComparer.Instance);
   private readonly List<string> loadedPairOrder = [];
   private readonly Dictionary<string, IReadOnlyList<string>> targetedCommonPaths =
     new(StringComparer.OrdinalIgnoreCase);
@@ -115,6 +117,45 @@ public sealed class SceneryResourceCatalog : IDisposable {
   }
 
   /// <summary>
+  /// Finds a resource from the archive graph that owns <paramref name="owner"/> before using the
+  /// deterministic overlay fallbacks.
+  /// </summary>
+  public SceneryResourceEntry? FindFrom(
+    SceneryResourceEntry owner,
+    string resourceName,
+    FileType type
+  ) {
+    ArgumentNullException.ThrowIfNull(owner);
+    ArgumentException.ThrowIfNullOrWhiteSpace(resourceName);
+    if (type == FileType.Unknown || !Enum.IsDefined(type))
+      throw new ArgumentOutOfRangeException(
+        nameof(type),
+        type,
+        "A known resource type is required.");
+
+    lock (syncRoot) {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      if (!loadedPathsByArchive.TryGetValue(owner.Archive, out var ownerPath))
+        throw new ArgumentException(
+          "The owner resource does not belong to this catalog.",
+          nameof(owner));
+
+      var ownerResult = FindInReachableSet([ownerPath], resourceName, type);
+      if (ownerResult != null) return ownerResult;
+
+      var targetedResult = FindInFallbackCandidates(
+        GetTargetedCommonPaths(resourceName), resourceName, type);
+      if (targetedResult != null) return targetedResult;
+
+      var siblingResult = FindInFallbackCandidates(
+        GetSiblingCommonPaths(), resourceName, type);
+      if (siblingResult != null) return siblingResult;
+
+      return FindInFallbackCandidates(GetDescendantCommonPaths(), resourceName, type);
+    }
+  }
+
+  /// <summary>
   /// Finds an exact resource name and a case-insensitive enum name or OVL type tag.
   /// </summary>
   public SceneryResourceEntry? Find(string resourceName, string type) =>
@@ -134,6 +175,7 @@ public sealed class SceneryResourceCatalog : IDisposable {
       foreach (var archive in loadedPairs.Values)
         archive.Dispose();
       loadedPairs.Clear();
+      loadedPathsByArchive.Clear();
       loadedPairOrder.Clear();
       targetedCommonPaths.Clear();
       siblingCommonPaths = null;
@@ -161,6 +203,7 @@ public sealed class SceneryResourceCatalog : IDisposable {
     archive = source.LoadPair(commonPath)
       ?? throw new InvalidOperationException($"The OVL loader returned null for '{commonPath}'.");
     loadedPairs.Add(commonPath, archive);
+    loadedPathsByArchive.Add(archive, commonPath);
     loadedPairOrder.Add(commonPath);
     return archive;
   }

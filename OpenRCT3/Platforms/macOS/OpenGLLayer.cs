@@ -19,6 +19,7 @@ using DryIoc;
 using DryIoc.ImTools;
 using OpenGL;
 using OpenRCT3.OpenGL;
+using AppKit;
 // ReSharper disable InconsistentNaming
 
 namespace OpenRCT3.Platforms.macOS;
@@ -35,9 +36,11 @@ public class OpenGLLayer : CAOpenGLLayer, IGraphicsSurface {
   private IInputContext? input;
   private Renderer? renderer;
   private readonly MacSurfaceResourceOwner resources = new();
+  private readonly NSView gameView;
   private bool ownsGame;
 
-  public OpenGLLayer() {
+  public OpenGLLayer(NSView gameView) {
+    this.gameView = gameView;
     resources.OwnContext(glContext.Dispose);
   }
 
@@ -141,7 +144,7 @@ public class OpenGLLayer : CAOpenGLLayer, IGraphicsSurface {
     Game.IoC.RegisterInstance<IGLContext>(glContext);
 
     // Provide a minimal input context and GUI controller used by the renderer
-    var ownedInput = new MacInputContext(context.Handle.Handle);
+    var ownedInput = new MacInputContext(gameView);
     input = ownedInput;
     resources.OwnInput(ownedInput.Dispose);
     Game.IoC.RegisterInstance<IInputContext>(ownedInput);

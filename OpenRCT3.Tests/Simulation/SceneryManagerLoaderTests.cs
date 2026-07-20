@@ -71,6 +71,23 @@ public class SceneryManagerLoaderTests {
   }
 
   [Test]
+  public void Load_PreservesPersistedAnimationStatesInSerializedOrder() {
+    var terrain = new Terrain(1, 1, 0);
+    var park = new Park(buildableWidth: 1, buildableHeight: 1);
+    var source = Item(animationStates: [
+      new DatSceneryAnimationInfo(true, 2, 1.25f, false),
+      new DatSceneryAnimationInfo(false, -1, 0f, true)
+    ]);
+
+    SceneryManagerLoader.Load(park, terrain, [source], []);
+
+    Assert.That(park.SceneryPlacements.Single().AnimationStates, Is.EqualTo(new[] {
+      new SceneryAnimationState(true, 2, 1.25f, false),
+      new SceneryAnimationState(false, -1, 0f, true)
+    }));
+  }
+
+  [Test]
   public void Load_ResolvedPlacementSingleDoesNotDuplicateAndAllowsDifferentPlacementMetadata() {
     var terrain = new Terrain(1, 1, 0);
     var park = new Park(buildableWidth: 1, buildableHeight: 1);
@@ -157,6 +174,19 @@ public class SceneryManagerLoaderTests {
   }
 
   [Test]
+  public void Load_NonFiniteAnimationTimeFailsClosed() {
+    var terrain = new Terrain(1, 1, 0);
+    var park = new Park(buildableWidth: 1, buildableHeight: 1);
+    var source = Item(animationStates: [
+      new DatSceneryAnimationInfo(true, 0, float.NaN, false)
+    ]);
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      SceneryManagerLoader.Load(park, terrain, [source], [])));
+    Assert.That(park.SceneryPlacements, Is.Empty);
+  }
+
+  [Test]
   public void Load_DuplicateSceneryItemEntryIdFailsClosed() {
     var terrain = new Terrain(1, 1, 0);
     var park = new Park(buildableWidth: 1, buildableHeight: 1);
@@ -179,13 +209,14 @@ public class SceneryManagerLoaderTests {
     DatSceneryFlexiColour? colours = null,
     int heightOffset = 0,
     bool isHidden = false,
-    ulong owner = 0
+    ulong owner = 0,
+    DatSceneryAnimationInfo[]? animationStates = null
   ) {
     var item = new DatSceneryItemData(
       entryId,
       variant,
       adSpend: null,
-      animInfoList: [],
+      animInfoList: animationStates ?? [],
       breakFlags: 0,
       breakTime: 0f,
       behaviourArray: [],

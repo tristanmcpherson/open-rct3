@@ -18,6 +18,7 @@ public class TrackCircuitTests {
         Is.EqualTo(new[] { "north-east", "north-west", "south-west", "south-east" }));
       Assert.That(circuit.Length, Is.GreaterThan(0f));
       Assert.That(circuit.Pieces, Has.Count.EqualTo(4));
+      Assert.That(circuit.Continuity, Is.EqualTo(TrackCircuitContinuity.StrictC1));
     }
   }
 
@@ -69,6 +70,32 @@ public class TrackCircuitTests {
   }
 
   [Test]
+  public void CreateImportedPiecewise_AllowsOnlyReciprocalPositionClosedNativeSeams() {
+    var pieces = PiecewiseLoop();
+    var strictPieces = pieces
+      .Select(piece => new TrackCircuitPiece(piece.Id, piece.Piece))
+      .ToArray();
+
+    Assert.Throws<ArgumentException>(new Action(() => new TrackCircuit(strictPieces)));
+
+    var circuit = TrackCircuit.CreateImportedPiecewise(pieces);
+    var reordered = pieces.ToArray();
+    reordered[0] = reordered[0] with { NextId = "missing" };
+    var openSeam = PiecewiseLoop(secondStartOffset: new(0f, 0.01f, 0f));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(circuit.Continuity,
+        Is.EqualTo(TrackCircuitContinuity.ImportedPiecewise));
+      Assert.That(circuit.Pieces.Select(piece => piece.Id),
+        Is.EqualTo(new[] { "first", "second" }));
+      Assert.Throws<ArgumentException>(new Action(() =>
+        TrackCircuit.CreateImportedPiecewise(reordered)));
+      Assert.Throws<ArgumentException>(new Action(() =>
+        TrackCircuit.CreateImportedPiecewise(openSeam)));
+    }
+  }
+
+  [Test]
   public void Constructor_RejectsDuplicateIdsAndOpenSinglePiece() {
     var pieces = Circle().Pieces.ToArray();
     pieces[1] = pieces[1] with { Id = pieces[0].Id };
@@ -92,6 +119,28 @@ public class TrackCircuitTests {
   }
 
   private static TrackCircuit Circle() => new(Circle(pieceTangentScales: null));
+
+  private static ImportedTrackCircuitPiece[] PiecewiseLoop(
+    Vector3? secondStartOffset = null
+  ) {
+    var offset = secondStartOffset ?? Vector3.Zero;
+    return [
+      new ImportedTrackCircuitPiece(
+        "first",
+        Piece(Vector3.Zero, Vector3.UnitX, Vector3.UnitX, Vector3.UnitX),
+        PreviousId: "second",
+        NextId: "second"),
+      new ImportedTrackCircuitPiece(
+        "second",
+        Piece(
+          Vector3.UnitX + offset,
+          Vector3.Zero,
+          Vector3.UnitY,
+          -Vector3.UnitX),
+        PreviousId: "first",
+        NextId: "first"),
+    ];
+  }
 
   private static TrackCircuitPiece[] Circle(float[]? pieceTangentScales) {
     var scales = pieceTangentScales ?? [1.5f, 1.5f, 1.5f, 1.5f];

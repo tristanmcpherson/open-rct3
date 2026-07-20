@@ -395,7 +395,8 @@ public class Game : IGame {
                 carVisualVariants.BodyControlFallbackCount);
             }
             catch (Exception error) when (
-              error is InvalidDataException or ArgumentException or InvalidOperationException) {
+              error is InvalidDataException or ArgumentException or InvalidOperationException or
+                OverflowException) {
               logger.Warn(error, "Saved ride-car visual variants could not be selected");
             }
 
@@ -494,6 +495,25 @@ public class Game : IGame {
                 hierarchyScene.BuiltPartCount,
                 hierarchyScene.SourcePartCount,
                 hierarchyScene.MissingMaterialBatchCount);
+            }
+            try {
+              var trainSceneMotion = RideTrainSceneMotionController.Build(
+                trainRuntime.Entries,
+                carScene,
+                hierarchyScene);
+              World.Park.RideTrainSceneMotion = trainSceneMotion;
+              logger.Debug(
+                "Authorized {AnimatedTrainCount} of {TrainCount} saved trains and " +
+                "{AnimatedCarCount} rendered cars for exact scene motion",
+                trainSceneMotion.AnimatedTrainCount,
+                trainSceneMotion.TrainCount,
+                trainSceneMotion.AnimatedCarCount);
+            }
+            catch (Exception error) when (
+              error is InvalidDataException or ArgumentException or InvalidOperationException) {
+              // Static saved-car placement remains valid when later motion composition cannot
+              // prove every train, circuit, and rendered-car identity.
+              logger.Warn(error, "Ride-train scene motion could not be composed");
             }
             var renderedCarCenters = carScene.ModelBindings
               .GroupBy(binding => binding.RegistryIndex)
@@ -822,6 +842,15 @@ public class Game : IGame {
   /// <param name="delta">The time between ticks.</param>
   /// <param name="interpolation">The interpolation fraction.</param>
   private void Tick(TimeSpan delta, double interpolation) {
+    var park = World.Park;
+    var rideTrainMotion = park?.RideTrainSceneMotion;
+    if (rideTrainMotion != null &&
+        !rideTrainMotion.TryUpdate(delta, out _, out var motionError)) {
+      park!.RideTrainSceneMotion = null;
+      logger.Warn(
+        motionError,
+        "Ride-train scene motion stopped after a later pose could not be proven");
+    }
     // TODO: Advance the simulation logic by a fixed time step
     // TODO: Scheduler.Execute(delta);
   }

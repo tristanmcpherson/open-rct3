@@ -14,7 +14,12 @@ public sealed record ResolvedSceneryStaticLod(
   SceneryItemVisual Visual,
   SceneryItemVisualLod Lod,
   StaticShape Shape
-);
+) {
+  /// <summary>The exact archive entry that supplied <see cref="Visual"/>.</summary>
+  public SceneryResourceEntry? VisualSource { get; init; }
+  /// <summary>The exact archive entry that supplied <see cref="Shape"/>.</summary>
+  public SceneryResourceEntry? ShapeSource { get; init; }
+}
 
 /// <summary>One rest-pose bone-shape LOD reached through a placed object's SID and SVD resources.</summary>
 public sealed record ResolvedSceneryBoneLod(
@@ -22,6 +27,10 @@ public sealed record ResolvedSceneryBoneLod(
   SceneryItemVisualLod Lod,
   BoneShape Shape
 ) {
+  /// <summary>The exact archive entry that supplied <see cref="Visual"/>.</summary>
+  public SceneryResourceEntry? VisualSource { get; init; }
+  /// <summary>The exact archive entry that supplied <see cref="Shape"/>.</summary>
+  public SceneryResourceEntry? ShapeSource { get; init; }
   /// <summary>The BAN resources declared by this LOD, retained in serialized SVD order.</summary>
   public IReadOnlyList<BoneAnimation> Animations { get; init; } = [];
 }
@@ -34,6 +43,19 @@ public sealed record ResolvedSceneryObject(
   IReadOnlyList<ResolvedSceneryStaticLod> StaticLods
 ) {
   public IReadOnlyList<ResolvedSceneryBoneLod> BoneLods { get; init; } = [];
+}
+
+/// <summary>
+/// Identifies a syntactically valid scenery resource reference whose exact catalog symbol is
+/// unavailable. Callers may skip that placement without weakening malformed-resource validation.
+/// </summary>
+internal sealed class SceneryResourceUnavailableException(
+  string ownerName,
+  string taggedReference
+) : Exception(
+  $"Resource '{ownerName}' references missing '{taggedReference}'.") {
+  public string OwnerName { get; } = ownerName;
+  public string TaggedReference { get; } = taggedReference;
 }
 
 /// <summary>Resolves SID-to-SVD-to-SHS/BSH resource chains for scenery rendering.</summary>
@@ -104,6 +126,9 @@ public sealed class SceneryVisualResolver {
       itemCache,
       decodeItems,
       "SID");
+    // Ride-track SIDs describe the dedicated track-piece visual pipeline. Resolving their generic
+    // SVD names as scenery can cross into unrelated Queue archives with the same stock names.
+    if (item.Type == SidType.RideTrack) return null;
     foreach (var visualRef in item.VisualRefs) {
       var visualEntry = FindRequired(
         itemEntry, visualRef, FileType.SceneryItemVisual, item.Name);
@@ -130,7 +155,10 @@ public sealed class SceneryVisualResolver {
               shapeCache,
               decodeShapes,
               "SHS");
-            staticLods.Add(new ResolvedSceneryStaticLod(visual, lod, shape));
+            staticLods.Add(new ResolvedSceneryStaticLod(visual, lod, shape) {
+              VisualSource = visualEntry,
+              ShapeSource = shapeEntry,
+            });
             break;
           case SvdLodType.BoneShape:
             if (string.IsNullOrWhiteSpace(lod.BoneShapeRef))
@@ -161,7 +189,9 @@ public sealed class SceneryVisualResolver {
               animations.Add(animation);
             }
             boneLods.Add(new ResolvedSceneryBoneLod(visual, lod, boneShape) {
-              Animations = animations.ToArray()
+              VisualSource = visualEntry,
+              ShapeSource = boneShapeEntry,
+              Animations = animations.ToArray(),
             });
             break;
         }
@@ -186,8 +216,7 @@ public sealed class SceneryVisualResolver {
         $"Resource '{ownerName}' references '{taggedReference}', expected " +
         $"{expectedType.ToTagString()}.");
     return findFrom(owner, name, type)
-      ?? throw new InvalidDataException(
-        $"Resource '{ownerName}' references missing '{taggedReference}'.");
+      ?? throw new SceneryResourceUnavailableException(ownerName, taggedReference);
   }
 
   private static (string Name, FileType Type) ParseTaggedReference(
@@ -203,6 +232,10 @@ public sealed class SceneryVisualResolver {
 
     var name = reference[..separator];
     var tag = reference[(separator + 1)..];
+    if (!string.Equals(name, name.Trim(), StringComparison.Ordinal) ||
+        !string.Equals(tag, tag.Trim(), StringComparison.Ordinal))
+      throw new InvalidDataException(
+        $"Resource '{ownerName}' has malformed reference '{reference}'.");
     var type = tag.ToFileType();
     if (type == FileType.Unknown)
       throw new InvalidDataException(

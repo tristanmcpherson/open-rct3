@@ -61,6 +61,41 @@ public sealed record TrackedRideTrackResourceGraph(
   int UnresolvedReferenceCount
 );
 
+/// <summary>
+/// Matches one TRR construction key to its exact referenced TKS identity.
+/// </summary>
+/// <remarks>
+/// The pinned ManagerTRR writer lowercases the TKS resource name for ordinary
+/// construction metadata. Complete Edition's shipped WoodenWildMine TRR also uses that base
+/// metadata key for terminal <c>chain</c> TKS variants. The TKS SymbolRef remains exact and
+/// authoritative; this compatibility rule never aliases target-resource lookup.
+/// </remarks>
+/// <seealso href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/libOVLng/ManagerTRR.cpp">
+/// rct3-importer tracked-ride serializer
+/// </seealso>
+public static class TrackedRideTrackSectionIdentity {
+  private const string ChainSuffix = "chain";
+
+  public static bool MatchesConstructionMetadata(
+    string resourceName,
+    string metadataInternalName
+  ) {
+    ArgumentNullException.ThrowIfNull(resourceName);
+    ArgumentNullException.ThrowIfNull(metadataInternalName);
+    if (string.Equals(
+      resourceName,
+      metadataInternalName,
+      StringComparison.OrdinalIgnoreCase)) return true;
+    if (resourceName.Length <= ChainSuffix.Length ||
+        !resourceName.EndsWith(ChainSuffix, StringComparison.OrdinalIgnoreCase))
+      return false;
+    return string.Equals(
+      resourceName[..^ChainSuffix.Length],
+      metadataInternalName,
+      StringComparison.OrdinalIgnoreCase);
+  }
+}
+
 /// <summary>Resolves exact TRR track SymbolRefs against any loaded OVL catalogs.</summary>
 /// <remarks>
 /// ManagerTRR writes the construction-section array and optional tower variants as TKS SymbolRefs,
@@ -217,10 +252,10 @@ public static class TrackedRideTrackResourceGraphResolver {
     ) {
       var fullDescription = $"TRR '{ride.Name}' {description}";
       var name = ParseTaggedName(reference, "tks", fullDescription, limits);
-      if (metadata != null && !string.Equals(
-        metadata.InternalName,
-        name,
-        StringComparison.OrdinalIgnoreCase))
+      if (metadata != null &&
+          !TrackedRideTrackSectionIdentity.MatchesConstructionMetadata(
+            name,
+            metadata.InternalName))
         throw new InvalidDataException(
           $"Tracked-ride track graph {fullDescription} metadata name " +
           $"'{metadata.InternalName}' does not match reference key '{name}'.");

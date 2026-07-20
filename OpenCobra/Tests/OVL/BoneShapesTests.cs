@@ -49,7 +49,7 @@ public class BoneShapesTests {
       Assert.That(first.Color.Z, Is.EqualTo(51 / 255.0f));
       Assert.That(first.Color.W, Is.EqualTo(1));
       Assert.That(first.Skinning,
-        Is.EqualTo(new BoneShapeSkinning(0, 1, -1, -1, 200, 55, 0, 0)));
+        Is.EqualTo(new BoneShapeSkinning(0, 1, 255, 255, 200, 55, 0, 0)));
       Assert.That(mesh.Vertices[1].Position, Is.EqualTo(new Vector3(4, 5, 6)));
       Assert.That(mesh.Vertices[2].Position, Is.EqualTo(new Vector3(7, 8, 9)));
     }
@@ -64,6 +64,20 @@ public class BoneShapesTests {
       Assert.That(shape.Bones[1].Position1,
         Is.EqualTo(Matrix4x4.CreateTranslation(10, 20, 30)));
       Assert.That(shape.Bones[1].Position2, Is.EqualTo(Matrix4x4.CreateScale(2)));
+    }
+  }
+
+  [Test]
+  public void Decode_PreservesWeightedBoneIndicesAboveTheSignedByteRange() {
+    var fixture = new BoneShapeFixture();
+    fixture.UseHighUnsignedBoneIndex();
+
+    var shape = fixture.Decode();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(shape.Bones, Has.Count.EqualTo(151));
+      Assert.That(shape.Meshes[0].Vertices[0].Skinning.Bone0, Is.EqualTo(150));
+      Assert.That(shape.Meshes[0].Vertices[0].Skinning.Weight0, Is.EqualTo(200));
     }
   }
 
@@ -240,6 +254,40 @@ public class BoneShapesTests {
   }
 
   [Test]
+  [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
+  public void Extract_InstalledSaloonBrawlPreservesUnsignedHighBoneIndices() {
+    var root = Environment.GetEnvironmentVariable("RCT3_PATH");
+    Assert.That(root, Is.Not.Null.And.Not.Empty, "RCT3_PATH is not configured.");
+    var path = Path.Combine(
+      root!, "Style", "Themed", "WildWest", "Rides", "SaloonBrawl",
+      "SaloonBrawl.common.ovl");
+    Assert.That(path, Does.Exist, $"Installed Saloon Brawl OVL is missing: {path}");
+
+    using var ovl = Ovl.Load(path);
+    var shape = BoneShapes.Extract(ovl).Single(value => value.Name == "SaloonBrawlHLOD");
+    var weightedIndices = shape.Meshes
+      .SelectMany(mesh => mesh.Vertices)
+      .SelectMany(vertex => new[] {
+        (vertex.Skinning.Bone0, vertex.Skinning.Weight0),
+        (vertex.Skinning.Bone1, vertex.Skinning.Weight1),
+        (vertex.Skinning.Bone2, vertex.Skinning.Weight2),
+        (vertex.Skinning.Bone3, vertex.Skinning.Weight3),
+      })
+      .Where(influence => influence.Item2 != 0)
+      .Select(influence => influence.Item1)
+      .ToArray();
+
+    TestContext.Progress.WriteLine(
+      $"Installed Saloon Brawl BSH evidence: bones={shape.Bones.Count}, " +
+      $"weighted={weightedIndices.Length}, max={weightedIndices.Max()}");
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(shape.Bones, Has.Count.EqualTo(157));
+      Assert.That(weightedIndices, Does.Contain(150));
+      Assert.That(weightedIndices, Has.All.LessThan(shape.Bones.Count));
+    }
+  }
+
+  [Test]
   public void Extract_ChargesPublicPathMetadataAgainstTheAggregateBudget() {
     WithSkyBeamOvl(ovl => {
       var error = Assert.Throws<InvalidDataException>(new Action(() =>
@@ -358,7 +406,7 @@ public class BoneShapesTests {
         new Vector3(1, 2, 3),
         Vector3.UnitY,
         new Vector2(0.25f, 0.75f),
-        [0, 1, -1, -1],
+        [0, 1, 255, 255],
         [200, 55, 0, 0]);
       WriteVertex(
         vertices,
@@ -366,7 +414,7 @@ public class BoneShapesTests {
         new Vector3(4, 5, 6),
         Vector3.UnitY,
         Vector2.Zero,
-        [1, -1, -1, -1],
+        [1, 255, 255, 255],
         [255, 0, 0, 0]);
       WriteVertex(
         vertices,
@@ -374,7 +422,7 @@ public class BoneShapesTests {
         new Vector3(7, 8, 9),
         Vector3.UnitY,
         Vector2.One,
-        [-1, -1, -1, -1],
+        [255, 255, 255, 255],
         [0, 0, 0, 0]);
       source.AddBlock(IndicesAddress, EncodeIndices([0, 1, 2]));
 
@@ -424,12 +472,35 @@ public class BoneShapesTests {
           new Vector3(i, i + 1, i + 2),
           Vector3.UnitY,
           Vector2.Zero,
-          [-1, -1, -1, -1],
+          [255, 255, 255, 255],
           [0, 0, 0, 0]);
       source.ReplaceBlock(VerticesAddress, vertices);
       source.ReplaceBlock(IndicesAddress, EncodeIndices([0, 256, 257]));
       WriteUInt32(source.Blocks[ShapeAddress], 24, Convert.ToUInt32(count));
       WriteUInt32(source.Blocks[MeshAddress], 24, Convert.ToUInt32(count));
+    }
+
+    public void UseHighUnsignedBoneIndex() {
+      const int count = 151;
+      const uint bonesAddress = 100_000;
+      const uint positions1Address = 110_000;
+      const uint positions2Address = 120_000;
+      var shape = source.Blocks[ShapeAddress];
+      WriteUInt32(shape, 44, count);
+      WritePointer(shape, ShapeAddress, 48, bonesAddress);
+      WritePointer(shape, ShapeAddress, 52, positions1Address);
+      WritePointer(shape, ShapeAddress, 56, positions2Address);
+
+      var bones = source.AddBlock(bonesAddress, count * 8);
+      var positions1 = source.AddBlock(positions1Address, count * 64);
+      var positions2 = source.AddBlock(positions2Address, count * 64);
+      for (var i = 0; i < count; i++) {
+        WritePointer(bones, bonesAddress, i * 8, RootNameAddress);
+        WriteInt32(bones, i * 8 + 4, -1);
+        WriteMatrix(positions1, i * 64, Matrix4x4.Identity);
+        WriteMatrix(positions2, i * 64, Matrix4x4.Identity);
+      }
+      source.Blocks[VerticesAddress][24] = 150;
     }
 
     public void UsePlacementTriangleList(uint[] indices) {
@@ -599,23 +670,19 @@ public class BoneShapesTests {
       Vector3 position,
       Vector3 normal,
       Vector2 texCoord,
-      sbyte[] bones,
+      byte[] bones,
       byte[] weights
     ) {
       Assert.That(bones, Has.Length.EqualTo(4));
       Assert.That(weights, Has.Length.EqualTo(4));
       WriteVector3(bytes, offset, position);
       WriteVector3(bytes, offset + 12, normal);
-      for (var i = 0; i < bones.Length; i++) bytes[offset + 24 + i] = EncodeSByte(bones[i]);
+      for (var i = 0; i < bones.Length; i++) bytes[offset + 24 + i] = bones[i];
       weights.CopyTo(bytes, offset + 28);
       WriteUInt32(bytes, offset + 32, 4_279_312_947);
       WriteSingle(bytes, offset + 36, texCoord.X);
       WriteSingle(bytes, offset + 40, texCoord.Y);
     }
-
-    private static byte EncodeSByte(sbyte value) => value < 0
-      ? Convert.ToByte(Convert.ToInt16(value) + 256)
-      : Convert.ToByte(value);
 
     private static void WriteMatrix(byte[] bytes, int offset, Matrix4x4 value) {
       var values = new[] {

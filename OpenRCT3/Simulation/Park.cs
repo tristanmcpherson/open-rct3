@@ -176,6 +176,12 @@ public class Park {
   /// </summary>
   internal RideCarStaticSceneBuildResult? RideCarScene { get; set; }
 
+  /// <summary>
+  /// Authorized saved-train motion composed with the current body and hierarchy scene models.
+  /// Unsupported states, open tracks, and unproven or cross-circuit topologies remain static.
+  /// </summary>
+  internal RideTrainSceneMotionController? RideTrainSceneMotion { get; set; }
+
   /// <summary>Publishes one complete hierarchy instance and scene pair after construction.</summary>
   internal void PublishRideCarVisualHierarchyScene(
     RideCarVisualHierarchyStaticInstanceRegistry instances,

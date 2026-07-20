@@ -210,6 +210,58 @@ public class SceneryTextureResolverTests {
   }
 
   [Test]
+  public void TryResolveFrom_PrefersShapeClosureOverVisualClosureFtxCollision() {
+    var root = Path.Combine(Path.GetTempPath(), $"openrct3-texture-owner-{Guid.NewGuid():N}");
+    var exact = Path.Combine(root, "style.common.ovl");
+    var shapePath = Path.Combine(root, "PteradonShape.common.ovl");
+    var texturePath = Path.Combine(root, "PteradonTexture.common.ovl");
+    var entrancePath = Path.Combine(root, "EntranceShape.common.ovl");
+    var source = new DependencyPairSource();
+    source.AddPair(exact);
+    source.AddPair(
+      shapePath,
+      ["PteradonTexture"],
+      new OvlFile("PteradonShape", FileType.StaticShape, shapePath));
+    source.AddPair(
+      texturePath,
+      [],
+      new OvlFile("Pteradon", FileType.FlexibleTexture, texturePath));
+    source.AddPair(
+      entrancePath,
+      [],
+      new OvlFile("EntranceShape", FileType.SceneryItemVisual, entrancePath),
+      new OvlFile("Pteradon", FileType.FlexibleTexture, entrancePath));
+    using var catalog = new SceneryResourceCatalog(root, "style", source);
+    var shapeOwner = catalog.Find("PteradonShape", FileType.StaticShape);
+    Assert.That(shapeOwner, Is.Not.Null);
+    var visualOwner = catalog.Find("EntranceShape", FileType.SceneryItemVisual);
+    Assert.That(visualOwner, Is.Not.Null);
+    OvlFile? decodedFile = null;
+    using var resolver = new SceneryTextureResolver(catalog, (_, file) => {
+      decodedFile = file;
+      return new FlexiTextureList(0, [
+        new FlexiTexture(
+          Recolorable.None,
+          Image(1, 1, new Rgba32(25, 50, 75, 255)))
+      ]);
+    });
+
+    var found = resolver.TryResolveFrom(
+      shapeOwner,
+      visualOwner,
+      "Pteradon:ftx",
+      default,
+      out var texture);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(found, Is.True);
+      Assert.That(decodedFile?.Path, Is.EqualTo(texturePath));
+      Assert.That(texture?.Name, Is.EqualTo("Pteradon"));
+      Assert.That(texture?.Pixels[0, 0], Is.EqualTo(new Rgba32(25, 50, 75, 255)));
+    }
+  }
+
+  [Test]
   public void TryResolve_DecodesCommittedCustomOvlFixture() {
     var root = Path.Combine(
       RepositoryRoot(),
@@ -297,5 +349,45 @@ public class SceneryTextureResolverTests {
 
     private static string UniquePath(string path) =>
       path[..^".common.ovl".Length] + ".unique.ovl";
+  }
+
+  private sealed class DependencyPairSource : ISceneryResourceCatalogSource {
+    private readonly Dictionary<string, Ovl> pairs =
+      new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<Ovl, IReadOnlyList<string>> references =
+      new(ReferenceEqualityComparer.Instance);
+
+    public void AddPair(
+      string commonPath,
+      IReadOnlyList<string>? externalReferences = null,
+      params OvlFile[] resources
+    ) {
+      var archive = new Ovl(Path.GetFileName(commonPath));
+      foreach (var resource in resources)
+        archive.Add(resource, new OvlEntry(0, 1));
+      pairs.Add(commonPath, archive);
+      references.Add(archive, externalReferences ?? []);
+    }
+
+    public bool FileExists(string path) =>
+      pairs.ContainsKey(path) || pairs.ContainsKey(CommonPath(path));
+
+    public IEnumerable<string> EnumerateCommonOvls(string directory) => [];
+
+    public IEnumerable<string> EnumerateMatchingCommonOvls(
+      string directory,
+      string fileName
+    ) => pairs.Keys;
+
+    public IEnumerable<string> EnumerateDescendantCommonOvls(string directory) => [];
+
+    public IReadOnlyList<string> GetExternalReferences(Ovl archive) => references[archive];
+
+    public Ovl LoadPair(string commonOvlPath) => pairs[commonOvlPath];
+
+    private static string CommonPath(string path) =>
+      path.EndsWith(".unique.ovl", StringComparison.OrdinalIgnoreCase)
+        ? path[..^".unique.ovl".Length] + ".common.ovl"
+        : path;
   }
 }

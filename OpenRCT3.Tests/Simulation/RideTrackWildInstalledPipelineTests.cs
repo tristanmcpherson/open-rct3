@@ -5,11 +5,141 @@
 using OpenCobra.OVL.Files;
 using OpenRCT3.Serialization;
 using OpenRCT3.Simulation;
+using OpenRCT3.Simulation.Tracks;
+using System.Numerics;
 
 namespace OpenRCT3.Tests.Simulation;
 
 [TestFixture]
 public class RideTrackWildInstalledPipelineTests {
+  [Test]
+  [Explicit("Requires installed RCT3 assets and the RaidersOfTheLostCoaster DAT.")]
+  public void RaidersOfTheLostCoaster_ResolvesReciprocalPiecewiseCircuitsForMotion() {
+    var installRoot = Environment.GetEnvironmentVariable("RCT3_PATH");
+    Assert.That(
+      string.IsNullOrWhiteSpace(installRoot),
+      Is.False,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    Assert.That(
+      Directory.Exists(installRoot),
+      Is.True,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    var mapPath = Path.Combine(
+      installRoot!,
+      "Campaigns",
+      "Base",
+      "Wild",
+      "RaidersOfTheLostCoaster.dat");
+    Assert.That(File.Exists(mapPath), Is.True, mapPath);
+
+    var data = DatTerrainReader.Read(mapPath);
+    var targetRideIds = new ulong[] { 4_021, 4_120 };
+    var targetRides = targetRideIds
+      .Select(id => data.TrackedRideInstances.Single(ride => ride.EntryId == id))
+      .ToArray();
+    var targetTrackIds = targetRides.Select(ride => ride.Track).ToHashSet();
+    var targetTracks = data.RideTracks
+      .Where(track => targetTrackIds.Contains(track.EntryId))
+      .ToArray();
+    var targetTrainIds = targetRides.SelectMany(ride => ride.Trains).ToHashSet();
+    var targetTrains = data.RideTrainInstances
+      .Where(train => targetTrainIds.Contains(train.EntryId))
+      .ToArray();
+    var targetSegments = data.TrackSegments
+      .Where(segment => targetTrackIds.Contains(segment.Track))
+      .ToArray();
+    var targetSegmentIds = targetSegments.Select(segment => segment.EntryId).ToHashSet();
+    var targetPieces = data.TrackPieces
+      .Where(piece => targetSegmentIds.Contains(piece.Segment))
+      .ToArray();
+    var targetSceneryIds = targetPieces.Select(piece => piece.SceneryItem).ToHashSet();
+
+    var terrain = Terrain.FromData(data);
+    try {
+      var park = new Park(terrain);
+      SceneryManagerLoader.Load(
+        park,
+        terrain,
+        data.SceneryItems.Where(item => targetSceneryIds.Contains(item.EntryId)).ToArray(),
+        data.SceneryItemPlacements.Where(placement =>
+          targetSceneryIds.Contains(placement.SceneryItem)).ToArray());
+      RideTrackManagerLoader.Load(park, terrain, targetPieces);
+      RideTrackTopologyLoader.Load(park, targetTracks, targetSegments);
+
+      using var loaded = RideTrackResourceCatalogLoader.Load(
+        installRoot!,
+        park.RideTrackPlacements,
+        targetRides,
+        targetTrains);
+      var resources = loaded.Catalog.ResolveAll(park.RideTrackPlacements);
+      var geometry = RideTrackGeometryResolver.Resolve(
+        terrain,
+        park.RideTracks,
+        resources);
+      var geometryByTrackId = geometry.Tracks.ToDictionary(link => link.Track.SourceEntryId);
+      var firstSeam = MeasureSeam(geometryByTrackId[4_027], 4_267, 4_307);
+      var secondSeam = MeasureSeam(geometryByTrackId[4_126], 4_295, 4_297);
+      var instanceTracks = RideInstanceTrackGraph.Build(targetRides, park.RideTracks);
+      var trackRuntime = RideInstanceTrackRuntimeRegistry.Build(instanceTracks, geometry);
+      var trainRuntime = RideInstanceTrainRuntimeRegistry.Build(
+        trackRuntime,
+        loaded.RideResources.TrainInstances);
+      var authorizations = trainRuntime.Entries.Select(train =>
+        RideTrainCircuitMotionAuthorization.Authorize(train, train.TrackRuntime)).ToArray();
+
+      TestContext.Progress.WriteLine(
+        $"Raiders piecewise seams: 4267->4307 {FormatSeam(firstSeam)}; " +
+        $"4295->4297 {FormatSeam(secondSeam)}");
+
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(targetTracks.Select(track => track.EntryId),
+          Is.EquivalentTo(new ulong[] { 4_027, 4_126 }));
+        Assert.That(targetTrains.Select(train => train.EntryId),
+          Is.EquivalentTo(new ulong[] { 4_028, 4_127 }));
+        Assert.That(targetTrains.OrderBy(train => train.EntryId).Select(train => train.State),
+          Is.EqualTo(new[] { 13, 13 }));
+        Assert.That(targetTrains.OrderBy(train => train.EntryId).Select(train => train.Speed),
+          Is.EqualTo(new[] { 17.4024944f, 11.6078625f }));
+        Assert.That(targetSegments, Has.Length.EqualTo(2));
+        Assert.That(targetPieces, Has.Length.EqualTo(399));
+        Assert.That(geometry.Tracks.Select(link => link.Status),
+          Is.All.EqualTo(RideTrackGeometryStatus.Circuit));
+        Assert.That(geometry.Tracks.Select(link => link.Circuit!.Continuity),
+          Is.All.EqualTo(TrackCircuitContinuity.ImportedPiecewise));
+        Assert.That(geometry.UnresolvedResourceTrackCount, Is.Zero);
+        Assert.That(geometry.UnsupportedGeometryTrackCount, Is.Zero);
+        Assert.That(geometry.UnsupportedTopologyTrackCount, Is.Zero);
+        Assert.That(firstSeam.LeftPositionDistance, Is.LessThanOrEqualTo(0.0000025f));
+        Assert.That(firstSeam.RightPositionDistance, Is.LessThanOrEqualTo(0.0000025f));
+        Assert.That(firstSeam.LeftTangentDot, Is.EqualTo(0.9979f).Within(0.0005f));
+        Assert.That(firstSeam.RightTangentDot, Is.EqualTo(0.9981f).Within(0.0005f));
+        Assert.That(secondSeam.LeftPositionDistance, Is.LessThanOrEqualTo(0.0000025f));
+        Assert.That(secondSeam.RightPositionDistance, Is.LessThanOrEqualTo(0.0000025f));
+        Assert.That(secondSeam.LeftTangentDot, Is.EqualTo(0.9965f).Within(0.0005f));
+        Assert.That(secondSeam.RightTangentDot, Is.EqualTo(0.9941f).Within(0.0005f));
+        Assert.That(new[] {
+          firstSeam.LeftDirectionDelta,
+          firstSeam.RightDirectionDelta,
+          secondSeam.LeftDirectionDelta,
+          secondSeam.RightDirectionDelta,
+        }, Is.All.GreaterThan(RideTrackGraphAdapter.ImportedJoinDirectionTolerance));
+        Assert.That(trackRuntime.ResolvedTrackCount, Is.EqualTo(2));
+        Assert.That(trackRuntime.CircuitTrackCount, Is.EqualTo(2));
+        Assert.That(trackRuntime.MultiCircuitTrackCount, Is.Zero);
+        Assert.That(trainRuntime.Entries, Has.Count.EqualTo(2));
+        Assert.That(authorizations.Select(result => result.Status),
+          Is.All.EqualTo(
+            RideTrainCircuitMotionAuthorizationStatus.AuthorizedByReciprocalCircuit));
+        Assert.That(authorizations.Select(result => result.IsAuthorized), Is.All.True);
+        Assert.That(authorizations.Select(result => result.Traversal),
+          Is.EqualTo(trainRuntime.Entries.Select(train =>
+            train.TrackRuntime.CircuitTraversal)));
+      }
+    } finally {
+      terrain.TextureCatalog?.Dispose();
+    }
+  }
+
   [Test]
   [Explicit("Requires installed RCT3 assets and the ScrubGardens DAT.")]
   public void ScrubGardens_SeizmicResolvesTwoExactCircuitsAndSavedCars() {
@@ -369,4 +499,48 @@ public class RideTrackWildInstalledPipelineTests {
     $"distance={contact.SavedGlobalDistance:R}:normalized=" +
     $"{contact.NormalizedCircuitDistance:R}:start={contact.TrackPieceData?.StartDistance:R}:" +
     $"backStart={contact.TrackPieceData?.StartDistanceBackwardsSpline:R}";
+
+  private static (
+    float LeftPositionDistance,
+    float RightPositionDistance,
+    float LeftTangentDot,
+    float RightTangentDot,
+    float LeftDirectionDelta,
+    float RightDirectionDelta) MeasureSeam(
+      RideTrackGeometryLink geometry,
+      ulong outgoingPieceId,
+      ulong incomingPieceId
+  ) {
+    Assert.That(geometry.Status, Is.EqualTo(RideTrackGeometryStatus.Circuit));
+    Assert.That(geometry.Circuit, Is.Not.Null);
+    var pieceIds = geometry.Track.TrackPieceSourceEntryIds;
+    var outgoingIndex = Enumerable.Range(0, pieceIds.Count)
+      .Single(index => pieceIds[index] == outgoingPieceId);
+    var incomingIndex = (outgoingIndex + 1) % pieceIds.Count;
+    Assert.That(pieceIds[incomingIndex], Is.EqualTo(incomingPieceId));
+    var outgoing = geometry.Circuit!.Pieces[outgoingIndex].Piece.Exit;
+    var incoming = geometry.Circuit.Pieces[incomingIndex].Piece.Entry;
+    var outgoingLeft = Vector3.Normalize(outgoing.Left.Tangent);
+    var incomingLeft = Vector3.Normalize(incoming.Left.Tangent);
+    var outgoingRight = Vector3.Normalize(outgoing.Right.Tangent);
+    var incomingRight = Vector3.Normalize(incoming.Right.Tangent);
+    return (
+      Vector3.Distance(outgoing.Left.Position, incoming.Left.Position),
+      Vector3.Distance(outgoing.Right.Position, incoming.Right.Position),
+      Vector3.Dot(outgoingLeft, incomingLeft),
+      Vector3.Dot(outgoingRight, incomingRight),
+      Vector3.Distance(outgoingLeft, incomingLeft),
+      Vector3.Distance(outgoingRight, incomingRight));
+  }
+
+  private static string FormatSeam((
+    float LeftPositionDistance,
+    float RightPositionDistance,
+    float LeftTangentDot,
+    float RightTangentDot,
+    float LeftDirectionDelta,
+    float RightDirectionDelta) seam) =>
+    $"position=({seam.LeftPositionDistance:R},{seam.RightPositionDistance:R}) " +
+    $"dot=({seam.LeftTangentDot:R},{seam.RightTangentDot:R}) " +
+    $"delta=({seam.LeftDirectionDelta:R},{seam.RightDirectionDelta:R})";
 }

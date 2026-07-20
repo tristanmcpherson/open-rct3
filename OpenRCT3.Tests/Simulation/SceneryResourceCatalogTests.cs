@@ -49,7 +49,7 @@ public class SceneryResourceCatalogTests {
   }
 
   [Test]
-  public void Find_LoadsSiblingPairsOnDemandInDeterministicOrderAndCachesThem() {
+  public void Find_LoadsSiblingPairsAsOneUnambiguousSetAndCachesThem() {
     var source = new FakeCatalogSource();
     var exact = PairPath("Style", "Vanilla", "style");
     var alpha = PairPath("Style", "Vanilla", "alpha");
@@ -68,7 +68,7 @@ public class SceneryResourceCatalogTests {
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(alphaResult?.File.Name, Is.EqualTo("AlphaShape"));
-      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { exact, alpha }));
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { exact, alpha, zeta }));
       Assert.That(source.EnumerationCount, Is.EqualTo(1));
       Assert.That(source.TargetedEnumerationCount, Is.EqualTo(1));
     }
@@ -81,7 +81,7 @@ public class SceneryResourceCatalogTests {
       Assert.That(missingResult, Is.Null);
       Assert.That(source.LoadedPaths, Is.EqualTo(new[] { exact, alpha, zeta }));
       Assert.That(source.EnumerationCount, Is.EqualTo(1));
-      Assert.That(source.TargetedEnumerationCount, Is.EqualTo(3));
+      Assert.That(source.TargetedEnumerationCount, Is.EqualTo(2));
     }
   }
 
@@ -112,6 +112,157 @@ public class SceneryResourceCatalogTests {
       Assert.That(source.TargetedEnumerationCount, Is.EqualTo(1));
       Assert.That(source.TargetedFileNames, Is.EqualTo(new[] { "lightgreen01.common.ovl" }));
       Assert.That(source.EnumerationCount, Is.Zero);
+    }
+  }
+
+  [Test]
+  public void Find_ProbesExactOwnerFilenameAcrossInstallRootBeforeLocalFallbacks() {
+    var source = new FakeCatalogSource();
+    var safari = PairPath("Style", "Vanilla", "Safari", "Style");
+    var colonial = PairPath(
+      "Style", "Vanilla", "WallSets", "Colonial", "Col_Wall1_3h");
+    var localFallback = PairPath("Style", "Vanilla", "Safari", "Fallback");
+    source.AddPair(safari, Resource("Col_Wall1_3h", FileType.SceneryItem));
+    source.AddPair(
+      colonial,
+      Resource("Col_Wall1_3h", FileType.SceneryItemVisual));
+    source.AddPair(
+      localFallback,
+      Resource("Col_Wall1_3h", FileType.SceneryItemVisual));
+    source.TargetedPaths.Add(colonial);
+    source.EnumeratedPaths.Add(localFallback);
+    using var catalog = Catalog(source, @"Style\Vanilla\Safari\Style");
+
+    var result = catalog.FindFrom(
+      catalog.Find("Col_Wall1_3h", FileType.SceneryItem)!,
+      "Col_Wall1_3h",
+      FileType.SceneryItemVisual);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result?.File.Name, Is.EqualTo("Col_Wall1_3h"));
+      Assert.That(result?.File.Type, Is.EqualTo(FileType.SceneryItemVisual));
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { safari, colonial }));
+      Assert.That(source.TargetedEnumerationCount, Is.EqualTo(1));
+      Assert.That(source.TargetedFileNames,
+        Is.EqualTo(new[] { "Col_Wall1_3h.common.ovl" }));
+      Assert.That(source.EnumerationCount, Is.Zero);
+      Assert.That(source.DescendantEnumerationCount, Is.Zero);
+    }
+  }
+
+  [Test]
+  public void Find_RejectsInstallRootOwnerProbeBeyondThePairLimit() {
+    var source = new FakeCatalogSource();
+    var exact = PairPath("Style", "Vanilla", "Safari", "Style");
+    source.AddPair(exact);
+    foreach (var index in Enumerable.Range(0, 4_097))
+      source.TargetedPaths.Add(PairPath("Owners", index.ToString(), "Missing"));
+    using var catalog = Catalog(source, @"Style\Vanilla\Safari\Style");
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      catalog.Find("Missing", FileType.SceneryItemVisual)));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error!.Message,
+        Does.Contain("targeted owner pair count exceeds 4096"));
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { exact }));
+    }
+  }
+
+  [TestCase(false)]
+  [TestCase(true)]
+  public void FindFrom_PrefersTargetedOwnerInsideExactOverlayTree(
+    bool reverseEnumeration
+  ) {
+    var source = new FakeCatalogSource();
+    var exact = PairPath("Style", "Themed", "WildWest", "Style");
+    var spooky = PairPath(
+      "Style", "Themed", "Spooky", "PathExtras", "SkullBin", "SkullBin");
+    var wildWest = PairPath(
+      "Style", "Themed", "WildWest", "PathExtras", "skullbins", "skullbin");
+    source.AddPair(exact, Resource("PlacedBin", FileType.SceneryItem));
+    source.AddPair(spooky, Resource("SkullBin", FileType.SceneryItemVisual));
+    source.AddPair(wildWest, Resource("skullbin", FileType.SceneryItemVisual));
+    source.TargetedPaths.AddRange(reverseEnumeration
+      ? new[] { wildWest, spooky }
+      : new[] { spooky, wildWest });
+    using var catalog = Catalog(source, @"Style\Themed\WildWest\Style");
+    var owner = catalog.Find("PlacedBin", FileType.SceneryItem);
+
+    var result = catalog.FindFrom(
+      owner!, "SkullBin", FileType.SceneryItemVisual);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result?.File.Name, Is.EqualTo("skullbin"));
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { exact, wildWest }));
+    }
+  }
+
+  [Test]
+  public void FindFrom_RejectsAmbiguousTargetedOwnersOutsideExactOverlayTree() {
+    var source = new FakeCatalogSource();
+    var exact = PairPath("Style", "Themed", "Adventure", "Style");
+    var spooky = PairPath(
+      "Style", "Themed", "Spooky", "PathExtras", "SkullBin", "SkullBin");
+    var wildWest = PairPath(
+      "Style", "Themed", "WildWest", "PathExtras", "skullbins", "skullbin");
+    source.AddPair(exact, Resource("PlacedBin", FileType.SceneryItem));
+    source.AddPair(spooky, Resource("SkullBin", FileType.SceneryItemVisual));
+    source.AddPair(wildWest, Resource("skullbin", FileType.SceneryItemVisual));
+    source.TargetedPaths.AddRange(new[] { wildWest, spooky });
+    using var catalog = Catalog(source, @"Style\Themed\Adventure\Style");
+    var owner = catalog.Find("PlacedBin", FileType.SceneryItem);
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      catalog.FindFrom(owner!, "SkullBin", FileType.SceneryItemVisual)));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error?.Message, Does.Contain("defined by both"));
+      Assert.That(source.LoadedPaths.Skip(1),
+        Is.EquivalentTo(new[] { spooky, wildWest }));
+    }
+  }
+
+  [Test]
+  public void Find_TargetedOwnerPartitionSharesReachablePairLimit() {
+    var source = new FakeCatalogSource();
+    var exact = PairPath("Style", "Themed", "Adventure", "Style");
+    var first = PairPath("Owners", "0000", "Missing");
+    var child = PairPath("Owners", "0000", "Child");
+    source.AddPair(exact);
+    source.AddPairWithReferences(first, ["Child"]);
+    source.AddPair(child);
+    source.TargetedPaths.Add(first);
+    foreach (var index in Enumerable.Range(1, 4_095)) {
+      var candidate = PairPath("Owners", $"{index:D4}", "Missing");
+      source.AddPair(candidate);
+      source.TargetedPaths.Add(candidate);
+    }
+    using var catalog = Catalog(source, @"Style\Themed\Adventure\Style");
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      catalog.Find("Missing", FileType.SceneryItemVisual)));
+
+    Assert.That(error?.Message,
+      Does.Contain("reachable pair count exceeds 4096"));
+  }
+
+  [Test]
+  public void Find_RequiresBothFilesInTargetedOwnerPair() {
+    var source = new FakeCatalogSource();
+    var exact = PairPath("Style", "Vanilla", "Safari", "Style");
+    var targeted = PairPath("Owners", "Missing", "Missing");
+    source.AddPair(exact);
+    source.AddCommonOnly(targeted);
+    source.TargetedPaths.Add(targeted);
+    using var catalog = Catalog(source, @"Style\Vanilla\Safari\Style");
+
+    var error = Assert.Throws<FileNotFoundException>(new Action(() =>
+      catalog.Find("Missing", FileType.SceneryItemVisual)));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error?.FileName, Is.EqualTo(UniquePath(targeted)));
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { exact }));
     }
   }
 
@@ -170,6 +321,77 @@ public class SceneryResourceCatalogTests {
       Assert.That(rightAnimation?.Archive, Is.SameAs(rightOwner?.Archive));
       Assert.That(rightAnimation?.Archive, Is.Not.SameAs(leftAnimation?.Archive));
     }
+  }
+
+  [Test]
+  public void FindWithinOwnerClosure_PrefersExactOwnerWhileGlobalCollisionFailsClosed() {
+    var source = new FakeCatalogSource();
+    var exact = PairPath("Style", "Prehistoric", "style");
+    var pteradonShape = PairPath("Style", "Prehistoric", "PteradonShape");
+    var pteradonTexture = PairPath("Style", "Prehistoric", "PteradonTexture");
+    var entranceShape = PairPath("Style", "Prehistoric", "EntranceShape");
+    source.AddPair(exact);
+    source.AddPairWithReferences(
+      pteradonShape,
+      ["PteradonTexture"],
+      Resource("PteradonShape", FileType.StaticShape));
+    source.AddPair(
+      pteradonTexture,
+      Resource("SharedMaterial", FileType.StaticShape));
+    source.AddPair(
+      entranceShape,
+      Resource("EntranceShape", FileType.BoneShape),
+      Resource("SharedMaterial", FileType.StaticShape));
+    source.TargetedPaths.AddRange([pteradonShape, entranceShape]);
+    using var catalog = Catalog(source, @"Style\Prehistoric\style");
+    var owner = catalog.Find("PteradonShape", FileType.StaticShape);
+    Assert.That(owner, Is.Not.Null);
+    Assert.That(catalog.Find("EntranceShape", FileType.BoneShape), Is.Not.Null);
+
+    var scoped = catalog.FindWithinOwnerClosure(
+      owner!,
+      "SharedMaterial",
+      FileType.StaticShape);
+    var globalError = Assert.Throws<InvalidDataException>(new Action(() =>
+      catalog.Find("SharedMaterial", FileType.StaticShape)));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(scoped?.Archive, Is.SameAs(source.LoadedArchives[2]));
+      Assert.That(scoped?.File.Name, Is.EqualTo("SharedMaterial"));
+      Assert.That(globalError?.Message, Does.Contain("defined by both"));
+    }
+  }
+
+  [Test]
+  public void FindWithinOwnerClosure_RejectsTwoDefinitionsReachableFromShapeOwner() {
+    var source = new FakeCatalogSource();
+    var exact = PairPath("Style", "Prehistoric", "style");
+    var shape = PairPath("Style", "Prehistoric", "PteradonShape");
+    var firstTexture = PairPath("Style", "Prehistoric", "PteradonTexture");
+    var secondTexture = PairPath("Style", "Prehistoric", "EntranceTexture");
+    source.AddPair(exact);
+    source.AddPairWithReferences(
+      shape,
+      ["PteradonTexture", "EntranceTexture"],
+      Resource("PteradonShape", FileType.StaticShape));
+    source.AddPair(
+      firstTexture,
+      Resource("SharedMaterial", FileType.StaticShape));
+    source.AddPair(
+      secondTexture,
+      Resource("SharedMaterial", FileType.StaticShape));
+    source.TargetedPaths.Add(shape);
+    using var catalog = Catalog(source, @"Style\Prehistoric\style");
+    var owner = catalog.Find("PteradonShape", FileType.StaticShape);
+    Assert.That(owner, Is.Not.Null);
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      catalog.FindWithinOwnerClosure(
+        owner!,
+        "SharedMaterial",
+        FileType.StaticShape)));
+
+    Assert.That(error?.Message, Does.Contain("defined by both"));
   }
 
   [Test]
@@ -632,7 +854,7 @@ public class SceneryResourceCatalogTests {
         Is.EquivalentTo(new[] { alpha, beta }));
       Assert.That(source.EnumerateMatchingCommonOvls(
           installRoot,
-          "LightGreen01.common.ovl"),
+          "lightgreen01.COMMON.OVL"),
         Is.EqualTo(new[] { targeted }));
       Assert.That(source.EnumerateDescendantCommonOvls(installRoot),
         Is.EquivalentTo(new[] { alpha, beta, nested, targeted }));

@@ -38,16 +38,6 @@ internal static class RideTrackGraphAdapter {
     tangentMagnitudeTolerance: null,
     bankToleranceRadians: 0.001f);
 
-  // Wild split rides retain separate, authoritative closed link cycles even when alternate-path
-  // geometry is not C1-continuous. ScrubGardens Seizmic segment 6489 proves this at the exact
-  // 6528 -> 6527 join. Multi-circuit traversals support saved-piece identity, static placement,
-  // diagnostics, and bounds only; vehicle motion remains gated to singular Circuit geometry.
-  private static readonly TrackJoinValidationPolicy ImportedMultiCircuitJoinValidation = new(
-    positionTolerance: float.MaxValue,
-    tangentDirectionTolerance: float.MaxValue,
-    tangentMagnitudeTolerance: null,
-    bankToleranceRadians: float.MaxValue);
-
   public static TrackGraph Build(
     RideTrack track,
     IReadOnlyList<RideTrackPlacement> placements,
@@ -102,11 +92,16 @@ internal static class RideTrackGraphAdapter {
       track,
       track.SegmentSourceEntryIds[0],
       orderedPlacements,
-      createPiece,
-      ImportedJoinValidation).Circuit;
+      createPiece).Circuit;
   }
 
   /// <summary>Adapts every separately closed TrackSegment into its own runtime circuit.</summary>
+  /// <remarks>
+  /// Wild split rides retain separate, authoritative closed link cycles even when alternate-path
+  /// geometry is not C1-continuous. ScrubGardens Seizmic segment 6489 proves this at the exact
+  /// 6528 -&gt; 6527 join. Imported piecewise circuits support saved-piece identity, static placement,
+  /// diagnostics, and bounds; multi-circuit vehicle motion remains separately gated.
+  /// </remarks>
   public static IReadOnlyList<RideTrackSegmentCircuit> BuildCircuits(
     RideTrack track,
     IReadOnlyList<RideTrackPlacement> placements,
@@ -181,8 +176,7 @@ internal static class RideTrackGraphAdapter {
         track,
         segmentId,
         groupedPlacements[index],
-        createPiece,
-        ImportedMultiCircuitJoinValidation);
+        createPiece);
     }
     return Array.AsReadOnly(circuits);
   }
@@ -191,11 +185,10 @@ internal static class RideTrackGraphAdapter {
     RideTrack track,
     ulong segmentSourceEntryId,
     IReadOnlyList<RideTrackPlacement> orderedPlacements,
-    Func<RideTrackPlacement, TrackPiece?> createPiece,
-    TrackJoinValidationPolicy joinValidation
+    Func<RideTrackPlacement, TrackPiece?> createPiece
   ) {
     ValidatePieceLinks(track, orderedPlacements, isCircuit: true);
-    var pieces = new TrackCircuitPiece[orderedPlacements.Count];
+    var pieces = new ImportedTrackCircuitPiece[orderedPlacements.Count];
     var pieceIds = new ulong[orderedPlacements.Count];
     foreach (var index in Enumerable.Range(0, orderedPlacements.Count)) {
       var placement = orderedPlacements[index];
@@ -208,12 +201,16 @@ internal static class RideTrackGraphAdapter {
       if (piece == null)
         throw Invalid(track, $"TrackPiece {placement.SourceEntryId} has no resolved geometry");
       pieceIds[index] = placement.SourceEntryId;
-      pieces[index] = new TrackCircuitPiece($"track-piece-{placement.SourceEntryId}", piece);
+      pieces[index] = new ImportedTrackCircuitPiece(
+        $"track-piece-{placement.SourceEntryId}",
+        piece,
+        $"track-piece-{placement.PreviousPieceReference}",
+        $"track-piece-{placement.NextPieceReference}");
     }
     return new(
       segmentSourceEntryId,
       Array.AsReadOnly(pieceIds),
-      new TrackCircuit(pieces, joinValidation));
+      TrackCircuit.CreateImportedPiecewise(pieces));
   }
 
   private static RideTrackPlacement[] ResolveOrderedPlacements(

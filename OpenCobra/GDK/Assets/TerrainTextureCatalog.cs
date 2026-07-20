@@ -4,17 +4,36 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
-using OpenCobra.GDK.Materials;
+using OpenCobra.OVL.Files;
+
+using Texture = OpenCobra.GDK.Materials.Texture;
 
 [assembly: InternalsVisibleTo("Tests")]
 
 namespace OpenCobra.GDK.Assets;
 
+internal enum TerrainTextureCatalogLayer {
+  Base,
+  CompleteEditionExpansion
+}
+
+internal sealed record TerrainTextureCatalogEntry(
+  string TerrainName,
+  uint Number,
+  TerrainTypeKind Kind,
+  string TextureReference,
+  Texture Texture,
+  TerrainTextureCatalogLayer Layer,
+  string OwningCommonOvlPath
+);
+
 /// <summary>
-/// Stable, numerically ordered terrain and cliff textures decoded from a paired terrain OVL.
+/// Stable, numerically ordered terrain and cliff textures composed from the shipped terrain OVL
+/// pairs.
 /// </summary>
 public sealed class TerrainTextureCatalog : IDisposable {
-  public const int SurfaceCount = 26;
+  public const int BaseSurfaceCount = 26;
+  public const int SurfaceCount = 32;
   public const int CliffCount = 6;
   internal const string SurfacePrefix = "Terrain_";
   internal const string CliffPrefix = "TerrainCliff";
@@ -23,22 +42,38 @@ public sealed class TerrainTextureCatalog : IDisposable {
   private readonly ReadOnlyCollection<Texture> cliffTextures;
   private readonly ReadOnlyCollection<string> surfaceNames;
   private readonly ReadOnlyCollection<string> cliffNames;
+  private readonly bool includesCompleteEditionExpansion;
   private Action<TerrainTextureCatalog>? disposalCallback;
   private int disposed;
 
-  internal TerrainTextureCatalog(IEnumerable<Texture> textures) {
-    var ownedTextures = textures.ToArray();
+  internal TerrainTextureCatalog(
+    IEnumerable<TerrainTextureCatalogEntry> entries,
+    bool includesCompleteEditionExpansion
+  ) {
+    var ownedEntries = new List<TerrainTextureCatalogEntry>();
     try {
+      ArgumentNullException.ThrowIfNull(entries);
+      foreach (var entry in entries) ownedEntries.Add(entry);
+      ValidateEntries(ownedEntries, includesCompleteEditionExpansion);
       var surfaces = OrderAndValidate(
-        ownedTextures, SurfacePrefix, "surface", SurfaceCount);
+        ownedEntries,
+        entry => entry.Kind is TerrainTypeKind.GroundUnblended or TerrainTypeKind.GroundBlended,
+        "surface",
+        includesCompleteEditionExpansion ? SurfaceCount : BaseSurfaceCount);
       var cliffs = OrderAndValidate(
-        ownedTextures, CliffPrefix, "cliff", CliffCount);
+        ownedEntries, entry => entry.Kind == TerrainTypeKind.Cliff, "cliff", CliffCount);
       surfaceTextures = Array.AsReadOnly(surfaces);
       cliffTextures = Array.AsReadOnly(cliffs);
       surfaceNames = Array.AsReadOnly(surfaces.Select(texture => texture.Name).ToArray());
       cliffNames = Array.AsReadOnly(cliffs.Select(texture => texture.Name).ToArray());
+      this.includesCompleteEditionExpansion = includesCompleteEditionExpansion;
     } catch {
-      foreach (var texture in ownedTextures) texture.Dispose();
+      foreach (var texture in ownedEntries
+        .OfType<TerrainTextureCatalogEntry>()
+        .Select(entry => entry.Texture)
+        .OfType<Texture>()
+        .Distinct())
+        texture.Dispose();
       throw;
     }
   }
@@ -78,6 +113,10 @@ public sealed class TerrainTextureCatalog : IDisposable {
   /// <summary>Gets the texture addressed by a terrain cell's surface index.</summary>
   public Texture GetSurface(byte index) {
     ThrowIfDisposed();
+    if (!includesCompleteEditionExpansion && index >= BaseSurfaceCount && index < SurfaceCount)
+      throw new InvalidDataException(
+        $"Surface index {index} requires the Complete Edition Terrain_CT common/unique OVL pair; " +
+        "the base Terrain_RCT3 catalog only provides indices 0-25.");
     if (index >= surfaceTextures.Count)
       throw new ArgumentOutOfRangeException(
         nameof(index), index,
@@ -107,37 +146,111 @@ public sealed class TerrainTextureCatalog : IDisposable {
   }
 
   private static Texture[] OrderAndValidate(
-    IEnumerable<Texture> textures, string prefix, string kind, int expectedCount
+    IEnumerable<TerrainTextureCatalogEntry> entries,
+    Func<TerrainTextureCatalogEntry, bool> predicate,
+    string kind,
+    int expectedCount
   ) {
-    var indexed = textures
-      .Select(texture => (
-        texture,
-        parsed: TryParseIndex(texture.Name, prefix, out var index),
-        index))
-      .Where(item => item.parsed)
-      .OrderBy(item => item.index)
+    var indexed = entries
+      .Where(predicate)
+      .OrderBy(entry => entry.Number)
       .ToArray();
 
     if (indexed.Length == 0)
       throw new InvalidDataException($"The terrain catalog contains no {kind} textures.");
 
-    var duplicate = indexed.GroupBy(item => item.index).FirstOrDefault(group => group.Count() > 1);
+    var duplicate = indexed.GroupBy(entry => entry.Number).FirstOrDefault(group => group.Count() > 1);
     if (duplicate != null)
       throw new InvalidDataException(
-        $"The terrain catalog contains duplicate index {FormatName(prefix, duplicate.Key)}.");
+        $"The terrain catalog contains duplicate {kind} index {duplicate.Key}.");
 
-    foreach (var (item, expectedIndex) in indexed.Select((item, index) => (item, index))) {
-      if (item.index != expectedIndex)
+    foreach (var (entry, expectedIndex) in indexed.Select((entry, index) => (entry, index))) {
+      if (entry.Number != Convert.ToUInt32(expectedIndex))
         throw new InvalidDataException(
-          $"The terrain catalog is missing {FormatName(prefix, expectedIndex)}.");
+          $"The terrain catalog is missing {kind} index {expectedIndex}.");
     }
 
+    if (indexed.Length < expectedCount)
+      throw new InvalidDataException(
+        $"The terrain catalog is missing {kind} index {indexed.Length}.");
     if (indexed.Length != expectedCount)
       throw new InvalidDataException(
         $"The terrain catalog must contain exactly {expectedCount} {kind} textures; " +
         $"found {indexed.Length}.");
 
-    return indexed.Select(item => item.texture).ToArray();
+    return indexed.Select(entry => entry.Texture).ToArray();
+  }
+
+  private static void ValidateEntries(
+    IEnumerable<TerrainTextureCatalogEntry> entries,
+    bool includesCompleteEditionExpansion
+  ) {
+    foreach (var entry in entries) {
+      ArgumentNullException.ThrowIfNull(entry);
+      ArgumentNullException.ThrowIfNull(entry.Texture);
+      if (string.IsNullOrWhiteSpace(entry.TerrainName))
+        throw new InvalidDataException("Terrain resource names cannot be empty.");
+      if (string.IsNullOrWhiteSpace(entry.TextureReference))
+        throw new InvalidDataException(
+          $"Terrain resource '{entry.TerrainName}' has an empty texture reference.");
+      if (!string.Equals(entry.TextureReference, entry.Texture.Name, StringComparison.Ordinal))
+        throw new InvalidDataException(
+          $"Terrain resource '{entry.TerrainName}' resolved texture '{entry.Texture.Name}' instead " +
+          $"of its declared '{entry.TextureReference}' reference.");
+      if (string.IsNullOrWhiteSpace(entry.OwningCommonOvlPath))
+        throw new InvalidDataException(
+          $"Terrain resource '{entry.TerrainName}' has no owning OVL pair.");
+      if (entry.Number > byte.MaxValue)
+        throw new InvalidDataException(
+          $"Terrain resource '{entry.TerrainName}' has unsupported number {entry.Number}.");
+
+      switch (entry.Kind) {
+        case TerrainTypeKind.GroundUnblended:
+        case TerrainTypeKind.GroundBlended:
+          ValidateSurfaceLayer(entry, includesCompleteEditionExpansion);
+          break;
+        case TerrainTypeKind.Cliff:
+          if (entry.Layer != TerrainTextureCatalogLayer.Base)
+            throw new InvalidDataException(
+              $"Complete Edition terrain resource '{entry.TerrainName}' cannot supply cliff index " +
+              $"{entry.Number}; Terrain_CT is a surface-only overlay.");
+          if (entry.Number >= CliffCount)
+            throw new InvalidDataException(
+              $"Base terrain resource '{entry.TerrainName}' has out-of-range cliff index " +
+              $"{entry.Number}; expected 0-{CliffCount - 1}.");
+          break;
+        default:
+          throw new InvalidDataException(
+            $"Terrain resource '{entry.TerrainName}' has unsupported kind " +
+            $"{Convert.ToUInt32(entry.Kind)}.");
+      }
+    }
+  }
+
+  private static void ValidateSurfaceLayer(
+    TerrainTextureCatalogEntry entry,
+    bool includesCompleteEditionExpansion
+  ) {
+    if (entry.Number < BaseSurfaceCount) {
+      if (entry.Layer != TerrainTextureCatalogLayer.Base)
+        throw new InvalidDataException(
+          $"Complete Edition terrain resource '{entry.TerrainName}' duplicates base surface index " +
+          $"{entry.Number}.");
+      return;
+    }
+
+    if (entry.Number >= SurfaceCount)
+      throw new InvalidDataException(
+        $"Terrain resource '{entry.TerrainName}' has out-of-range surface index {entry.Number}; " +
+        $"expected 0-{SurfaceCount - 1}.");
+    if (entry.Layer != TerrainTextureCatalogLayer.CompleteEditionExpansion)
+      throw new InvalidDataException(
+        $"Base terrain resource '{entry.TerrainName}' cannot supply Complete Edition surface index " +
+        $"{entry.Number}.");
+    if (!includesCompleteEditionExpansion)
+      throw new InvalidDataException(
+        $"Terrain resource '{entry.TerrainName}' was marked as an expansion surface without a " +
+        "complete Terrain_CT OVL pair.");
   }
 
   private static bool TryParseIndex(string name, string prefix, out int index) {

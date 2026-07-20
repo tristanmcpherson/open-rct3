@@ -57,6 +57,34 @@ public class TerrainTextureCatalogTests {
     }
   }
 
+  [Test]
+  [SkipIfEnvironmentMissing("RCT3_PATH")]
+  public void InstalledBasePairWithoutExpansionSupportsVanillaAndNamesMissingSurface() {
+    var sourceCommonPath = TerrainOvlPath();
+    var sourceUniquePath = Path.Combine(
+      Path.GetDirectoryName(sourceCommonPath)!, "Terrain_RCT3.unique.ovl");
+    var directory = Path.Combine(
+      Path.GetTempPath(), $"openrct3-vanilla-terrain-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(directory);
+    var commonPath = Path.Combine(directory, "Terrain_RCT3.common.ovl");
+    File.Copy(sourceCommonPath, commonPath);
+    File.Copy(sourceUniquePath, Path.Combine(directory, "Terrain_RCT3.unique.ovl"));
+
+    try {
+      using var catalog = TextureLoader.LoadTerrainCatalog(commonPath);
+
+      Assert.That(
+        catalog.SurfaceTextures,
+        Has.Count.EqualTo(TerrainTextureCatalog.BaseSurfaceCount));
+      Assert.That(catalog.GetSurface(25).Name, Is.EqualTo("Terrain_25"));
+      var exception = Assert.Throws<InvalidDataException>(new Action(
+        () => catalog.GetSurface(TerrainTextureCatalog.BaseSurfaceCount)));
+      Assert.That(exception!.Message, Does.Contain("Terrain_CT"));
+    } finally {
+      Directory.Delete(directory, true);
+    }
+  }
+
   private static string TerrainOvlPath() => Path.Combine(
     Environment.GetEnvironmentVariable("RCT3_PATH")!,
     "terrain", "RCT3", "Terrain_RCT3.common.ovl");

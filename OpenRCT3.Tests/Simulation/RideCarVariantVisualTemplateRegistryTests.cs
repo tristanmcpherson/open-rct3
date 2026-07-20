@@ -637,7 +637,7 @@ public class RideCarVariantVisualTemplateRegistryTests {
   ) => new(name, Vector3.Zero, Vector3.One, meshes, []);
 
   private static BoneShapeMesh BoneMesh(string name) {
-    var skinning = new BoneShapeSkinning(-1, -1, -1, -1, 0, 0, 0, 0);
+    var skinning = new BoneShapeSkinning(255, 255, 255, 255, 0, 0, 0, 0);
     return new(
       name,
       0,

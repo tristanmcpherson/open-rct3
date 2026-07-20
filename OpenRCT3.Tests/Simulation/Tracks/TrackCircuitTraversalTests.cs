@@ -125,6 +125,38 @@ public class TrackCircuitTraversalTests {
   }
 
   [Test]
+  public void ImportedPiecewiseSeam_PreservesDepartingAndIncomingPieceFrames() {
+    var circuit = PiecewiseLoop();
+    var traversal = new TrackCircuitTraversal(circuit);
+    var firstLength = circuit.Pieces[0].Piece.Length;
+    var firstExit = traversal.AtPiece(0, firstLength);
+    var secondEntry = traversal.AtPiece(1, 0d);
+
+    var departing = firstExit.Sample();
+    var incoming = secondEntry.Sample();
+    var globalBoundary = circuit.Sample(firstLength);
+    var afterSeam = firstExit.Advance(0.0001d).Sample();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(Vector3.Distance(
+        departing.ContactPoints.Left.Position,
+        incoming.ContactPoints.Left.Position), Is.LessThan(0.000001f));
+      Assert.That(Vector3.Dot(
+        Vector3.Normalize(departing.ContactPoints.Left.Tangent),
+        Vector3.Normalize(incoming.ContactPoints.Left.Tangent)),
+        Is.EqualTo(0f).Within(0.000001f));
+      Assert.That(globalBoundary.PieceIndex, Is.EqualTo(1));
+      Assert.That(globalBoundary.ContactPoints.Left.Tangent,
+        Is.EqualTo(incoming.ContactPoints.Left.Tangent));
+      Assert.That(afterSeam.PieceIndex, Is.EqualTo(1));
+      Assert.That(Vector3.Dot(
+        Vector3.Normalize(afterSeam.ContactPoints.Left.Tangent),
+        Vector3.Normalize(incoming.ContactPoints.Left.Tangent)),
+        Is.GreaterThan(0.999f));
+    }
+  }
+
+  [Test]
   public void Advance_RetainsSubFloatDistanceUntilSampling() {
     var traversal = new TrackCircuitTraversal(Circle());
     const double step = 0.000000001d;
@@ -189,6 +221,19 @@ public class TrackCircuitTraversalTests {
         Piece(-Vector3.UnitY, Vector3.UnitX, Vector3.UnitX * scale, Vector3.UnitY * scale)),
     ]);
   }
+
+  private static TrackCircuit PiecewiseLoop() => TrackCircuit.CreateImportedPiecewise([
+    new ImportedTrackCircuitPiece(
+      "first",
+      Piece(Vector3.Zero, Vector3.UnitX, Vector3.UnitX, Vector3.UnitX),
+      PreviousId: "second",
+      NextId: "second"),
+    new ImportedTrackCircuitPiece(
+      "second",
+      Piece(Vector3.UnitX, Vector3.Zero, Vector3.UnitY, -Vector3.UnitX),
+      PreviousId: "first",
+      NextId: "first"),
+  ]);
 
   private static TrackPiece Piece(
     Vector3 start,

@@ -121,6 +121,26 @@ public class RideCarVisualResourceBridgeTests {
   }
 
   [Test]
+  public void Decode_AssociatesCommonResidentStaticShapeWithExactOvlSymbol() {
+    const string commonStaticPath = "station.common.ovl";
+    using var archive = new Ovl("ride visuals");
+    archive.Add(
+      new OvlFile("StationMiddle", FileType.StaticShape, commonStaticPath),
+      new OvlEntry(0, 0));
+    var staticShape = StaticShape("StationMiddle");
+
+    var result = RideVisualShapeResourceDecoder.Decode(
+      [archive],
+      _ => [staticShape],
+      _ => [],
+      RideCarVisualResourceBridgeLimits.Default);
+
+    Assert.That(result.StaticShapes, Has.Count.EqualTo(1));
+    Assert.That(result.StaticShapes[0].File.Path, Is.EqualTo(commonStaticPath));
+    Assert.That(result.StaticShapes[0].Resource, Is.SameAs(staticShape));
+  }
+
+  [Test]
   public void Decode_RejectsDecodedShapeWithoutExactOvlSymbol() {
     using var archive = new Ovl("ride visuals");
     archive.Add(
@@ -292,7 +312,7 @@ public class RideCarVisualResourceBridgeTests {
       RideTrainCarRole.Front,
       $"{car.Name}:ric",
       carSource,
-      [new RideVisualLink(RideVisualRole.Body, car.Visual, visualSource)]);
+      [new RideVisualLink(RideVisualRole.Body, car.Visual!, visualSource)]);
     var train = Train("Train", car.Name);
     var trainSource = new RideTrainResourceSource(
       new OvlFile(train.Name, FileType.RideTrain, TrainPath),
@@ -352,7 +372,7 @@ public class RideCarVisualResourceBridgeTests {
   }
 
   private static BoneShape BoneShape(string name) {
-    var skinning = new BoneShapeSkinning(-1, -1, -1, -1, 0, 0, 0, 0);
+    var skinning = new BoneShapeSkinning(255, 255, 255, 255, 0, 0, 0, 0);
     var vertices = new[] {
       new BoneShapeVertex(
         Vector3.Zero, Vector3.UnitY, Vector2.Zero, Vector4.One, skinning),

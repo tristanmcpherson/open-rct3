@@ -1172,6 +1172,52 @@ public class SceneryGeometryBuilderTests {
   }
 
   [Test]
+  public void Build_InstalledEmptyStaticShapeSkipsPlacementWithoutRenderBatches() {
+    var terrain = new Terrain();
+    var park = ParkWith(Placement("Empty"));
+    var shape = new StaticShape(
+      "EmptyShape",
+      new Vector3(100_000_000f),
+      new Vector3(-100_000_000f),
+      [],
+      []);
+
+    var result = SceneryGeometryBuilder.Build(
+      park,
+      terrain,
+      _ => ResolvedFor("Empty", shape));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Batches, Is.Empty);
+      Assert.That(result.PlacementCount, Is.EqualTo(1));
+      Assert.That(result.ResolvedPlacementCount, Is.EqualTo(1));
+      Assert.That(result.UnsupportedVisualPlacementCount, Is.EqualTo(1));
+      Assert.That(result.RenderedPlacementCount, Is.Zero);
+      Assert.That(result.SkippedPlacementCount, Is.EqualTo(1));
+      Assert.That(result.SourceBatchInstanceCount, Is.Zero);
+      Assert.That(result.VertexCount, Is.Zero);
+      Assert.That(result.IndexCount, Is.Zero);
+    }
+  }
+
+  [Test]
+  public void Build_EmptyAdapterForNonEmptyShapeFailsClosed() {
+    var terrain = new Terrain();
+    var park = ParkWith(Placement("Item"));
+    var shape = Shape("Shape", "Texture:ftx");
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      SceneryGeometryBuilder.Build(
+        park,
+        terrain,
+        _ => ResolvedFor("Item", shape),
+        _ => [],
+        SceneryGeometryBuildLimits.Default)));
+
+    Assert.That(exception!.Message, Does.Contain("adapter returned no batches"));
+  }
+
+  [Test]
   public void Build_MissingFirstStaticLodFailsClosed() {
     var terrain = new Terrain();
     var park = ParkWith(Placement("Item"));
@@ -1515,5 +1561,5 @@ public class SceneryGeometryBuilderTests {
     Vector3.UnitY,
     Vector2.Zero,
     Vector4.One,
-    new BoneShapeSkinning(-1, -1, -1, -1, 0, 0, 0, 0));
+    new BoneShapeSkinning(255, 255, 255, 255, 0, 0, 0, 0));
 }

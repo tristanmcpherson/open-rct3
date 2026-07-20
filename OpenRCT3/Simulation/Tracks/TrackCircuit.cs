@@ -11,6 +11,20 @@ namespace OpenRCT3.Simulation.Tracks;
 /// <summary>One ordered piece in a closed tracked-ride circuit.</summary>
 public sealed record TrackCircuitPiece(string Id, TrackPiece Piece);
 
+/// <summary>The geometric continuity contract used to construct a closed track circuit.</summary>
+public enum TrackCircuitContinuity {
+  StrictC1,
+  ImportedPiecewise,
+}
+
+/// <summary>One imported piece plus its exact reciprocal neighbors in authoritative DAT order.</summary>
+internal sealed record ImportedTrackCircuitPiece(
+  string Id,
+  TrackPiece Piece,
+  string PreviousId,
+  string NextId
+);
+
 /// <summary>A wheel-contact sample located on one exact piece of a circuit.</summary>
 public readonly record struct TrackCircuitSample(
   int PieceIndex,
@@ -20,19 +34,23 @@ public readonly record struct TrackCircuitSample(
   TrackContactPoints ContactPoints
 );
 
-/// <summary>An immutable, C1-continuous closed sequence of dual-rail track pieces.</summary>
+/// <summary>An immutable closed sequence of dual-rail track pieces.</summary>
 /// <remarks>
 /// <see cref="TrackGraph"/> intentionally models a DAG and therefore cannot represent the closed
 /// circuits used by most complete roller coasters. This type keeps the cyclic case explicit instead
-/// of weakening that graph invariant or duplicating the first piece as a fake terminal edge.
+/// of weakening that graph invariant or duplicating the first piece as a fake terminal edge. Public
+/// constructors retain strict C1 validation for hand-authored geometry. The bounded internal import
+/// path retains native piece-local frames across position-continuous reciprocal DAT seams.
 /// </remarks>
 public sealed class TrackCircuit {
   private const int MaximumPieceCount = 1_000_000;
+  private const float ImportedJoinPositionTolerance = 0.001f;
   private readonly ReadOnlyCollection<TrackCircuitPiece> pieces;
   private readonly float[] pieceStarts;
 
   public IReadOnlyList<TrackCircuitPiece> Pieces => pieces;
   public float Length => pieceStarts[^1];
+  public TrackCircuitContinuity Continuity { get; }
 
   public TrackCircuit(
     IEnumerable<TrackCircuitPiece> pieces,
@@ -52,16 +70,40 @@ public sealed class TrackCircuit {
   public TrackCircuit(
     IEnumerable<TrackCircuitPiece> pieces,
     TrackJoinValidationPolicy joinValidation
+  ) : this(PrepareStrict(pieces, joinValidation), TrackCircuitContinuity.StrictC1) {
+  }
+
+  private TrackCircuit(
+    TrackCircuitPiece[] pieces,
+    TrackCircuitContinuity continuity
+  ) {
+    pieceStarts = BuildPieceStarts(pieces);
+    this.pieces = Array.AsReadOnly(pieces);
+    Continuity = continuity;
+  }
+
+  /// <summary>
+  /// Creates a native-style circuit from exact reciprocal DAT links and position-closed seams.
+  /// </summary>
+  /// <remarks>
+  /// RCT3.exe's x86 path at <c>0xC5A570</c> subtracts the selected piece's saved start distance and
+  /// calls the piece-local samplers at <c>0xC39310</c>/<c>0xC38A10</c>. It does not merge or compare
+  /// neighboring tangents. This path therefore preserves each piece's own endpoint tangent, bank,
+  /// and frame while still rejecting reordered links, open seams, and swapped rails.
+  /// </remarks>
+  internal static TrackCircuit CreateImportedPiecewise(
+    IEnumerable<ImportedTrackCircuitPiece> pieces
   ) {
     ArgumentNullException.ThrowIfNull(pieces);
-    ArgumentNullException.ThrowIfNull(joinValidation);
 
-    var copied = CopyBounded(pieces);
+    var imported = CopyImportedBounded(pieces);
+    ValidateImportedLinks(imported);
+    var copied = imported
+      .Select(piece => new TrackCircuitPiece(piece.Id, piece.Piece))
+      .ToArray();
     ValidatePieces(copied);
-    ValidateJoins(copied, joinValidation);
-
-    pieceStarts = BuildPieceStarts(copied);
-    this.pieces = Array.AsReadOnly(copied);
+    ValidatePositionJoins(copied, ImportedJoinPositionTolerance);
+    return new(copied, TrackCircuitContinuity.ImportedPiecewise);
   }
 
   /// <summary>Samples the circuit over its canonical closed interval.</summary>
@@ -106,6 +148,33 @@ public sealed class TrackCircuit {
     return [.. copied];
   }
 
+  private static ImportedTrackCircuitPiece[] CopyImportedBounded(
+    IEnumerable<ImportedTrackCircuitPiece> source
+  ) {
+    var copied = new List<ImportedTrackCircuitPiece>();
+    foreach (var piece in source) {
+      if (copied.Count >= MaximumPieceCount)
+        throw new ArgumentException(
+          $"Track circuit piece count exceeds the limit {MaximumPieceCount}.",
+          nameof(source));
+      copied.Add(piece);
+    }
+    return [.. copied];
+  }
+
+  private static TrackCircuitPiece[] PrepareStrict(
+    IEnumerable<TrackCircuitPiece> pieces,
+    TrackJoinValidationPolicy joinValidation
+  ) {
+    ArgumentNullException.ThrowIfNull(pieces);
+    ArgumentNullException.ThrowIfNull(joinValidation);
+
+    var copied = CopyBounded(pieces);
+    ValidatePieces(copied);
+    ValidateJoins(copied, joinValidation);
+    return copied;
+  }
+
   private static void ValidatePieces(IReadOnlyList<TrackCircuitPiece> pieces) {
     if (pieces.Count == 0)
       throw new ArgumentException("A track circuit needs at least one piece.", nameof(pieces));
@@ -143,6 +212,77 @@ public sealed class TrackCircuit {
           nameof(pieces));
     }
     return starts;
+  }
+
+  private static void ValidateImportedLinks(
+    IReadOnlyList<ImportedTrackCircuitPiece> pieces
+  ) {
+    if (pieces.Count == 0)
+      throw new ArgumentException("An imported track circuit needs at least one piece.",
+        nameof(pieces));
+
+    var ids = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var piece in pieces) {
+      if (piece == null || string.IsNullOrWhiteSpace(piece.Id) || piece.Piece == null ||
+          string.IsNullOrWhiteSpace(piece.PreviousId) ||
+          string.IsNullOrWhiteSpace(piece.NextId))
+        throw new ArgumentException(
+          "Imported track circuit pieces need geometry and exact neighbor IDs.",
+          nameof(pieces));
+      if (!ids.Add(piece.Id))
+        throw new ArgumentException(
+          $"Duplicate imported track circuit piece ID '{piece.Id}'.",
+          nameof(pieces));
+    }
+
+    foreach (var index in Enumerable.Range(0, pieces.Count)) {
+      var piece = pieces[index];
+      var previous = pieces[(index + pieces.Count - 1) % pieces.Count];
+      var next = pieces[(index + 1) % pieces.Count];
+      if (!string.Equals(piece.PreviousId, previous.Id, StringComparison.Ordinal) ||
+          !string.Equals(piece.NextId, next.Id, StringComparison.Ordinal))
+        throw new ArgumentException(
+          $"Imported track circuit piece '{piece.Id}' does not retain exact reciprocal order.",
+          nameof(pieces));
+    }
+  }
+
+  private static void ValidatePositionJoins(
+    IReadOnlyList<TrackCircuitPiece> pieces,
+    float positionTolerance
+  ) {
+    foreach (var index in Enumerable.Range(0, pieces.Count)) {
+      var outgoing = pieces[index];
+      var incoming = pieces[(index + 1) % pieces.Count];
+      ValidateRailPositionJoin(
+        outgoing.Piece.Exit.Left,
+        incoming.Piece.Entry.Left,
+        positionTolerance,
+        outgoing.Id,
+        incoming.Id,
+        RailSide.Left);
+      ValidateRailPositionJoin(
+        outgoing.Piece.Exit.Right,
+        incoming.Piece.Entry.Right,
+        positionTolerance,
+        outgoing.Id,
+        incoming.Id,
+        RailSide.Right);
+    }
+  }
+
+  private static void ValidateRailPositionJoin(
+    RailEndpoint expected,
+    RailEndpoint actual,
+    float positionTolerance,
+    string outgoingId,
+    string incomingId,
+    RailSide side
+  ) {
+    if (TrackMath.Distance(expected.Position, actual.Position) > positionTolerance)
+      throw new ArgumentException(
+        $"Imported track circuit pieces '{outgoingId}' and '{incomingId}' do not form a " +
+        $"position-continuous {side} rail join.");
   }
 
   private static void ValidateJoins(

@@ -28,6 +28,10 @@ public sealed record SceneryMaterialKey(
 ) {
   /// <summary>The placed object's three serialized flexible-colour selections.</summary>
   public SceneryFlexiColours FlexiColours { get; init; }
+  /// <summary>The exact SVD archive entry selected for this material batch.</summary>
+  public SceneryResourceEntry? VisualSource { get; init; }
+  /// <summary>The exact SHS/BSH archive entry that supplied this material batch.</summary>
+  public SceneryResourceEntry? ShapeSource { get; init; }
 }
 
 /// <summary>The three effective DAT palette selections that tint a flexible texture.</summary>
@@ -167,9 +171,15 @@ public static class SceneryGeometryBuilder {
           };
           if (sourceBatches == null)
             throw Invalid($"shape adapter returned null for '{selected.ShapeName}'");
-          if (sourceBatches.Count == 0)
+          if (sourceBatches.Count == 0 &&
+              (selected.Shape is not StaticShape staticShape ||
+               !StaticShapeMeshBuilder.IsEmptyVisual(staticShape)))
             throw Invalid($"shape adapter returned no batches for '{selected.ShapeName}'");
           shapeCache.Add(selected.Shape, sourceBatches);
+        }
+        if (sourceBatches.Count == 0) {
+          unsupportedCount++;
+          continue;
         }
 
         var transform = CreatePlacementTransform(
@@ -193,7 +203,9 @@ public static class SceneryGeometryBuilder {
             FlexiColours = SceneryFlexiColours.FromSerialized(
               placement.FlexiColour0,
               placement.FlexiColour1,
-              placement.FlexiColour2)
+              placement.FlexiColour2),
+            VisualSource = selected.VisualSource,
+            ShapeSource = selected.ShapeSource,
           };
           MutableBatch target;
           if (sourceBatch.Transparency == 2) {
@@ -405,7 +417,12 @@ public static class SceneryGeometryBuilder {
                 $"SVD '{visual.Name}' LOD '{expected.Name}' resolved shape " +
                 $"'{staticCandidate.Shape.Name}', expected '{staticShapeName}'");
             ordered.Add(new ResolvedShapeSelection(
-              visual, expected, staticShapeName, staticCandidate.Shape));
+              visual,
+              expected,
+              staticShapeName,
+              staticCandidate.Shape,
+              staticCandidate.VisualSource,
+              staticCandidate.ShapeSource));
             break;
           case SvdLodType.BoneShape:
             if (boneIndex >= boneCandidates.Length)
@@ -427,7 +444,12 @@ public static class SceneryGeometryBuilder {
                 $"SVD '{visual.Name}' LOD '{expected.Name}' resolved shape " +
                 $"'{boneCandidate.Shape.Name}', expected '{boneShapeName}'");
             ordered.Add(new ResolvedShapeSelection(
-              visual, expected, boneShapeName, boneCandidate.Shape));
+              visual,
+              expected,
+              boneShapeName,
+              boneCandidate.Shape,
+              boneCandidate.VisualSource,
+              boneCandidate.ShapeSource));
             break;
         }
       }
@@ -1101,7 +1123,9 @@ public static class SceneryGeometryBuilder {
     SceneryItemVisual Visual,
     SceneryItemVisualLod Lod,
     string ShapeName,
-    object Shape
+    object Shape,
+    SceneryResourceEntry? VisualSource,
+    SceneryResourceEntry? ShapeSource
   );
 
   private sealed class MutableBatch(SceneryMaterialKey key) {

@@ -9,10 +9,10 @@ namespace OpenCobra.OVL.Files;
 
 /// <summary>The four fixed bone slots serialized with an RCT3 bone-shape vertex.</summary>
 public readonly record struct BoneShapeSkinning(
-  sbyte Bone0,
-  sbyte Bone1,
-  sbyte Bone2,
-  sbyte Bone3,
+  byte Bone0,
+  byte Bone1,
+  byte Bone2,
+  byte Bone3,
   byte Weight0,
   byte Weight1,
   byte Weight2,
@@ -74,7 +74,7 @@ public static class BoneShapes {
   // See boneshape.h, vertex.h, ManagerBSH.cpp, and ManagerBSH.h in rct3-importer.
   private const int ShapeSize = 60;
   private const int MeshSize = 40;
-  // VERTEX2 is 44 bytes: two VECTORs, four signed bone indices, four weights, BGRA, and UV.
+  // VERTEX2 is 44 bytes: two VECTORs, four raw bone-index bytes, four weights, BGRA, and UV.
   private const int VertexSize = 44;
   private const int BoneSize = 8;
   private const int MatrixSize = 64;
@@ -316,10 +316,10 @@ public static class BoneShapes {
           Convert.ToByte(color & 255) / 255.0f,
           Convert.ToByte(color >> 24 & 255) / 255.0f),
         new BoneShapeSkinning(
-          ReadSByte(bytes[offset + 24]),
-          ReadSByte(bytes[offset + 25]),
-          ReadSByte(bytes[offset + 26]),
-          ReadSByte(bytes[offset + 27]),
+          bytes[offset + 24],
+          bytes[offset + 25],
+          bytes[offset + 26],
+          bytes[offset + 27],
           bytes[offset + 28],
           bytes[offset + 29],
           bytes[offset + 30],
@@ -559,12 +559,12 @@ public static class BoneShapes {
     int meshIndex,
     int vertexIndex,
     int slot,
-    sbyte bone,
+    byte bone,
     byte weight,
     int boneCount
   ) {
     if (weight == 0) return;
-    if (bone < 0 || bone >= boneCount)
+    if (bone >= boneCount)
       throw Invalid(shapeName,
         $"mesh {meshIndex} vertex {vertexIndex} bone slot {slot} references {bone}, " +
         $"but only {boneCount} bones exist");
@@ -745,10 +745,6 @@ public static class BoneShapes {
   }
 
   private static uint ReadUInt32(byte[] bytes, int offset) => BitConverter.ToUInt32(bytes, offset);
-
-  private static sbyte ReadSByte(byte value) => value < 128
-    ? Convert.ToSByte(value)
-    : Convert.ToSByte(Convert.ToInt16(value) - 256);
 
   private static Vector3 ReadVector3(byte[] bytes, int offset) => new(
     BitConverter.ToSingle(bytes, offset),

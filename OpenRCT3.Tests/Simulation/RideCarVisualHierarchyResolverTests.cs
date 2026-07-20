@@ -401,6 +401,78 @@ public class RideCarVisualHierarchyResolverTests {
   }
 
   [Test]
+  public void Resolve_WithGraphReturnsTypedUnsupportedAnimalSpeciesBodyWithoutSvd() {
+    var fixture = Fixture(new FixtureOptions([]) {
+      OmitBodyVisual = true,
+      AnimalSpecies = "Elephant:was",
+      UndeclaredVisuals = new HashSet<RideVisualRole> {
+        RideVisualRole.FrontAxle,
+        RideVisualRole.RearAxle,
+        RideVisualRole.FrontRightWheel,
+        RideVisualRole.FrontLeftWheel,
+        RideVisualRole.BackRightWheel,
+        RideVisualRole.BackLeftWheel,
+      },
+    });
+
+    var registry = RideCarVisualHierarchyResolver.Resolve(
+      fixture.Graph,
+      fixture.Resources);
+    var result = registry.Cars.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(fixture.Resources.Visuals, Is.Empty);
+      Assert.That(registry.CoversAllDecodedCarOccurrences, Is.True);
+      Assert.That(registry.UnresolvedCarReferenceCount, Is.Zero);
+      Assert.That(result.BodyStatus, Is.EqualTo(
+        RideCarVisualHierarchyPartStatus.AnimalSpeciesBodyUnsupported));
+      Assert.That(result.BodyVisual, Is.Null);
+      Assert.That(result.BodyShapeVisual, Is.Null);
+      Assert.That(result.Parts, Has.All.Property("Status").EqualTo(
+        RideCarVisualHierarchyPartStatus.VisualNotDeclared));
+      Assert.That(registry.TryGet(fixture.Car, out var indexed), Is.True);
+      Assert.That(indexed, Is.SameAs(result));
+    }
+  }
+
+  [Test]
+  public void Resolve_WithGraphRejectsNullBodyWithoutAnimalSpecies() {
+    var fixture = Fixture(new FixtureOptions([]) {
+      OmitBodyVisual = true,
+      UndeclaredVisuals = new HashSet<RideVisualRole> {
+        RideVisualRole.FrontAxle,
+        RideVisualRole.RearAxle,
+        RideVisualRole.FrontRightWheel,
+        RideVisualRole.FrontLeftWheel,
+        RideVisualRole.BackRightWheel,
+        RideVisualRole.BackLeftWheel,
+      },
+    });
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideCarVisualHierarchyResolver.Resolve(fixture.Graph, fixture.Resources)));
+
+    Assert.That(error?.Message, Does.Contain("required Body is null"));
+  }
+
+  [Test]
+  public void Resolve_WithGraphKeepsOrdinaryBodySvdIdentityUnchanged() {
+    var fixture = Fixture(new FixtureOptions([]));
+
+    var result = RideCarVisualHierarchyResolver.Resolve(
+      fixture.Graph,
+      fixture.Resources).Cars.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.BodyStatus, Is.EqualTo(
+        RideCarVisualHierarchyPartStatus.Resolved));
+      Assert.That(result.BodyVisual,
+        Is.SameAs(fixture.VisualLinks[RideVisualRole.Body]));
+      Assert.That(result.BodyShapeVisual, Is.Not.Null);
+    }
+  }
+
+  [Test]
   public void Resolve_RejectsOversizedInputBeforeEnumeratingIt() {
     var resources = new RideCarVisualResourceBridgeResult(
       new CountOnlyReadOnlyList<RideCarVisualShapeLink>(2),
@@ -464,13 +536,14 @@ public class RideCarVisualHierarchyResolverTests {
         options.WildFlippedBodyBones);
     var definitions = new Dictionary<RideVisualRole, VisualDefinition>();
     foreach (var role in shapeBones.Keys) {
-      if (undeclared.Contains(role)) continue;
+      if (undeclared.Contains(role) ||
+          (role == RideVisualRole.Body && options.OmitBodyVisual)) continue;
       var isResolved = !unresolved.Contains(role);
       definitions.Add(role, Visual(role, shapeBones[role], isResolved));
     }
 
     var carResource = Car(
-      Reference(definitions, RideVisualRole.Body)!,
+      Reference(definitions, RideVisualRole.Body),
       new RideCarWheelSettings(
         new RideCarVisualPart(
           Reference(definitions, RideVisualRole.FrontRightWheel),
@@ -491,7 +564,8 @@ public class RideCarVisualHierarchyResolverTests {
         new RideCarVisualPart(
           Reference(definitions, RideVisualRole.RearAxle),
           options.RearAxleType)),
-      Reference(definitions, RideVisualRole.WildFlippedBody));
+      Reference(definitions, RideVisualRole.WildFlippedBody),
+      options.AnimalSpecies);
     var carSource = new RideCarResourceSource(
       new OvlFile(carResource.Name, FileType.RideCar, "cars.unique.ovl"),
       carResource,
@@ -605,48 +679,52 @@ public class RideCarVisualHierarchyResolverTests {
     Matrix4x4.Identity);
 
   private static RideCar Car(
-    string bodyVisual,
+    string? bodyVisual,
     RideCarWheelSettings wheels,
     RideCarAxleSettings axles,
-    string? wildFlippedBodyVisual
-  ) => new(
-    "Car",
-    wildFlippedBodyVisual == null ? RideCarVersion.Vanilla : RideCarVersion.Wild,
-    "Car",
-    "Car",
-    0,
-    0,
-    bodyVisual,
-    1f,
-    null,
-    -1f,
-    new RideCarAxisSettings(0, 0f, 0f, 0f, 0f, 0f, 0f, 0f),
-    new RideCarBobbingSettings(0, 0f, 0f, 0f),
-    new RideCarAnimationSettings(
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-    [],
-    wheels,
-    axles,
-    new RideCarBaseUnknownSettings(0, 0f, 0, 0f, 0f, 0f, 0f),
-    wildFlippedBodyVisual == null
-      ? null
-      : new RideCarSoakedSettings(
-        0f, 0, 0, 0f, 0, 0, 0f, 0, 0, 0, 0f, 0, 0f),
-    wildFlippedBodyVisual == null
-      ? null
-      : new RideCarWildSettings(
-        1,
-        wildFlippedBodyVisual,
-        null,
-        0,
-        1f,
-        1f,
-        null,
-        4.1f,
-        0,
-        -1,
-        0));
+    string? wildFlippedBodyVisual,
+    string? animalSpecies
+  ) {
+    var hasWildSettings = wildFlippedBodyVisual != null || animalSpecies != null;
+    return new(
+      "Car",
+      hasWildSettings ? RideCarVersion.Wild : RideCarVersion.Vanilla,
+      "Car",
+      "Car",
+      0,
+      0,
+      bodyVisual,
+      1f,
+      null,
+      -1f,
+      new RideCarAxisSettings(0, 0f, 0f, 0f, 0f, 0f, 0f, 0f),
+      new RideCarBobbingSettings(0, 0f, 0f, 0f),
+      new RideCarAnimationSettings(
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+      [],
+      wheels,
+      axles,
+      new RideCarBaseUnknownSettings(0, 0f, 0, 0f, 0f, 0f, 0f),
+      !hasWildSettings
+        ? null
+        : new RideCarSoakedSettings(
+          0f, 0, 0, 0f, 0, 0, 0f, 0, 0, 0, 0f, 0, 0f),
+      !hasWildSettings
+        ? null
+        : new RideCarWildSettings(
+          1,
+          wildFlippedBodyVisual,
+          null,
+          0,
+          1f,
+          1f,
+          animalSpecies,
+          4.1f,
+          0,
+          -1,
+          0));
+  }
 
   private static RideTrain Train(string carName) => new(
     "Train",
@@ -688,6 +766,8 @@ public class RideCarVisualHierarchyResolverTests {
     public IReadOnlyList<BoneShapeBone>? WildFlippedBodyBones { get; init; }
     public IReadOnlySet<RideVisualRole>? UndeclaredVisuals { get; init; }
     public IReadOnlySet<RideVisualRole>? UnresolvedVisuals { get; init; }
+    public bool OmitBodyVisual { get; init; }
+    public string? AnimalSpecies { get; init; }
     public uint FrontAxleType { get; init; } = 1;
     public uint RearAxleType { get; init; } = 3;
     public uint FrontRightWheelType { get; init; }

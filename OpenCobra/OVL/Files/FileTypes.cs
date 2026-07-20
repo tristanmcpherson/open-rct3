@@ -116,7 +116,19 @@ public enum FileType : ushort {
   FontCharacterTable,
   /// <summary>Floating-Point Number (flt)</summary>
   [Description("Floating-Point Number")]
-  Float
+  Float,
+  /// <summary>Wild Animal Species (was)</summary>
+  [Description("Wild Animal Species")]
+  WildAnimalSpecies,
+  /// <summary>Model (mdl)</summary>
+  [Description("Model")]
+  Model,
+  /// <summary>Wild Animal Animation Data (wad)</summary>
+  [Description("Wild Animal Animation Data")]
+  WildAnimalAnimData,
+  /// <summary>Model Animation (modelanim)</summary>
+  [Description("Model Animation")]
+  ModelAnim
 }
 
 /// <summary>Extension methods for working with <see cref="FileType"/>.</summary>
@@ -157,6 +169,10 @@ public static class FileTypeExtensions {
     "prt" => FileType.CharacterSkinPart,
     "psi" => FileType.ParticleSpriteItem,
     "fct" => FileType.FontCharacterTable,
+    "was" => FileType.WildAnimalSpecies,
+    "mdl" => FileType.Model,
+    "wad" => FileType.WildAnimalAnimData,
+    "modelanim" => FileType.ModelAnim,
     _ => FileType.Unknown,
   };
 
@@ -201,6 +217,10 @@ public static class FileTypeExtensions {
       FileType.CharacterSkinPart => "prt",
       FileType.ParticleSpriteItem => "psi",
       FileType.FontCharacterTable => "fct",
+      FileType.WildAnimalSpecies => "was",
+      FileType.Model => "mdl",
+      FileType.WildAnimalAnimData => "wad",
+      FileType.ModelAnim => "modelanim",
       _ => "",
     };
 
@@ -255,6 +275,9 @@ public static class FileTypeExtensions {
     FileType.ParticleSpriteItem => "Image",
     FileType.FontCharacterTable => "FormatFont",
     FileType.Float => "Numeric",
+    FileType.WildAnimalSpecies or FileType.WildAnimalAnimData => "Paw",
+    FileType.Model => "CubeOutline",
+    FileType.ModelAnim => "Bone",
     _ => "FileQuestion",
   };
 
@@ -285,6 +308,9 @@ public static class FileTypeExtensions {
     FileType.ParticleSpriteItem => "ImageMultiple",
     FileType.FontCharacterTable => "FormatFont",
     FileType.Float => "Numeric",
+    FileType.WildAnimalSpecies or FileType.WildAnimalAnimData => "Paw",
+    FileType.Model => "ViewGridOutline",
+    FileType.ModelAnim => "Bone",
     _ => "FileMultipleOutline",
   };
 }

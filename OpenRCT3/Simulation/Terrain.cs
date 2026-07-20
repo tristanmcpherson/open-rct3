@@ -312,7 +312,8 @@ public class Terrain {
       out rideTrainInstances,
       out rideCarInstances);
 
-    // Load textures from terrain/RCT3/Terrain_RCT3.common.ovl
+    // Load the base terrain pair; Complete Edition's sibling Terrain_CT pair is overlaid by TER
+    // number when present so expansion maps can use surface indices 26-31.
     var terrainOvl = Path.Combine(installPath, "terrain", "RCT3", "Terrain_RCT3.common.ovl");
     terrain.TextureCatalog = TextureLoader.LoadTerrainCatalog(terrainOvl);
 

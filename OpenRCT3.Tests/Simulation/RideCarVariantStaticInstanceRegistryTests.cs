@@ -493,7 +493,7 @@ public class RideCarVariantStaticInstanceRegistryTests {
   };
 
   private static BoneShapeMesh BoneMesh() {
-    var skinning = new BoneShapeSkinning(-1, -1, -1, -1, 0, 0, 0, 0);
+    var skinning = new BoneShapeSkinning(255, 255, 255, 255, 0, 0, 0, 0);
     return new(
       "body",
       0,

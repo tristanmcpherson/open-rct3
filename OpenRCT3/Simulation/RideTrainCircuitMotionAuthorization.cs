@@ -3,6 +3,7 @@
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 
 using OpenRCT3.Simulation.Tracks;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace OpenRCT3.Simulation;
@@ -16,6 +17,8 @@ internal enum RideTrainCircuitMotionAuthorizationStatus {
   ForeignTrackIdentity,
   MalformedReciprocalCircuit,
   UnresolvedCircuitTraversal,
+  UnresolvedSavedCursorIdentity,
+  CrossCircuitSavedConsist,
   ChangedCircuitTraversalIdentity,
 }
 
@@ -47,6 +50,12 @@ internal static class RideTrainCircuitMotionAuthorization {
   public static RideTrainCircuitMotionAuthorizationResult Authorize(
     RideInstanceTrainRuntimeEntry? trainRuntime,
     RideInstanceTrackRuntimeEntry? trackRuntime
+  ) => Authorize(trainRuntime, trackRuntime, renderedCars: null);
+
+  public static RideTrainCircuitMotionAuthorizationResult Authorize(
+    RideInstanceTrainRuntimeEntry? trainRuntime,
+    RideInstanceTrackRuntimeEntry? trackRuntime,
+    IReadOnlyList<RideCarStaticInstanceEntry>? renderedCars
   ) {
     if (!HasCompleteRuntime(trainRuntime, trackRuntime))
       return Result(RideTrainCircuitMotionAuthorizationStatus.MalformedRuntimeEntry);
@@ -63,20 +72,151 @@ internal static class RideTrainCircuitMotionAuthorization {
     if (!HasAuthoritativeCircuitTopology(trackRuntime.Track))
       return Result(RideTrainCircuitMotionAuthorizationStatus.MalformedReciprocalCircuit);
 
-    if (trackRuntime.Status != RideTrackGeometryStatus.Circuit ||
-        trackRuntime.Circuit is null ||
-        trackRuntime.CircuitTraversal is null ||
-        trackRuntime.Graph is not null ||
-        trackRuntime.GraphTraversal is not null)
+    return trackRuntime.Status switch {
+      RideTrackGeometryStatus.Circuit => AuthorizeSingularCircuit(trackRuntime),
+      RideTrackGeometryStatus.MultiCircuit => renderedCars is null
+        ? Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedCircuitTraversal)
+        : AuthorizeSegmentCircuit(trainRuntime, trackRuntime, renderedCars),
+      _ => Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedCircuitTraversal),
+    };
+  }
+
+  private static RideTrainCircuitMotionAuthorizationResult AuthorizeSingularCircuit(
+    RideInstanceTrackRuntimeEntry trackRuntime
+  ) {
+    if (trackRuntime.Circuit is null || trackRuntime.CircuitTraversal is null ||
+        trackRuntime.Graph is not null || trackRuntime.GraphTraversal is not null)
       return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedCircuitTraversal);
 
     if (!ReferenceEquals(trackRuntime.CircuitTraversal.Circuit, trackRuntime.Circuit) ||
         !CircuitMatchesAuthoritativeOrder(trackRuntime.Track, trackRuntime.Circuit))
       return Result(RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity);
 
-    return new(
-      RideTrainCircuitMotionAuthorizationStatus.AuthorizedByReciprocalCircuit,
-      trackRuntime.CircuitTraversal);
+    return Authorized(trackRuntime.CircuitTraversal);
+  }
+
+  private static RideTrainCircuitMotionAuthorizationResult AuthorizeSegmentCircuit(
+    RideInstanceTrainRuntimeEntry trainRuntime,
+    RideInstanceTrackRuntimeEntry trackRuntime,
+    IReadOnlyList<RideCarStaticInstanceEntry> renderedCars
+  ) {
+    if (trackRuntime.Circuit is not null || trackRuntime.CircuitTraversal is not null ||
+        trackRuntime.Graph is not null || trackRuntime.GraphTraversal is not null ||
+        trackRuntime.SegmentCircuitTraversals is null ||
+        trackRuntime.SegmentCircuitTraversals.Count < 2)
+      return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedCircuitTraversal);
+
+    if (!SegmentCircuitsMatchAuthoritativeOrder(trackRuntime))
+      return Result(RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity);
+
+    var savedCars = trainRuntime.TrainResource.TrainInstance.Cars;
+    if (renderedCars.Count == 0 || renderedCars.Count != savedCars.Count)
+      return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
+
+    var occupiedOrdinals = new bool[savedCars.Count];
+    int? selectedCircuitIndex = null;
+    foreach (var entry in renderedCars) {
+      if (entry is null || entry.CarRuntime is null || entry.SavedCursor is null ||
+          !entry.IsResolved || entry.RegistryIndex != entry.CarRuntime.RegistryIndex ||
+          entry.SavedCursor.RegistryIndex != entry.CarRuntime.RegistryIndex ||
+          !ReferenceEquals(entry.SavedCursor.CarRuntime, entry.CarRuntime) ||
+          !ReferenceEquals(entry.CarRuntime.TrainRuntime, trainRuntime))
+        return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
+
+      var ordinal = entry.CarRuntime.WhichCar;
+      if (ordinal < 0 || ordinal >= savedCars.Count || occupiedOrdinals[ordinal] ||
+          savedCars[ordinal] != entry.CarInstanceEntryId)
+        return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
+      occupiedOrdinals[ordinal] = true;
+
+      var front = entry.CarRuntime.TrackPiece;
+      var rear = entry.CarRuntime.RearTrackPiece;
+      if (!HasCompleteCircuitIdentity(front) || !HasCompleteCircuitIdentity(rear))
+        return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
+      if (front.CircuitIndex != rear.CircuitIndex)
+        return Result(RideTrainCircuitMotionAuthorizationStatus.CrossCircuitSavedConsist);
+
+      var circuitIndex = front.CircuitIndex!.Value;
+      if (selectedCircuitIndex is { } priorIndex && priorIndex != circuitIndex)
+        return Result(RideTrainCircuitMotionAuthorizationStatus.CrossCircuitSavedConsist);
+      if (circuitIndex < 0 ||
+          circuitIndex >= trackRuntime.SegmentCircuitTraversals.Count)
+        return Result(RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity);
+
+      var segment = trackRuntime.SegmentCircuitTraversals[circuitIndex];
+      if (front.SegmentSourceEntryId != segment.SegmentSourceEntryId ||
+          rear.SegmentSourceEntryId != segment.SegmentSourceEntryId)
+        return Result(RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity);
+      if (!ContactMatchesTraversal(entry.SavedCursor.Front, front, segment.Traversal) ||
+          !ContactMatchesTraversal(entry.SavedCursor.Rear, rear, segment.Traversal))
+        return Result(RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity);
+
+      selectedCircuitIndex = circuitIndex;
+    }
+
+    if (selectedCircuitIndex is not { } selected ||
+        occupiedOrdinals.Any(occupied => !occupied))
+      return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
+    return Authorized(trackRuntime.SegmentCircuitTraversals[selected].Traversal);
+  }
+
+  private static bool HasCompleteCircuitIdentity(RideCarTrackPieceRuntimeLink? link) =>
+    link is not null && link.IsResolved && link.PieceIndex is not null &&
+    link.Piece is not null && link.CircuitIndex is not null &&
+    link.SegmentSourceEntryId is not null;
+
+  private static bool ContactMatchesTraversal(
+    RideCarSavedWheelContactCursor? contact,
+    RideCarTrackPieceRuntimeLink link,
+    TrackCircuitTraversal traversal
+  ) {
+    if (contact?.IsResolved != true || contact.TrackPieceData is null ||
+        contact.Cursor is not { } cursor ||
+        contact.SavedTrackPieceEntryId != link.SavedTrackPieceEntryId ||
+        contact.TrackPieceData.EntryId != link.SavedTrackPieceEntryId ||
+        !ReferenceEquals(cursor.Traversal, traversal) ||
+        cursor.PieceIndex != link.PieceIndex ||
+        !ReferenceEquals(cursor.CircuitPiece.Piece, link.Piece))
+      return false;
+    return true;
+  }
+
+  private static bool SegmentCircuitsMatchAuthoritativeOrder(
+    RideInstanceTrackRuntimeEntry trackRuntime
+  ) {
+    var track = trackRuntime.Track;
+    var geometrySegments = trackRuntime.Geometry.SegmentCircuits;
+    var traversals = trackRuntime.SegmentCircuitTraversals;
+    if (geometrySegments is null || traversals is null ||
+        geometrySegments.Count != traversals.Count ||
+        traversals.Count != track.SegmentSourceEntryIds.Count)
+      return false;
+
+    var flattenedPieceIndex = 0;
+    foreach (var index in Enumerable.Range(0, traversals.Count)) {
+      var geometry = geometrySegments[index];
+      var segment = traversals[index];
+      if (geometry is null || segment is null || segment.Traversal is null ||
+          !ReferenceEquals(segment.Geometry, geometry) ||
+          !ReferenceEquals(segment.Circuit, geometry.Circuit) ||
+          !ReferenceEquals(segment.Traversal.Circuit, geometry.Circuit) ||
+          segment.SegmentSourceEntryId != track.SegmentSourceEntryIds[index] ||
+          segment.PieceSourceEntryIds.Count != segment.Circuit.Pieces.Count)
+        return false;
+
+      foreach (var pieceIndex in Enumerable.Range(0, segment.PieceSourceEntryIds.Count)) {
+        if (flattenedPieceIndex >= track.TrackPieceSourceEntryIds.Count ||
+            segment.PieceSourceEntryIds[pieceIndex] !=
+              track.TrackPieceSourceEntryIds[flattenedPieceIndex] ||
+            !string.Equals(
+              segment.Circuit.Pieces[pieceIndex].Id,
+              $"track-piece-{segment.PieceSourceEntryIds[pieceIndex]}",
+              StringComparison.Ordinal))
+          return false;
+        flattenedPieceIndex++;
+      }
+    }
+    return flattenedPieceIndex == track.TrackPieceSourceEntryIds.Count;
   }
 
   private static bool HasCompleteRuntime(
@@ -143,4 +283,10 @@ internal static class RideTrainCircuitMotionAuthorization {
   private static RideTrainCircuitMotionAuthorizationResult Result(
     RideTrainCircuitMotionAuthorizationStatus status
   ) => new(status, null);
+
+  private static RideTrainCircuitMotionAuthorizationResult Authorized(
+    TrackCircuitTraversal traversal
+  ) => new(
+    RideTrainCircuitMotionAuthorizationStatus.AuthorizedByReciprocalCircuit,
+    traversal);
 }

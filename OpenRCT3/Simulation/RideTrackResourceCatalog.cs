@@ -305,10 +305,10 @@ internal sealed class RideTrackResourceCatalog {
         "tks",
         $"TRR {section.Role} TKS reference",
         budget);
-      if (section.Metadata != null && !string.Equals(
-        section.Metadata.InternalName,
-        name,
-        StringComparison.OrdinalIgnoreCase))
+      if (section.Metadata != null &&
+          !TrackedRideTrackSectionIdentity.MatchesConstructionMetadata(
+            name,
+            section.Metadata.InternalName))
         throw Invalid(
           $"TRR construction metadata '{section.Metadata.InternalName}' does not match " +
           $"TKS reference '{name}'");

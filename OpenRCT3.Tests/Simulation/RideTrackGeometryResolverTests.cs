@@ -46,7 +46,42 @@ public class RideTrackGeometryResolverTests {
       Assert.That(result.Tracks[0].Circuit, Is.Null);
       Assert.That(result.Tracks[1].Graph, Is.Null);
       Assert.That(result.Tracks[1].Circuit, Is.Not.Null);
+      Assert.That(result.Tracks[1].Circuit!.Continuity,
+        Is.EqualTo(TrackCircuitContinuity.ImportedPiecewise));
       Assert.That(result.UnresolvedResourceTrackCount, Is.Zero);
+      Assert.That(result.UnsupportedGeometryTrackCount, Is.Zero);
+      Assert.That(result.UnsupportedTopologyTrackCount, Is.Zero);
+    }
+  }
+
+  [Test]
+  public void Resolve_RetainsPositionClosedCircuitWithNativePieceLocalFrames() {
+    var placements = new[] {
+      Placement(500, previous: 501, next: 501),
+      Placement(501, previous: 500, next: 500),
+    };
+
+    var result = RideTrackGeometryResolver.Resolve(
+      [Track(700, [500, 501], isCircuit: true)],
+      placements,
+      new Dictionary<ulong, TrackPiece?> {
+        [500] = PiecewiseLoopPiece(first: true),
+        [501] = PiecewiseLoopPiece(first: false),
+      });
+
+    var link = result.Tracks.Single();
+    var firstExit = link.Circuit!.Pieces[0].Piece.Exit.Left;
+    var secondEntry = link.Circuit.Pieces[1].Piece.Entry.Left;
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(link.Status, Is.EqualTo(RideTrackGeometryStatus.Circuit));
+      Assert.That(link.Circuit.Continuity,
+        Is.EqualTo(TrackCircuitContinuity.ImportedPiecewise));
+      Assert.That(Vector3.Distance(firstExit.Position, secondEntry.Position),
+        Is.LessThan(0.000001f));
+      Assert.That(Vector3.Dot(
+        Vector3.Normalize(firstExit.Tangent),
+        Vector3.Normalize(secondEntry.Tangent)),
+        Is.EqualTo(0f).Within(0.000001f));
       Assert.That(result.UnsupportedGeometryTrackCount, Is.Zero);
       Assert.That(result.UnsupportedTopologyTrackCount, Is.Zero);
     }
@@ -445,6 +480,17 @@ public class RideTrackGeometryResolverTests {
     var end = -start;
     var startTangent = first ? Vector3.UnitY * 3f : -Vector3.UnitY * 3f;
     var endTangent = -startTangent;
+    return new TrackPiece(TrackPieceGeometry.FromHandAuthored([
+      Pair(0f, start, startTangent),
+      Pair(1f, end, endTangent),
+    ]));
+  }
+
+  private static TrackPiece PiecewiseLoopPiece(bool first) {
+    var start = first ? Vector3.Zero : Vector3.UnitX;
+    var end = first ? Vector3.UnitX : Vector3.Zero;
+    var startTangent = first ? Vector3.UnitX : Vector3.UnitY;
+    var endTangent = first ? Vector3.UnitX : -Vector3.UnitX;
     return new TrackPiece(TrackPieceGeometry.FromHandAuthored([
       Pair(0f, start, startTangent),
       Pair(1f, end, endTangent),

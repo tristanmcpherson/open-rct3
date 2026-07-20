@@ -118,8 +118,47 @@ public class RideTrackGraphAdapterTests {
       Assert.That(circuit.Pieces.Select(piece => piece.Id),
         Is.EqualTo(new[] { "track-piece-500", "track-piece-501" }));
       Assert.That(circuit.Pieces, Has.Count.EqualTo(2));
+      Assert.That(circuit.Continuity,
+        Is.EqualTo(TrackCircuitContinuity.ImportedPiecewise));
       Assert.That(circuit.Sample(0f).ContactPoints.Midpoint,
         Is.EqualTo(circuit.Sample(circuit.Length).ContactPoints.Midpoint));
+    }
+  }
+
+  [Test]
+  public void BuildCircuit_PreservesNativePiecewiseSeamWithoutWeakeningPositionClosure() {
+    var track = Track([500, 501], isCircuit: true);
+    var placements = new[] {
+      Placement(500, previous: 501, next: 501),
+      Placement(501, previous: 500, next: 500),
+    };
+    TrackPiece CreatePiece(RideTrackPlacement placement, Vector3 offset) =>
+      PiecewiseLoopPiece(placement.SourceEntryId == 500, offset);
+
+    var strictPieces = new[] {
+      new TrackCircuitPiece("track-piece-500", CreatePiece(placements[0], Vector3.Zero)),
+      new TrackCircuitPiece("track-piece-501", CreatePiece(placements[1], Vector3.Zero)),
+    };
+    Assert.Throws<ArgumentException>(new Action(() => new TrackCircuit(strictPieces)));
+
+    var circuit = RideTrackGraphAdapter.BuildCircuit(
+      track,
+      placements,
+      placement => CreatePiece(placement, Vector3.Zero));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(circuit.Continuity,
+        Is.EqualTo(TrackCircuitContinuity.ImportedPiecewise));
+      Assert.That(circuit.Pieces, Has.Count.EqualTo(2));
+      Assert.Throws<ArgumentException>(new Action(() =>
+        RideTrackGraphAdapter.BuildCircuit(
+          track,
+          placements,
+          placement => CreatePiece(
+            placement,
+            placement.SourceEntryId == 501
+              ? new Vector3(0f, 0.01f, 0f)
+              : Vector3.Zero))));
     }
   }
 
@@ -365,6 +404,30 @@ public class RideTrackGraphAdapterTests {
     var end = -start;
     var startTangent = first ? Vector3.UnitY * 3f : -Vector3.UnitY * 3f;
     var endTangent = -startTangent;
+    var halfGauge = Vector3.UnitZ * 0.5f;
+    return new TrackPiece(TrackPieceGeometry.FromHandAuthored([
+      new RailControlPair(
+        0f,
+        start - halfGauge,
+        startTangent,
+        start + halfGauge,
+        startTangent,
+        0f),
+      new RailControlPair(
+        1f,
+        end - halfGauge,
+        endTangent,
+        end + halfGauge,
+        endTangent,
+        0f),
+    ]));
+  }
+
+  private static TrackPiece PiecewiseLoopPiece(bool first, Vector3 startOffset) {
+    var start = first ? Vector3.Zero : Vector3.UnitX + startOffset;
+    var end = first ? Vector3.UnitX : Vector3.Zero;
+    var startTangent = first ? Vector3.UnitX : Vector3.UnitY;
+    var endTangent = first ? Vector3.UnitX : -Vector3.UnitX;
     var halfGauge = Vector3.UnitZ * 0.5f;
     return new TrackPiece(TrackPieceGeometry.FromHandAuthored([
       new RailControlPair(

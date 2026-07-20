@@ -92,6 +92,21 @@ public class RideCarsTests {
   }
 
   [Test]
+  public void Decode_WildAnimalSpeciesMaySupplyBodyWithoutSvd() {
+    var fixture = new RideCarFixture(RideCarVersion.Wild);
+    fixture.UseAnimalSpeciesBody();
+
+    var car = fixture.Decode();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(car.Version, Is.EqualTo(RideCarVersion.Wild));
+      Assert.That(car.Visual, Is.Null);
+      Assert.That(car.Wild, Is.Not.Null);
+      Assert.That(car.Wild!.AnimalSpecies, Is.EqualTo("Elephant:was"));
+    }
+  }
+
+  [Test]
   public void Decode_EnforcesAggregateByteBudget() {
     var fixture = new RideCarFixture(RideCarVersion.Vanilla);
 
@@ -114,6 +129,7 @@ public class RideCarsTests {
   [TestCase(MalformedRideCar.TruncatedWild)]
   [TestCase(MalformedRideCar.MissingNameRelocation)]
   [TestCase(MalformedRideCar.MissingBodyVisual)]
+  [TestCase(MalformedRideCar.MissingBodyVisualAndAnimalSpecies)]
   [TestCase(MalformedRideCar.WrongBodyVisualTag)]
   [TestCase(MalformedRideCar.WrongBodyVisualOwner)]
   [TestCase(MalformedRideCar.ConflictingBodyVisualRelocation)]
@@ -126,6 +142,7 @@ public class RideCarsTests {
   public void Decode_RejectsMalformedOrUnprovenData(MalformedRideCar malformed) {
     var version = malformed is MalformedRideCar.UnsupportedVersion or
       MalformedRideCar.TruncatedWild or
+      MalformedRideCar.MissingBodyVisualAndAnimalSpecies or
       MalformedRideCar.NonFiniteExpansionSetting
       ? RideCarVersion.Wild
       : RideCarVersion.Vanilla;
@@ -157,8 +174,64 @@ public class RideCarsTests {
     using (Assert.EnterMultipleScope()) {
       Assert.That(cars, Is.Not.Empty);
       Assert.That(cars.All(car => !string.IsNullOrWhiteSpace(car.InternalName)), Is.True);
-      Assert.That(cars.All(car => car.Visual.EndsWith(
+      Assert.That(cars.All(car => car.Visual != null && car.Visual.EndsWith(
         ":svd", StringComparison.OrdinalIgnoreCase)), Is.True);
+    }
+  }
+
+  [Test]
+  [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
+  public void Extract_FromInstalledElephantAllowsAnimalSpeciesBody() {
+    var rct3Path = Environment.GetEnvironmentVariable("RCT3_PATH")!;
+    Assert.That(rct3Path, Is.Not.Null.And.Not.Empty, "RCT3_PATH is not configured.");
+    var path = Path.Combine(
+      rct3Path,
+      "Cars",
+      "TrackedRideCars",
+      "Elephant",
+      "Elephant.common.ovl");
+    Assert.That(path, Does.Exist, $"Installed Elephant RIC OVL not found: {path}");
+
+    using var ovl = Ovl.Load(path);
+    var file = ovl.Keys.Single(candidate =>
+      candidate.Name == "Elephant" && candidate.Type == FileType.RideCar);
+    Assert.That(ovl.TryGetDataPointer(file, out var address), Is.True);
+    var owner = ovl.LoaderEntriesInOrder.Single(entry =>
+      entry.DataAddress == address &&
+      entry.Tag.ToFileType() == FileType.RideCar &&
+      string.Equals(entry.SourcePath, file.Path, StringComparison.OrdinalIgnoreCase));
+    Assert.That(ovl.TryReadBytes(address, 336, out var bytes), Is.True);
+    var header = bytes!;
+    var references = OvlSymbolReferenceIndex.Create(ovl).References
+      .Where(pair => pair.Value.Owner == owner)
+      .OrderBy(pair => pair.Key)
+      .ToArray();
+
+    TestContext.Progress.WriteLine(
+      $"Elephant RIC address={address}, version={header[9]}, " +
+      $"body={BitConverter.ToUInt32(header, 12)}, " +
+      $"was={BitConverter.ToUInt32(header, 316)}");
+    TestContext.Progress.WriteLine(
+      "Elephant RIC SymbolRefs: " + string.Join(", ", references.Select(pair =>
+        $"+{pair.Key - address}={pair.Value.Symbol}")));
+    foreach (var offset in new[] { 0, 4, 12, 20, 160, 296, 300, 316 }) {
+      var field = address + Convert.ToUInt32(offset);
+      TestContext.Progress.WriteLine(
+        $"Elephant RIC +{offset}: raw={BitConverter.ToUInt32(header, offset)}, " +
+        $"relocated={ovl.TryGetRelocationSource(field, out var target)}, target={target}");
+    }
+
+    var car = RideCars.Extract(ovl).Single(decoded => decoded.Name == "Elephant");
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(header[9], Is.EqualTo(Convert.ToByte(RideCarVersion.Wild)));
+      Assert.That(BitConverter.ToUInt32(header, 12), Is.Zero);
+      Assert.That(ovl.TryGetRelocationSource(address + 12, out _), Is.False);
+      Assert.That(references.Select(pair => pair.Key - address), Is.EqualTo(new uint[] { 316 }));
+      Assert.That(references[0].Value.Symbol, Is.EqualTo("Elephant:was"));
+      Assert.That(car.Visual, Is.Null);
+      Assert.That(car.Wild, Is.Not.Null);
+      Assert.That(car.Wild!.AnimalSpecies, Is.EqualTo("Elephant:was"));
     }
   }
 
@@ -250,6 +323,9 @@ public class RideCarsTests {
     public RideCar Decode(RideCarDecodeLimits limits) =>
       RideCars.Decode("synthetic", owner, source, limits);
 
+    public void UseAnimalSpeciesBody() =>
+      source.ResourceReferences.Remove(HeaderAddress + 12);
+
     public void MakeMalformed(MalformedRideCar malformed) {
       switch (malformed) {
         case MalformedRideCar.TruncatedVanilla:
@@ -266,6 +342,10 @@ public class RideCarsTests {
           break;
         case MalformedRideCar.MissingBodyVisual:
           source.ResourceReferences.Remove(HeaderAddress + 12);
+          break;
+        case MalformedRideCar.MissingBodyVisualAndAnimalSpecies:
+          source.ResourceReferences.Remove(HeaderAddress + 12);
+          source.ResourceReferences.Remove(HeaderAddress + 316);
           break;
         case MalformedRideCar.WrongBodyVisualTag:
           source.ResourceReferences[HeaderAddress + 12] =
@@ -440,6 +520,7 @@ public enum MalformedRideCar {
   TruncatedWild,
   MissingNameRelocation,
   MissingBodyVisual,
+  MissingBodyVisualAndAnimalSpecies,
   WrongBodyVisualTag,
   WrongBodyVisualOwner,
   ConflictingBodyVisualRelocation,

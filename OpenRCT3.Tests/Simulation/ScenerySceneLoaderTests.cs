@@ -7,6 +7,7 @@ using OpenCobra.GDK.Materials;
 using OpenCobra.GDK.Meshes;
 using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
+using OpenRCT3.Serialization;
 using OpenRCT3.Simulation;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
@@ -87,6 +88,113 @@ public class ScenerySceneLoaderTests {
       Assert.That(result.Geometry.RenderedPlacementCount, Is.Zero);
       Assert.That(result.Models, Is.Empty);
       Assert.That(context.DisposeCount, Is.EqualTo(1));
+    }
+  }
+
+  [Test]
+  public void Load_MissingReferencedResourceSkipsOnlyThatPlacementAndReleasesContext() {
+    var terrain = Terrain();
+    var park = new Park(terrain);
+    park.SceneryPlacements.Add(Placement("MissingVisual", "Style"));
+    park.SceneryPlacements.Add(Placement("NoStatic", "Style"));
+    var noStatic = new ResolvedSceneryObject(Item("NoStatic", "Visual:svd"), []);
+    var context = new FakeContext(resolve: key => key switch {
+      "MissingVisual" => throw new SceneryResourceUnavailableException(
+        "MissingVisual", "MissingVisual:svd"),
+      "NoStatic" => noStatic,
+      _ => null,
+    });
+
+    var result = ScenerySceneLoader.Load(
+      park,
+      terrain,
+      _ => context,
+      SceneryGeometryBuilder.Build);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(context.ResolvedKeys,
+        Is.EqualTo(new[] { "MissingVisual", "NoStatic" }));
+      Assert.That(result.Geometry.UnresolvedPlacementCount, Is.EqualTo(1));
+      Assert.That(result.Geometry.ResolvedPlacementCount, Is.EqualTo(1));
+      Assert.That(result.Geometry.UnsupportedVisualPlacementCount, Is.EqualTo(1));
+      Assert.That(result.Geometry.SkippedPlacementCount, Is.EqualTo(2));
+      Assert.That(result.Models, Is.Empty);
+      Assert.That(context.DisposeCount, Is.EqualTo(1));
+    }
+  }
+
+  [Test]
+  public void Load_MalformedResolvedResourceStillFailsClosedAndReleasesContext() {
+    var terrain = Terrain();
+    var park = new Park(terrain);
+    park.SceneryPlacements.Add(Placement("Malformed", "Style"));
+    var context = new FakeContext(resolve: _ =>
+      throw new InvalidDataException("malformed SVD"));
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      ScenerySceneLoader.Load(
+        park,
+        terrain,
+        _ => context,
+        SceneryGeometryBuilder.Build)));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error!.Message, Is.EqualTo("malformed SVD"));
+      Assert.That(context.DisposeCount, Is.EqualTo(1));
+    }
+  }
+
+  [Test]
+  [Explicit("Requires installed RCT3 assets and the ScrubGardens DAT.")]
+  public void Load_ScrubGardensResolvesColonialWallVisualFromExactOverlay() {
+    var root = Environment.GetEnvironmentVariable("RCT3_PATH");
+    Assert.That(root, Is.Not.Null.And.Not.Empty,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    Assert.That(Directory.Exists(root), Is.True,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    var mapPath = Path.Combine(
+      root!, "Campaigns", "Base", "Wild", "ScrubGardens.dat");
+    var data = DatTerrainReader.Read(mapPath);
+    var colonialWallDatabaseIds = data.SidDatabaseEntries.Where(entry =>
+      string.Equals(
+        entry.SymbolName,
+        "Col_Wall1_3h",
+        StringComparison.OrdinalIgnoreCase)).Select(entry => entry.EntryId).ToHashSet();
+    var colonialWallPlacementCount = data.SceneryItems.Count(item =>
+      colonialWallDatabaseIds.Contains(item.DatabaseEntry));
+    var colonialWallItems = data.SceneryItems.Where(item =>
+      colonialWallDatabaseIds.Contains(item.DatabaseEntry)).ToArray();
+    var colonialWallItemIds = colonialWallItems.Select(item => item.EntryId).ToHashSet();
+    var colonialWallPlacementSingles = data.SceneryItemPlacements.Where(placement =>
+      colonialWallItemIds.Contains(placement.SceneryItem)).ToArray();
+    var terrain = OpenRCT3.Simulation.Terrain.FromData(data);
+    var park = new Park(terrain);
+    SceneryManagerLoader.Load(
+      park,
+      terrain,
+      colonialWallItems,
+      colonialWallPlacementSingles);
+
+    var result = ScenerySceneLoader.Load(park, terrain, root);
+    try {
+      TestContext.Progress.WriteLine(
+        $"Scrub scenery evidence: placements={result.Geometry.PlacementCount}, " +
+        $"rendered={result.Geometry.RenderedPlacementCount}, " +
+        $"unresolved={result.Geometry.UnresolvedPlacementCount}, " +
+        $"unsupported={result.Geometry.UnsupportedVisualPlacementCount}, " +
+        $"ColonialWall={colonialWallPlacementCount}, models={result.Models.Count}");
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(colonialWallPlacementCount, Is.EqualTo(80));
+        Assert.That(result.Geometry.PlacementCount, Is.EqualTo(park.SceneryPlacements.Count));
+        Assert.That(result.Geometry.UnresolvedPlacementCount, Is.Zero);
+        Assert.That(result.Geometry.UnsupportedVisualPlacementCount, Is.Zero);
+        Assert.That(result.Geometry.RenderedPlacementCount,
+          Is.EqualTo(colonialWallPlacementCount));
+        Assert.That(result.Models, Is.Not.Empty);
+      }
+    } finally {
+      foreach (var model in result.Models) model.Dispose();
+      terrain.TextureCatalog?.Dispose();
     }
   }
 
@@ -628,6 +736,8 @@ public class ScenerySceneLoaderTests {
     public bool TryResolveTexture(
       string taggedReference,
       SceneryFlexiColours flexiColours,
+      SceneryResourceEntry? shapeSource,
+      SceneryResourceEntry? visualSource,
       out Texture? texture
     ) {
       TextureRequests.Add((taggedReference, flexiColours));

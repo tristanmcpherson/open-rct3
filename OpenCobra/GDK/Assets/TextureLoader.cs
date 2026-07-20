@@ -33,8 +33,9 @@ public static class TextureLoader {
   }
 
   /// <summary>
-  /// Loads and caches the numerically ordered terrain/cliff texture catalog from a paired OVL.
-  /// The same live catalog is returned for equivalent paths until it is disposed.
+  /// Loads and caches the numerically ordered terrain/cliff texture catalog from the base terrain
+  /// OVL pair and, when installed, the shipped Complete Edition <c>Terrain_CT</c> overlay pair. The
+  /// same live catalog is returned for equivalent base paths until it is disposed.
   /// </summary>
   public static TerrainTextureCatalog LoadTerrainCatalog(string ovlPath) =>
     terrainCatalogs.Get(GetTerrainCommonPath(ovlPath));
@@ -63,38 +64,110 @@ public static class TextureLoader {
       throw new FileNotFoundException($"Terrain common OVL not found: {commonPath}", commonPath);
     if (!File.Exists(uniquePath))
       throw new FileNotFoundException($"Terrain unique OVL not found: {uniquePath}", uniquePath);
+    var expansionCommonPath = FindCompleteEditionTerrainCommonPath(commonPath);
+
+    var entries = new List<TerrainTextureCatalogEntry>();
+    try {
+      entries.AddRange(LoadTerrainPair(commonPath, TerrainTextureCatalogLayer.Base));
+      if (expansionCommonPath != null)
+        entries.AddRange(LoadTerrainPair(
+          expansionCommonPath, TerrainTextureCatalogLayer.CompleteEditionExpansion));
+    } catch (AssetException) {
+      DisposeEntries(entries);
+      throw;
+    } catch (Exception ex) {
+      DisposeEntries(entries);
+      throw new AssetException(Path.GetFileName(commonPath), ex);
+    }
 
     try {
-      using var ovl = Ovl.Load(commonPath);
-      var files = ovl.Keys
-        .Where(file => file.Type == FileType.Texture
-          && TerrainTextureCatalog.IsCatalogAssetName(file.Name))
-        .OrderBy(file => file.Name, StringComparer.Ordinal)
-        .ToArray();
-      if (files.Length == 0)
-        throw new InvalidDataException(
-          "The paired OVL contains no Terrain_XX or TerrainCliffN textures.");
-
-      using var decodedTextures = Textures.Extract(ovl);
-      var decodedNames = decodedTextures.Names.ToHashSet(StringComparer.Ordinal);
-      var textures = new List<Texture>(files.Length);
-      try {
-        foreach (var file in files) {
-          var decodedName = file.ToString();
-          if (!decodedNames.Contains(decodedName))
-            throw new InvalidDataException($"Texture '{decodedName}' failed to decode.");
-          textures.Add(CreateTexture(file, decodedTextures[decodedName]));
-        }
-        return new TerrainTextureCatalog(textures);
-      } catch {
-        foreach (var texture in textures) texture.Dispose();
-        throw;
-      }
+      return new TerrainTextureCatalog(entries, expansionCommonPath != null);
     } catch (AssetException) {
       throw;
     } catch (Exception ex) {
+      // TerrainTextureCatalog assumes ownership before validating and disposes on failure.
       throw new AssetException(Path.GetFileName(commonPath), ex);
     }
+  }
+
+  private static IReadOnlyList<TerrainTextureCatalogEntry> LoadTerrainPair(
+    string commonPath,
+    TerrainTextureCatalogLayer layer
+  ) {
+    using var ovl = Ovl.Load(commonPath);
+    var terrains = TerrainTypes.Extract(ovl);
+    if (terrains.Count == 0)
+      throw new InvalidDataException(
+        $"Terrain OVL pair '{Path.GetFileName(commonPath)}' contains no TER resources.");
+
+    using var decodedTextures = Textures.Extract(ovl);
+    var decodedNames = decodedTextures.Names.ToHashSet(StringComparer.Ordinal);
+    var entries = new List<TerrainTextureCatalogEntry>(terrains.Count);
+    try {
+      foreach (var terrain in terrains) {
+        var files = ovl.Keys
+          .Where(file => file.Type == FileType.Texture
+            && string.Equals(file.Name, terrain.TextureRef, StringComparison.Ordinal))
+          .ToArray();
+        if (files.Length != 1)
+          throw new InvalidDataException(
+            $"Terrain resource '{terrain.Name}' in '{Path.GetFileName(commonPath)}' declares " +
+            $"texture '{terrain.TextureRef}', but its owning OVL pair contains {files.Length} " +
+            "matching resources.");
+
+        var file = files[0];
+        var decodedName = file.ToString();
+        if (!decodedNames.Contains(decodedName))
+          throw new InvalidDataException(
+            $"Terrain texture '{decodedName}' from '{Path.GetFileName(commonPath)}' failed to decode.");
+        var texture = CreateTexture(file, decodedTextures[decodedName]);
+        entries.Add(new TerrainTextureCatalogEntry(
+          terrain.Name,
+          terrain.Number,
+          terrain.Type,
+          terrain.TextureRef,
+          texture,
+          layer,
+          commonPath));
+      }
+      return entries;
+    } catch {
+      DisposeEntries(entries);
+      throw;
+    }
+  }
+
+  private static string? FindCompleteEditionTerrainCommonPath(string baseCommonPath) {
+    if (!string.Equals(
+      Path.GetFileName(baseCommonPath),
+      "Terrain_RCT3.common.ovl",
+      StringComparison.OrdinalIgnoreCase)) return null;
+
+    var baseDirectory = Path.GetDirectoryName(baseCommonPath);
+    if (baseDirectory == null || !string.Equals(
+      Path.GetFileName(baseDirectory), "RCT3", StringComparison.OrdinalIgnoreCase)) return null;
+    var terrainDirectory = Path.GetDirectoryName(baseDirectory);
+    if (terrainDirectory == null) return null;
+
+    var expansionCommonPath = Path.Combine(
+      terrainDirectory, "CT", "Terrain_CT.common.ovl");
+    var expansionUniquePath = GetPairedPath(expansionCommonPath, ".unique.ovl");
+    var commonExists = File.Exists(expansionCommonPath);
+    var uniqueExists = File.Exists(expansionUniquePath);
+    if (!commonExists && !uniqueExists) return null;
+    if (!commonExists)
+      throw new FileNotFoundException(
+        $"Complete Edition terrain common OVL not found: {expansionCommonPath}",
+        expansionCommonPath);
+    if (!uniqueExists)
+      throw new FileNotFoundException(
+        $"Complete Edition terrain unique OVL not found: {expansionUniquePath}",
+        expansionUniquePath);
+    return expansionCommonPath;
+  }
+
+  private static void DisposeEntries(IEnumerable<TerrainTextureCatalogEntry> entries) {
+    foreach (var texture in entries.Select(entry => entry.Texture).Distinct()) texture.Dispose();
   }
 
   private static string GetTerrainCommonPath(string ovlPath) {

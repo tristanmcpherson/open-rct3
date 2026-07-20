@@ -169,6 +169,31 @@ public class StaticShapesTests {
   }
 
   [Test]
+  public void Decode_InstalledEmptyShapeSentinelPreservesNoGeometryResource() {
+    var fixture = new StaticShapeFixture();
+    fixture.UseInstalledEmptyShapeSentinel();
+
+    var shape = fixture.Decode();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(shape.BoundingBoxMin, Is.EqualTo(new Vector3(100_000_000f)));
+      Assert.That(shape.BoundingBoxMax, Is.EqualTo(new Vector3(-100_000_000f)));
+      Assert.That(shape.Meshes, Is.Empty);
+      Assert.That(shape.Effects, Is.Empty);
+    }
+  }
+
+  [Test]
+  public void Decode_RejectsZeroMeshShapeWithoutInstalledEmptySentinel() {
+    var fixture = new StaticShapeFixture();
+    fixture.UseZeroMeshCount();
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() => fixture.Decode()));
+
+    Assert.That(error!.Message, Does.Contain("without the installed empty-shape bounds sentinel"));
+  }
+
+  [Test]
   public void Decode_EnforcesWholeDecodeByteAndObjectBudgets() {
     var byteFixture = new StaticShapeFixture();
     var objectFixture = new StaticShapeFixture();
@@ -626,6 +651,18 @@ public class StaticShapesTests {
       WriteUInt32(source.Blocks[ShapeAddress], 32, Convert.ToUInt32(count));
       WriteUInt32(source.Blocks[ShapeAddress], 36, Convert.ToUInt32(count));
     }
+
+    public void UseInstalledEmptyShapeSentinel() {
+      var shape = source.Blocks[ShapeAddress];
+      WriteVector3(shape, 0, new Vector3(100_000_000f));
+      WriteVector3(shape, 12, new Vector3(-100_000_000f));
+      Array.Clear(shape, 24, 32);
+      source.Relocations.Remove(ShapeAddress + 40);
+      source.Relocations.Remove(ShapeAddress + 48);
+      source.Relocations.Remove(ShapeAddress + 52);
+    }
+
+    public void UseZeroMeshCount() => WriteUInt32(source.Blocks[ShapeAddress], 36, 0);
 
     public void MakeMalformed(MalformedShape malformed) {
       switch (malformed) {

@@ -30,14 +30,21 @@ namespace OpenRCT3.Simulation;
 /// fields; texture-image orientation remains the texture/material layer's responsibility.
 /// </remarks>
 public static class StaticShapeMeshBuilder {
+  private const float EmptyShapeBoundsExtent = 100_000_000f;
+
   /// <summary>
   /// Converts each decoded source mesh into one material-selectable render batch, retaining source
   /// order.
   /// </summary>
   public static IReadOnlyList<StaticShapeMeshBatch> BuildBatches(StaticShape shape) {
     ArgumentNullException.ThrowIfNull(shape);
-    if (shape.Meshes == null || shape.Meshes.Count == 0)
-      throw Invalid(shape, null, "contains no meshes");
+    if (shape.Meshes == null)
+      throw Invalid(shape, null, "has a null mesh list");
+    if (shape.Meshes.Count == 0) {
+      if (!IsEmptyVisual(shape))
+        throw Invalid(shape, null, "contains no meshes without the installed empty-shape sentinel");
+      return [];
+    }
 
     var batches = new List<StaticShapeMeshBatch>(shape.Meshes.Count);
     var meshIndex = 0;
@@ -50,6 +57,14 @@ public static class StaticShapeMeshBuilder {
       meshIndex++;
     }
     return batches.ToArray();
+  }
+
+  internal static bool IsEmptyVisual(StaticShape shape) {
+    ArgumentNullException.ThrowIfNull(shape);
+    return shape.Meshes is { Count: 0 } &&
+      shape.Effects is { Count: 0 } &&
+      shape.BoundingBoxMin == new Vector3(EmptyShapeBoundsExtent) &&
+      shape.BoundingBoxMax == new Vector3(-EmptyShapeBoundsExtent);
   }
 
   private static StaticShapeMeshBatch BuildBatch(

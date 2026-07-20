@@ -89,9 +89,11 @@ internal static class RideVisualShapeResourceDecoder {
           limits.MaximumResources - Convert.ToUInt64(resources.Count))
       throw Invalid($"aggregate {tag} resources exceed the limit {limits.MaximumResources}");
 
-    var files = archive.Keys.Where(file =>
-      file.Type == type &&
-      file.Path.EndsWith(".unique.ovl", StringComparison.OrdinalIgnoreCase)).ToArray();
+    // OvlFile.Path retains the half containing the relocation-resolved resource data. Frontier
+    // normally stores shape headers in unique OVLs, but installed track archives also contain
+    // loader-owned SHS headers in their common half. Keep that exact provenance instead of
+    // inferring shape ownership from a filename suffix.
+    var files = archive.Keys.Where(file => file.Type == type).ToArray();
     if (files.Length != resources.Count)
       throw Invalid(
         $"{tag} decoder returned {resources.Count} resources for {files.Length} exact OVL symbols");

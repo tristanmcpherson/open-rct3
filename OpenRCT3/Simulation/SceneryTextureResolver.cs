@@ -70,7 +70,7 @@ public sealed class SceneryTextureResolver : IDisposable {
   public bool TryResolve(
     string? taggedReference,
     [NotNullWhen(true)] out Texture? texture
-  ) => TryResolve(taggedReference, null, out texture);
+  ) => TryResolve(taggedReference, null, null, null, out texture);
 
   /// <summary>
   /// Tries to resolve an optional exact <c>name:ftx</c> reference with the placed object's
@@ -81,11 +81,35 @@ public sealed class SceneryTextureResolver : IDisposable {
     string? taggedReference,
     SceneryFlexiColours flexiColours,
     [NotNullWhen(true)] out Texture? texture
-  ) => TryResolve(taggedReference, (SceneryFlexiColours?)flexiColours, out texture);
+  ) => TryResolve(
+    taggedReference,
+    (SceneryFlexiColours?)flexiColours,
+    null,
+    null,
+    out texture);
+
+  /// <summary>
+  /// Resolves from the exact shape dependency closure, then the exact visual dependency closure,
+  /// before consulting the catalog's global overlay fallbacks.
+  /// </summary>
+  internal bool TryResolveFrom(
+    SceneryResourceEntry? shapeSource,
+    SceneryResourceEntry? visualSource,
+    string? taggedReference,
+    SceneryFlexiColours flexiColours,
+    [NotNullWhen(true)] out Texture? texture
+  ) => TryResolve(
+    taggedReference,
+    flexiColours,
+    shapeSource,
+    visualSource,
+    out texture);
 
   private bool TryResolve(
     string? taggedReference,
     SceneryFlexiColours? flexiColours,
+    SceneryResourceEntry? shapeSource,
+    SceneryResourceEntry? visualSource,
     [NotNullWhen(true)] out Texture? texture
   ) {
     lock (syncRoot) {
@@ -101,7 +125,19 @@ public sealed class SceneryTextureResolver : IDisposable {
           $"Scenery textures require an 'ftx' reference, not '{reference.Type.ToTagString()}'.",
           nameof(taggedReference));
 
-      var resource = resources.Find(reference.Name, reference.Type);
+      var resource = shapeSource == null
+        ? null
+        : resources.FindWithinOwnerClosure(
+          shapeSource,
+          reference.Name,
+          reference.Type);
+      if (resource == null && visualSource != null &&
+          !SameSource(shapeSource, visualSource))
+        resource = resources.FindWithinOwnerClosure(
+          visualSource,
+          reference.Name,
+          reference.Type);
+      resource ??= resources.Find(reference.Name, reference.Type);
       if (resource == null) {
         texture = null;
         return false;
@@ -119,6 +155,13 @@ public sealed class SceneryTextureResolver : IDisposable {
       return true;
     }
   }
+
+  private static bool SameSource(
+    SceneryResourceEntry? first,
+    SceneryResourceEntry second
+  ) => first != null &&
+    ReferenceEquals(first.Archive, second.Archive) &&
+    first.File == second.File;
 
   /// <inheritdoc />
   public void Dispose() {

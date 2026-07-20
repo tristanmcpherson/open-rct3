@@ -495,6 +495,24 @@ public class RideTrackResourceCatalogLoaderTests {
   }
 
   [Test]
+  public void Build_AllowsConfiguredRideTrainSlotsWithNoSavedReferences() {
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr",
+      nTrains: 1,
+      trains: []);
+
+    var registry = RideTrainInstanceResourceRegistry.Build([instance], [], []);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(registry.Links, Is.Empty);
+      Assert.That(registry.UnreferencedInstances, Is.Empty);
+      Assert.That(registry.SavedInstanceCount, Is.Zero);
+    }
+  }
+
+  [Test]
   public void Load_RejectsSavedRideTrainCountMismatch() {
     var source = new FakeLoaderSource();
     var rideRoot = PairPath("Rides", "Synthetic", "SyntheticRide");
@@ -527,6 +545,25 @@ public class RideTrackResourceCatalogLoaderTests {
 
     Assert.That(exception!.Message,
       Does.Contain("declares 2 trains but references 1"));
+  }
+
+  [Test]
+  public void Build_RejectsSavedRideTrainWithForeignReciprocalOwner() {
+    var instance = RideInstance(
+      900,
+      @"Rides\Synthetic\SyntheticRide",
+      "SyntheticRide:trr");
+    var foreignTrain = RideTrainInstance(
+      1_000,
+      @"CustomCars\SavedTrain",
+      "SyntheticTrain:rit",
+      trackedRideInstance: 901);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrainInstanceResourceRegistry.Build([instance], [foreignTrain], [])));
+
+    Assert.That(exception!.Message,
+      Does.Contain("reciprocal owner is 901"));
   }
 
   [Test]

@@ -2,6 +2,7 @@
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 
+using OpenCobra.OVL.Files;
 using OpenRCT3.Serialization;
 using OpenRCT3.Simulation;
 using OpenRCT3.Simulation.Tracks;
@@ -20,6 +21,24 @@ public class RideTrainCircuitMotionAuthorizationTests {
       runtime.Track);
 
     using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Status, Is.EqualTo(
+        RideTrainCircuitMotionAuthorizationStatus.AuthorizedByReciprocalCircuit));
+      Assert.That(result.IsAuthorized, Is.True);
+      Assert.That(result.Traversal, Is.SameAs(runtime.Track.CircuitTraversal));
+    }
+  }
+
+  [Test]
+  public void Authorize_ReturnsExactTraversalForReciprocalImportedPiecewiseCircuit() {
+    var runtime = CircuitRuntime(PiecewiseCircuit());
+
+    var result = RideTrainCircuitMotionAuthorization.Authorize(
+      runtime.Train,
+      runtime.Track);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(runtime.Track.Circuit!.Continuity,
+        Is.EqualTo(TrackCircuitContinuity.ImportedPiecewise));
       Assert.That(result.Status, Is.EqualTo(
         RideTrainCircuitMotionAuthorizationStatus.AuthorizedByReciprocalCircuit));
       Assert.That(result.IsAuthorized, Is.True);
@@ -114,12 +133,73 @@ public class RideTrainCircuitMotionAuthorizationTests {
       RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity));
   }
 
+  [Test]
+  public void Authorize_SelectsOneExactSavedCursorCircuit() {
+    var fixture = MultiCircuitFixture(1, 1);
+
+    var result = RideTrainCircuitMotionAuthorization.Authorize(
+      fixture.Train,
+      fixture.Track,
+      fixture.RenderedCars);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Status, Is.EqualTo(
+        RideTrainCircuitMotionAuthorizationStatus.AuthorizedByReciprocalCircuit));
+      Assert.That(result.IsAuthorized, Is.True);
+      Assert.That(result.Traversal,
+        Is.SameAs(fixture.Track.SegmentCircuitTraversals[1].Traversal));
+    }
+  }
+
+  [Test]
+  public void Authorize_RejectsSavedConsistAcrossSeparateCircuits() {
+    var fixture = MultiCircuitFixture(0, 1);
+
+    var result = RideTrainCircuitMotionAuthorization.Authorize(
+      fixture.Train,
+      fixture.Track,
+      fixture.RenderedCars);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Status, Is.EqualTo(
+        RideTrainCircuitMotionAuthorizationStatus.CrossCircuitSavedConsist));
+      Assert.That(result.IsAuthorized, Is.False);
+      Assert.That(result.Traversal, Is.Null);
+    }
+  }
+
+  [Test]
+  public void Authorize_RejectsForeignSavedCursorTraversalIdentity() {
+    var fixture = MultiCircuitFixture(1);
+    var renderedCars = fixture.RenderedCars.ToArray();
+    var entry = renderedCars[0];
+    var foreignTraversal = new TrackCircuitTraversal(
+      fixture.Track.SegmentCircuitTraversals[1].Circuit);
+    var front = ForeignContact(entry.SavedCursor.Front, foreignTraversal);
+    var rear = ForeignContact(entry.SavedCursor.Rear, foreignTraversal);
+    renderedCars[0] = entry with {
+      SavedCursor = entry.SavedCursor with { Front = front, Rear = rear },
+    };
+
+    var result = RideTrainCircuitMotionAuthorization.Authorize(
+      fixture.Train,
+      fixture.Track,
+      renderedCars);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Status, Is.EqualTo(
+        RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity));
+      Assert.That(result.IsAuthorized, Is.False);
+      Assert.That(result.Traversal, Is.Null);
+    }
+  }
+
   private static (
     RideInstanceTrainRuntimeEntry Train,
-    RideInstanceTrackRuntimeEntry Track) CircuitRuntime() {
+    RideInstanceTrackRuntimeEntry Track) CircuitRuntime(TrackCircuit? circuit = null) {
     var track = Track(isCircuit: true);
     var instance = Instance();
-    var circuit = Circuit();
+    circuit ??= Circuit();
     var trackRuntime = new RideInstanceTrackRuntimeEntry(
       0,
       0,
@@ -129,6 +209,149 @@ public class RideTrainCircuitMotionAuthorizationTests {
       new TrackCircuitTraversal(circuit));
     return (TrainRuntime(instance, trackRuntime), trackRuntime);
   }
+
+  private static MultiCircuitAuthorizationFixture MultiCircuitFixture(
+    params int[] carCircuitIndices
+  ) {
+    var pieceIds = new ulong[] { 9_001, 9_002, 9_003, 9_004 };
+    var carIds = Enumerable.Range(0, carCircuitIndices.Length)
+      .Select(index => 3_000ul + Convert.ToUInt64(index))
+      .ToArray();
+    var ride = new DatTrackedRideInstanceData(
+      900,
+      "Synthetic multi-circuit ride",
+      track: 700,
+      "Tracks\\Synthetic",
+      "Synthetic:trr",
+      nTrains: 1,
+      nCarsPerTrain: carIds.Length,
+      trainSelection: 0,
+      trains: [1_000]);
+    var savedTrain = new DatRideTrainInstanceData(
+      1_000,
+      "Cars\\Synthetic\\SyntheticTrain",
+      "SyntheticTrain:rit",
+      ride.EntryId,
+      whichTrain: 0,
+      length: 12.5f,
+      mass: 1_000f,
+      cars: carIds);
+    var track = new RideTrack(
+      700,
+      direction: 0,
+      firstSegmentSourceEntryId: 800,
+      lastSegmentSourceEntryId: 801,
+      isCircuit: true,
+      prototype: false,
+      hasSerializedTrackPieceOrder: true,
+      trackPieceSourceEntryIds: pieceIds,
+      segmentSourceEntryIds: [800, 801],
+      flexiColour0: 0,
+      flexiColour1: 0,
+      flexiColour2: 0,
+      trackedRideInstanceReference: ride.EntryId,
+      flippedTrackSections: null,
+      tunnelLightColour: null,
+      serializedIsCircuit: false,
+      hasAuthoritativeTrackPieceOrder: true);
+    var first = SegmentCircuit(pieceIds[0], pieceIds[1]);
+    var second = SegmentCircuit(pieceIds[2], pieceIds[3]);
+    var geometry = new RideTrackGeometryLink(
+      track,
+      RideTrackGeometryStatus.MultiCircuit,
+      Graph: null,
+      Circuit: null) {
+      SegmentCircuits = [
+        new(800, Array.AsReadOnly(pieceIds.Take(2).ToArray()), first),
+        new(801, Array.AsReadOnly(pieceIds.Skip(2).ToArray()), second),
+      ],
+    };
+    var identities = RideInstanceTrackGraph.Build([ride], [track]);
+    var resolution = new RideTrackGeometryResolution(
+      [geometry],
+      UnresolvedResourceTrackCount: 0,
+      UnsupportedGeometryTrackCount: 0,
+      UnsupportedTopologyTrackCount: 0);
+    var trackRegistry = RideInstanceTrackRuntimeRegistry.Build(identities, resolution);
+    var trainResources = RideTrainInstanceResourceRegistry.Build([ride], [savedTrain], []);
+    var trainRegistry = RideInstanceTrainRuntimeRegistry.Build(trackRegistry, trainResources);
+    var train = trainRegistry.Entries.Single();
+    var savedCars = carCircuitIndices.Select((circuitIndex, ordinal) => {
+      var pieceId = circuitIndex == 0 ? pieceIds[0] : pieceIds[2];
+      return new DatRideCarInstanceData(
+        carIds[ordinal],
+        savedTrain.EntryId,
+        whichCar: ordinal,
+        whichRideTrainCar: Convert.ToInt32(RideTrainCarRole.Front),
+        frontWheelDistance: 0f,
+        rearWheelDistance: 0f,
+        trackPiece: pieceId,
+        rearTrackPiece: pieceId,
+        distance: 0f,
+        reversed: false,
+        speed: 0f,
+        length: 4f,
+        mass: 100f,
+        positionValid: true);
+    }).ToArray();
+    var carRegistry = RideCarInstanceRuntimeRegistry.Build(trainRegistry, savedCars);
+    var rawPieces = new[] {
+      TrackPieceData(pieceIds[0], 800, pieceIds[1], pieceIds[1], 0f),
+      TrackPieceData(pieceIds[1], 800, pieceIds[0], pieceIds[0], 100f),
+      TrackPieceData(pieceIds[2], 801, pieceIds[3], pieceIds[3], 0f),
+      TrackPieceData(pieceIds[3], 801, pieceIds[2], pieceIds[2], 100f),
+    };
+    var cursors = RideCarSavedWheelCursorRegistry.Build(carRegistry, rawPieces);
+    var renderedCars = cursors.Entries.Select((cursor, index) =>
+      new RideCarStaticInstanceEntry(
+        index,
+        cursor.CarRuntime,
+        cursor,
+        RideCarStaticInstanceIssue.None,
+        BodyTemplate: null,
+        Geometry: null,
+        Pose: null,
+        GeometryUnavailableDetail: null,
+        StaticPoseUnavailableDetail: null)).ToArray();
+    return new(train, trackRegistry.Entries.Single(), renderedCars);
+  }
+
+  private static RideCarSavedWheelContactCursor ForeignContact(
+    RideCarSavedWheelContactCursor contact,
+    TrackCircuitTraversal traversal
+  ) {
+    var original = contact.Cursor!.Value;
+    var cursor = traversal.AtPiece(original.PieceIndex, original.PieceArcLength);
+    return contact with { Cursor = cursor, Sample = cursor.Sample() };
+  }
+
+  private static DatTrackPieceData TrackPieceData(
+    ulong id,
+    ulong segment,
+    ulong previous,
+    ulong next,
+    float startDistance
+  ) => new(
+    entryId: id,
+    flexiColourField: new DatSceneryFlexiColour(0, 0, 0),
+    next,
+    owner: segment,
+    platformPiece: 0,
+    prev: previous,
+    reversed: false,
+    sidDatabaseEntry: 1,
+    symbolName: "Synthetic:tks",
+    sceneryItem: 1,
+    sceneryItemDataField: new DatSceneryItemDataField(0, 0, 0, null, 1, 1),
+    segment,
+    startDistance,
+    startDistanceBackwardsSpline: 100f,
+    userAngleDegrees: 0);
+
+  private static TrackCircuit SegmentCircuit(ulong firstId, ulong secondId) => new([
+    new TrackCircuitPiece($"track-piece-{firstId}", HalfCircuit(first: true)),
+    new TrackCircuitPiece($"track-piece-{secondId}", HalfCircuit(first: false)),
+  ]);
 
   private static RideInstanceTrainRuntimeEntry TrainRuntime(
     DatTrackedRideInstanceData instance,
@@ -198,6 +421,19 @@ public class RideTrainCircuitMotionAuthorizationTests {
     new TrackCircuitPiece("track-piece-9002", HalfCircuit(first: false)),
   ]);
 
+  private static TrackCircuit PiecewiseCircuit() => TrackCircuit.CreateImportedPiecewise([
+    new ImportedTrackCircuitPiece(
+      "track-piece-9001",
+      PiecewiseHalfCircuit(first: true),
+      PreviousId: "track-piece-9002",
+      NextId: "track-piece-9002"),
+    new ImportedTrackCircuitPiece(
+      "track-piece-9002",
+      PiecewiseHalfCircuit(first: false),
+      PreviousId: "track-piece-9001",
+      NextId: "track-piece-9001"),
+  ]);
+
   private static TrackPiece HalfCircuit(bool first) {
     var start = first ? Vector3.UnitX : -Vector3.UnitX;
     var end = -start;
@@ -205,6 +441,17 @@ public class RideTrainCircuitMotionAuthorizationTests {
     return new(TrackPieceGeometry.FromHandAuthored([
       Pair(0f, start, startTangent, Vector3.UnitZ * 0.5f),
       Pair(1f, end, -startTangent, Vector3.UnitZ * 0.5f),
+    ]));
+  }
+
+  private static TrackPiece PiecewiseHalfCircuit(bool first) {
+    var start = first ? Vector3.Zero : Vector3.UnitX;
+    var end = first ? Vector3.UnitX : Vector3.Zero;
+    var startTangent = first ? Vector3.UnitX : Vector3.UnitY;
+    var endTangent = first ? Vector3.UnitX : -Vector3.UnitX;
+    return new(TrackPieceGeometry.FromHandAuthored([
+      Pair(0f, start, startTangent, Vector3.UnitZ * 0.5f),
+      Pair(1f, end, endTangent, Vector3.UnitZ * 0.5f),
     ]));
   }
 
@@ -223,4 +470,10 @@ public class RideTrainCircuitMotionAuthorizationTests {
       tangent,
       BankRadians: 0f);
   }
+
+  private sealed record MultiCircuitAuthorizationFixture(
+    RideInstanceTrainRuntimeEntry Train,
+    RideInstanceTrackRuntimeEntry Track,
+    IReadOnlyList<RideCarStaticInstanceEntry> RenderedCars
+  );
 }

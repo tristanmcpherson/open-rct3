@@ -40,6 +40,31 @@ public class RideTrackResourceCatalogTests {
   }
 
   [Test]
+  public void ResolveAll_ComposesNativeChainMetadataWithExactChainPlacement() {
+    var fixture = CreateFixture(
+      sectionName: "Straightchain",
+      metadataInternalName: "straight");
+    var placement = Placement(objectKey: "Straightchain");
+
+    var result = fixture.Catalog.ResolveAll([placement]);
+    var link = result.Placements.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.UnresolvedPlacementCount, Is.Zero);
+      Assert.That(link.IsResolved, Is.True);
+      Assert.That(link.Section!.Source.Resource.Name, Is.EqualTo("Straightchain"));
+      Assert.That(link.PlacementSection.Source, Is.SameAs(fixture.PlacementSource));
+      Assert.That(link.Declarations, Has.Count.EqualTo(1));
+      Assert.That(link.Declarations.Single().Section.Reference,
+        Is.EqualTo("Straightchain:tks"));
+      Assert.That(link.Declarations.Single().Section.Metadata!.InternalName,
+        Is.EqualTo("straight"));
+      Assert.That(link.Declarations.Single().Section.Source,
+        Is.SameAs(fixture.SectionSource));
+    }
+  }
+
+  [Test]
   public void ResolveAll_DoesNotFallbackToSameNameFromAnotherOverlay() {
     var fixture = CreateFixture();
     var placement = Placement(overlayPath: "Tracks/Exact/Synthetic");
@@ -242,9 +267,12 @@ public class RideTrackResourceCatalogTests {
     Assert.That(exception!.Message, Does.Contain("DAT placements count 2"));
   }
 
-  private static CatalogFixture CreateFixture() {
+  private static CatalogFixture CreateFixture(
+    string sectionName = "Straight",
+    string metadataInternalName = "straight"
+  ) {
     const string sectionPath = "tracks\\synthetic.unique.ovl";
-    var section = Section("Straight");
+    var section = Section(sectionName);
     var sectionSource = new TrackSectionResourceSource(
       new OvlFile(section.Name, FileType.TrackSection, sectionPath),
       section);
@@ -265,7 +293,10 @@ public class RideTrackResourceCatalogTests {
           .Select(spline => spline.File.Path)
           .Distinct(StringComparer.OrdinalIgnoreCase)])]);
 
-    var ride = Ride("SyntheticRide", "Straight:tks", "straight");
+    var ride = Ride(
+      "SyntheticRide",
+      sectionName + ":tks",
+      metadataInternalName);
     var rideSource = new TrackedRideTrackResourceSource(
       new OvlFile(ride.Name, FileType.TrackedRide, "rides\\synthetic.unique.ovl"),
       ride);
@@ -320,13 +351,14 @@ public class RideTrackResourceCatalogTests {
 
   private static RideTrackPlacement Placement(
     string overlayPath = "Tracks\\Exact\\Synthetic",
-    ulong entryId = 500
+    ulong entryId = 500,
+    string objectKey = "Straight"
   ) => new(
     sourceEntryId: entryId,
     sceneryPlacementSourceEntryId: 100,
     sidDatabaseEntryReference: 200,
-    symbolName: "Straight:tks",
-    objectKey: "Straight",
+    symbolName: objectKey + ":tks",
+    objectKey,
     overlayPath,
     tileX: 1,
     tileY: 1,

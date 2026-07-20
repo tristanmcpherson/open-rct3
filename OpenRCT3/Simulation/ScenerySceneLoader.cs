@@ -5,6 +5,7 @@
 using OpenCobra.GDK;
 using OpenCobra.GDK.Materials;
 using OpenCobra.GDK.Meshes;
+using OpenCobra.OVL.Files;
 using System.Collections.Generic;
 
 using Texture = OpenCobra.GDK.Materials.Texture;
@@ -29,6 +30,8 @@ internal interface IScenerySceneResourceContext : IDisposable {
   bool TryResolveTexture(
     string taggedReference,
     SceneryFlexiColours flexiColours,
+    SceneryResourceEntry? shapeSource,
+    SceneryResourceEntry? visualSource,
     out Texture? texture
   );
 }
@@ -93,7 +96,11 @@ public static class ScenerySceneLoader {
           missingOverlayCount++;
           return null;
         }
-        return context.Resolve(placement.ObjectKey);
+        try {
+          return context.Resolve(placement.ObjectKey);
+        } catch (SceneryResourceUnavailableException) {
+          return null;
+        }
       }
 
       var geometry = buildGeometry(park, terrain, ResolvePlacement)
@@ -135,6 +142,8 @@ public static class ScenerySceneLoader {
           if (!context.TryResolveTexture(
                 batch.Key.FtxRef,
                 batch.Key.FlexiColours,
+                batch.Key.ShapeSource,
+                batch.Key.VisualSource,
                 out var texture)) {
             missingTextureCount++;
             batch.Mesh.Dispose();
@@ -425,10 +434,17 @@ public static class ScenerySceneLoader {
     public bool TryResolveTexture(
       string taggedReference,
       SceneryFlexiColours flexiColours,
+      SceneryResourceEntry? shapeSource,
+      SceneryResourceEntry? visualSource,
       out Texture? texture
     ) {
       ObjectDisposedException.ThrowIf(disposed, this);
-      return textures.TryResolve(taggedReference, flexiColours, out texture);
+      return textures.TryResolveFrom(
+        shapeSource,
+        visualSource,
+        taggedReference,
+        flexiColours,
+        out texture);
     }
 
     public void Dispose() {
@@ -459,6 +475,8 @@ public static class ScenerySceneLoader {
     public bool TryResolveTexture(
       string taggedReference,
       SceneryFlexiColours flexiColours,
+      SceneryResourceEntry? shapeSource,
+      SceneryResourceEntry? visualSource,
       out Texture? texture
     ) {
       texture = null;

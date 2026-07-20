@@ -7,13 +7,16 @@ using OpenCobra.GDK.Materials;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 
+using TerrainTypeKind = OpenCobra.OVL.Files.TerrainTypeKind;
+
 namespace OVL.Tests.GDK;
 
 [TestFixture]
 public class TerrainTextureCatalogTests {
   [Test]
-  public void Catalog_OrdersExactNamesAndMapsIndices() {
-    using var catalog = new TerrainTextureCatalog(CreateCompleteTextures().Reverse());
+  public void Catalog_ComposesBaseAndExpansionPairsByExactTerNumber() {
+    var entries = CreateCompleteEntries();
+    using var catalog = new TerrainTextureCatalog(entries.Reverse(), true);
 
     Assert.That(catalog.SurfaceNames,
       Is.EqualTo(Enumerable.Range(0, TerrainTextureCatalog.SurfaceCount)
@@ -22,36 +25,128 @@ public class TerrainTextureCatalogTests {
       Is.EqualTo(Enumerable.Range(0, TerrainTextureCatalog.CliffCount)
         .Select(index => $"TerrainCliff{index}")));
     Assert.That(catalog.GetSurface(25), Is.SameAs(catalog.SurfaceTextures[25]));
+    Assert.That(catalog.GetSurface(26), Is.SameAs(
+      entries.Single(entry => entry.Number == 26
+        && entry.Kind != TerrainTypeKind.Cliff).Texture));
+    Assert.That(catalog.GetSurface(31), Is.SameAs(catalog.SurfaceTextures[31]));
     Assert.That(catalog.GetCliff(5), Is.SameAs(catalog.CliffTextures[5]));
   }
 
-  [TestCase("Terrain_25", "exactly 26 surface")]
-  [TestCase("TerrainCliff5", "exactly 6 cliff")]
+  [TestCase("Terrain_31", "surface index 31")]
+  [TestCase("TerrainCliff5", "cliff index 5")]
   public void Catalog_TruncatedTrailingAssetsFailAndDisposeInput(
-    string removedName, string expectedMessage
+    string removedName,
+    string expectedMessage
   ) {
-    var textures = CreateCompleteTextures()
-      .Where(texture => texture.Name != removedName)
-      .ToArray();
+    var entries = RemoveEntry(CreateCompleteEntries(), removedName);
 
     var exception = Assert.Throws<InvalidDataException>(
-      new Action(() => new TerrainTextureCatalog(textures)));
+      new Action(() => new TerrainTextureCatalog(entries, true)));
 
     Assert.That(exception!.Message, Does.Contain(expectedMessage));
-    Assert.That(textures.Select(texture => texture.State), Is.All.EqualTo(State.Disposed));
+    Assert.That(entries.Select(entry => entry.Texture.State), Is.All.EqualTo(State.Disposed));
+  }
+
+  [TestCase("Terrain_01", "surface index 1")]
+  [TestCase("Terrain_27", "surface index 27")]
+  public void Catalog_MissingBaseOrExpansionIndexFailsAndDisposesInput(
+    string removedName,
+    string expectedMessage
+  ) {
+    var entries = RemoveEntry(CreateCompleteEntries(), removedName);
+
+    var exception = Assert.Throws<InvalidDataException>(
+      new Action(() => new TerrainTextureCatalog(entries, true)));
+
+    Assert.That(exception!.Message, Does.Contain(expectedMessage));
+    Assert.That(entries.Select(entry => entry.Texture.State), Is.All.EqualTo(State.Disposed));
   }
 
   [Test]
-  public void Catalog_MissingMiddleIndexFailsAndDisposesInput() {
-    var textures = CreateCompleteTextures()
-      .Where(texture => texture.Name != "Terrain_01")
+  public void Catalog_DuplicateNumberAcrossPairsFailsAndDisposesInput() {
+    var entries = CreateCompleteEntries()
+      .Append(CreateSurfaceEntry(26, TerrainTextureCatalogLayer.CompleteEditionExpansion))
       .ToArray();
 
     var exception = Assert.Throws<InvalidDataException>(
-      new Action(() => new TerrainTextureCatalog(textures)));
+      new Action(() => new TerrainTextureCatalog(entries, true)));
 
-    Assert.That(exception!.Message, Does.Contain("Terrain_01"));
-    Assert.That(textures.Select(texture => texture.State), Is.All.EqualTo(State.Disposed));
+    Assert.That(exception!.Message, Does.Contain("duplicate surface index 26"));
+    Assert.That(entries.Select(entry => entry.Texture.State), Is.All.EqualTo(State.Disposed));
+  }
+
+  [Test]
+  public void Catalog_WrongExpansionKindFailsAndDisposesInput() {
+    var entries = CreateCompleteEntries();
+    ReplaceEntry(entries, "Terrain_26", CreateEntry(
+      "Terrain_26",
+      26,
+      TerrainTypeKind.Cliff,
+      TerrainTextureCatalogLayer.CompleteEditionExpansion));
+
+    var exception = Assert.Throws<InvalidDataException>(
+      new Action(() => new TerrainTextureCatalog(entries, true)));
+
+    Assert.That(exception!.Message, Does.Contain("surface-only overlay"));
+    Assert.That(entries.Select(entry => entry.Texture.State), Is.All.EqualTo(State.Disposed));
+  }
+
+  [Test]
+  public void Catalog_ExpansionNumberOwnedByBasePairFailsClosed() {
+    var entries = CreateCompleteEntries();
+    ReplaceEntry(entries, "Terrain_26", CreateSurfaceEntry(
+      26, TerrainTextureCatalogLayer.Base));
+
+    var exception = Assert.Throws<InvalidDataException>(
+      new Action(() => new TerrainTextureCatalog(entries, true)));
+
+    Assert.That(exception!.Message, Does.Contain("Base terrain resource"));
+    Assert.That(entries.Select(entry => entry.Texture.State), Is.All.EqualTo(State.Disposed));
+  }
+
+  [Test]
+  public void Catalog_NullEntryFailsAndDisposesEveryNonNullOwnedTexture() {
+    var entries = CreateCompleteEntries().ToList();
+    entries.Insert(1, null!);
+
+    Assert.Throws<ArgumentNullException>(
+      new Action(() => new TerrainTextureCatalog(entries, true)));
+
+    Assert.That(
+      entries.OfType<TerrainTextureCatalogEntry>().Select(entry => entry.Texture.State),
+      Is.All.EqualTo(State.Disposed));
+  }
+
+  [Test]
+  public void Catalog_NullTextureFailsAndDisposesEveryOtherOwnedTexture() {
+    var entries = CreateCompleteEntries();
+    entries[1].Texture.Dispose();
+    entries[1] = entries[1] with { Texture = null! };
+
+    Assert.Throws<ArgumentNullException>(
+      new Action(() => new TerrainTextureCatalog(entries, true)));
+
+    Assert.That(
+      entries.OfType<TerrainTextureCatalogEntry>()
+        .Select(entry => entry.Texture)
+        .OfType<Texture>()
+        .Select(texture => texture.State),
+      Is.All.EqualTo(State.Disposed));
+  }
+
+  [Test]
+  public void Catalog_VanillaPairSupportsBaseAndNamesMissingExpansionPrecisely() {
+    using var catalog = new TerrainTextureCatalog(CreateBaseEntries(), false);
+
+    Assert.That(
+      catalog.SurfaceTextures,
+      Has.Count.EqualTo(TerrainTextureCatalog.BaseSurfaceCount));
+    Assert.That(catalog.GetSurface(25).Name, Is.EqualTo("Terrain_25"));
+    var exception = Assert.Throws<InvalidDataException>(
+      new Action(() => catalog.GetSurface(TerrainTextureCatalog.BaseSurfaceCount)));
+
+    Assert.That(exception!.Message, Does.Contain("Terrain_CT"));
+    Assert.That(exception.Message, Does.Contain("indices 0-25"));
   }
 
   [Test]
@@ -63,7 +158,7 @@ public class TerrainTextureCatalogTests {
       new Action(() => catalog.GetSurface(TerrainTextureCatalog.SurfaceCount)));
     var cliffOutOfRange = Assert.Throws<ArgumentOutOfRangeException>(
       new Action(() => catalog.GetCliff(TerrainTextureCatalog.CliffCount)));
-    Assert.That(surfaceOutOfRange!.Message, Does.Contain("Surface index 26"));
+    Assert.That(surfaceOutOfRange!.Message, Does.Contain("Surface index 32"));
     Assert.That(cliffOutOfRange!.Message, Does.Contain("Cliff index 6"));
 
     catalog.Dispose();
@@ -208,15 +303,105 @@ public class TerrainTextureCatalogTests {
     }
   }
 
-  private static TerrainTextureCatalog CreateCompleteCatalog() =>
-    new(CreateCompleteTextures());
+  [Test]
+  public void Loader_PartialCompleteEditionPairFailsBeforeOpeningBaseArchive() {
+    var directory = Path.Combine(
+      Path.GetTempPath(), $"openrct3-terrain-overlay-{Guid.NewGuid():N}");
+    var baseDirectory = Path.Combine(directory, "RCT3");
+    var expansionDirectory = Path.Combine(directory, "CT");
+    Directory.CreateDirectory(baseDirectory);
+    Directory.CreateDirectory(expansionDirectory);
+    var baseCommonPath = Path.Combine(baseDirectory, "Terrain_RCT3.common.ovl");
+    var expansionUniquePath = Path.Combine(expansionDirectory, "Terrain_CT.unique.ovl");
+    File.WriteAllBytes(baseCommonPath, []);
+    File.WriteAllBytes(Path.Combine(baseDirectory, "Terrain_RCT3.unique.ovl"), []);
+    File.WriteAllBytes(Path.Combine(expansionDirectory, "Terrain_CT.common.ovl"), []);
+    try {
+      var exception = Assert.Throws<FileNotFoundException>(
+        new Action(() => TextureLoader.LoadTerrainCatalog(baseCommonPath)));
 
-  private static Texture[] CreateCompleteTextures() => [
-    .. Enumerable.Range(0, TerrainTextureCatalog.SurfaceCount)
-      .Select(index => CreateTexture($"Terrain_{index:D2}")),
+      Assert.That(exception!.FileName, Is.EqualTo(expansionUniquePath));
+      Assert.That(exception.Message, Does.Contain("Complete Edition terrain unique OVL"));
+    } finally {
+      Directory.Delete(directory, true);
+    }
+  }
+
+  private static TerrainTextureCatalog CreateCompleteCatalog() =>
+    new(CreateCompleteEntries(), true);
+
+  private static TerrainTextureCatalogEntry[] CreateCompleteEntries() => [
+    .. Enumerable.Range(0, TerrainTextureCatalog.BaseSurfaceCount)
+      .Select(index => CreateSurfaceEntry(index, TerrainTextureCatalogLayer.Base)),
     .. Enumerable.Range(0, TerrainTextureCatalog.CliffCount)
-      .Select(index => CreateTexture($"TerrainCliff{index}")),
+      .Select(index => CreateEntry(
+        $"TerrainCliff{index}",
+        index,
+        TerrainTypeKind.Cliff,
+        TerrainTextureCatalogLayer.Base)),
+    .. Enumerable.Range(
+        TerrainTextureCatalog.BaseSurfaceCount,
+        TerrainTextureCatalog.SurfaceCount - TerrainTextureCatalog.BaseSurfaceCount)
+      .Select(index => CreateSurfaceEntry(
+        index,
+        TerrainTextureCatalogLayer.CompleteEditionExpansion)),
   ];
+
+  private static TerrainTextureCatalogEntry[] CreateBaseEntries() => [
+    .. Enumerable.Range(0, TerrainTextureCatalog.BaseSurfaceCount)
+      .Select(index => CreateSurfaceEntry(index, TerrainTextureCatalogLayer.Base)),
+    .. Enumerable.Range(0, TerrainTextureCatalog.CliffCount)
+      .Select(index => CreateEntry(
+        $"TerrainCliff{index}",
+        index,
+        TerrainTypeKind.Cliff,
+        TerrainTextureCatalogLayer.Base)),
+  ];
+
+  private static TerrainTextureCatalogEntry CreateSurfaceEntry(
+    int index,
+    TerrainTextureCatalogLayer layer
+  ) => CreateEntry(
+    $"Terrain_{index:D2}",
+    index,
+    TerrainTypeKind.GroundUnblended,
+    layer);
+
+  private static TerrainTextureCatalogEntry CreateEntry(
+    string name,
+    int number,
+    TerrainTypeKind kind,
+    TerrainTextureCatalogLayer layer
+  ) => new(
+    name,
+    Convert.ToUInt32(number),
+    kind,
+    name,
+    CreateTexture(name),
+    layer,
+    layer == TerrainTextureCatalogLayer.Base
+      ? "Terrain_RCT3.common.ovl"
+      : "Terrain_CT.common.ovl");
+
+  private static TerrainTextureCatalogEntry[] RemoveEntry(
+    IEnumerable<TerrainTextureCatalogEntry> entries,
+    string textureName
+  ) {
+    var ownedEntries = entries.ToArray();
+    var removed = ownedEntries.Single(entry => entry.Texture.Name == textureName);
+    removed.Texture.Dispose();
+    return ownedEntries.Where(entry => !ReferenceEquals(entry, removed)).ToArray();
+  }
+
+  private static void ReplaceEntry(
+    TerrainTextureCatalogEntry[] entries,
+    string textureName,
+    TerrainTextureCatalogEntry replacement
+  ) {
+    var index = Array.FindIndex(entries, entry => entry.Texture.Name == textureName);
+    entries[index].Texture.Dispose();
+    entries[index] = replacement;
+  }
 
   private static Texture CreateTexture(string name) =>
     new(name, 1, 1, new Image<Rgba32>(1, 1));

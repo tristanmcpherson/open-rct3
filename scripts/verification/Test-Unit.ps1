@@ -19,8 +19,11 @@ $dumperProject = $requiredUnitProjects[2]
 $approvedDumperSkip = 'Dumper.Tests.TruncatedLabelTests.TestVeryLongPath_PreservesFilename'
 $approvedInstalledAssetSkips = @(
   'OpenCobra.Tests.OVL.BoneAnimationsTests.Extract_InstalledVintageCar_DecodesDeclaredBanResources',
+  'OpenCobra.Tests.OVL.BoneShapesTests.Extract_InstalledSaloonBrawlPreservesUnsignedHighBoneIndices',
+  'OpenCobra.Tests.OVL.ModelsTests.Extract_FromInstalledAdultElephantReadsProvenCountLayout',
   'OpenCobra.Tests.OVL.PathTypesTests.Extract_InstalledAsphalt_PreservesDeclaredResources',
   'OpenCobra.Tests.OVL.QueueTypesTests.Extract_InstalledQueueSet1_PreservesDeclaredResources',
+  'OpenCobra.Tests.OVL.RideCarsTests.Extract_FromInstalledElephantAllowsAnimalSpeciesBody',
   'OpenCobra.Tests.OVL.RideCarsTests.Extract_FromInstalledWoodenCoasterArchiveDecodesRideCars',
   'OpenCobra.Tests.OVL.RideResourceGraphTests.Resolve_InstalledLogFlumeLinksCrocLogThroughRealDependencyClosures',
   'OpenCobra.Tests.OVL.RideTrainsTests.Extract_FromInstalledWoodenCoasterArchiveDecodesTrainComposition',
@@ -33,7 +36,9 @@ $approvedInstalledAssetSkips = @(
   'OpenCobra.Tests.OVL.TrackSectionsTests.Extract_FromInstalledTrackBased10AcceptsMismatchedEndpointFlags',
   'OpenCobra.Tests.OVL.TrackedRideTrackResourceGraphTests.Resolve_InstalledRideLinksExternalTrackSectionsAndLocalSplines("LogFlume","TrackBased10",33,39)',
   'OpenCobra.Tests.OVL.TrackedRideTrackResourceGraphTests.Resolve_InstalledRideLinksExternalTrackSectionsAndLocalSplines("Mono","TrackBased07",15,15)',
+  'OpenCobra.Tests.OVL.TrackedRideTrackResourceGraphTests.Resolve_InstalledWoodenWildMinePreservesNineExactChainTargets',
   'OpenCobra.Tests.OVL.TrackedRidesTests.Extract_FromInstalledLogFlumeArchiveDecodesTrackedRideCore',
+  'OpenCobra.Tests.OVL.WildAnimalSpeciesTests.Extract_FromInstalledElephantReadsExactFourVariantLayout',
   'OpenRCT3.Tests.Serialization.DatRideCarInstanceReaderTests.Read_BoxOfficeCapturesExactStreamlinedMonoConsistAndResumeState',
   'OpenRCT3.Tests.Serialization.DatRideCarInstanceReaderTests.Read_ScrubGardensCapturesWildTrainVisualVariantSelections',
   'OpenRCT3.Tests.Serialization.DatTrackReaderTests.Read_BoxOfficeCapturesExactTrackPieceStartDistances',
@@ -51,9 +56,14 @@ $approvedInstalledAssetSkips = @(
   'OpenRCT3.Tests.Simulation.RideCarVisualTemplateRegistryTests.BoxOffice_BodyTemplatesHaveDeterministicGeometryCounts',
   'OpenRCT3.Tests.Simulation.RideInstanceResourceResolverTests.Resolve_InstalledCampaignIdentitiesAgainstTheirExactOvlOverlays',
   'OpenRCT3.Tests.Simulation.RideInstanceTrackGraphTests.Build_InstalledCampaignsHaveExactNonSentinelReciprocalLinks',
+  'OpenRCT3.Tests.Simulation.RideTrackGunslingerInstalledPipelineTests.Gunslinger_ResolvesExactWoodenWildMineChainConstructionIdentity',
   'OpenRCT3.Tests.Simulation.RideTrackInstalledPipelineTests.BoxOffice_DatThroughCatalogProducesTypedGeometryOutcomes',
+  'OpenRCT3.Tests.Simulation.RideTrackWildInstalledPipelineTests.RaidersOfTheLostCoaster_ResolvesReciprocalPiecewiseCircuitsForMotion',
   'OpenRCT3.Tests.Simulation.RideTrackWildInstalledPipelineTests.ScrubGardens_SeizmicResolvesTwoExactCircuitsAndSavedCars',
-  'OpenRCT3.Tests.Simulation.RideTrackSectionResourceResolverTests.Resolve_InstalledCampaignsLinkExactDatOverlayAndTksIdentities'
+  'OpenRCT3.Tests.Simulation.RideTrackSectionResourceResolverTests.Resolve_InstalledCampaignsLinkExactDatOverlayAndTksIdentities',
+  'OpenRCT3.Tests.Simulation.ScenerySceneLoaderTests.Load_ScrubGardensResolvesColonialWallVisualFromExactOverlay',
+  'OpenRCT3.Tests.Simulation.SceneryVisualResolverTests.Resolve_ScrubGardensRideTrackSidStopsBeforeAmbiguousGlobalVisuals',
+  'OpenRCT3.Tests.Simulation.SceneryVisualResolverTests.Resolve_ScrubGardensColonialWallUsesExactOwnerOverlay'
 )
 $approvedSkippedTests = @($approvedDumperSkip) + $approvedInstalledAssetSkips
 $results = Join-Path $repo 'TestResults\unit'

@@ -20,7 +20,7 @@ public class BoneShapeMeshBuilderTests {
       new Vector3(4f, 5f, 6f),
       texCoord,
       color,
-      new BoneShapeSkinning(0, -1, -1, -1, 255, 0, 0, 0));
+      new BoneShapeSkinning(0, 255, 255, 255, 255, 0, 0, 0));
     var shape = new BoneShape(
       "shape",
       new Vector3(-10f),
@@ -231,5 +231,5 @@ public class BoneShapeMeshBuilderTests {
     Vector3.UnitY,
     Vector2.Zero,
     Vector4.One,
-    new BoneShapeSkinning(-1, -1, -1, -1, 0, 0, 0, 0));
+    new BoneShapeSkinning(255, 255, 255, 255, 0, 0, 0, 0));
 }

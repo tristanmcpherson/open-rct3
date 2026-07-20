@@ -79,8 +79,9 @@ public static class StaticShapes {
   private const int MaximumResourceNameBytes = 4 * 1024;
   private const int MaximumShapeCount = 64 * 1024;
   private const int MaximumResourceCount = 1_000_000;
+  private const float EmptyShapeBoundsExtent = 100_000_000f;
 
-  /// <summary>Decodes every static-shape resource from the unique half of an OVL pair.</summary>
+  /// <summary>Decodes every static-shape resource from either half of an OVL pair.</summary>
   public static IReadOnlyList<StaticShape> Extract(Ovl ovl) {
     return Extract(ovl, StaticShapeDecodeLimits.Default);
   }
@@ -93,9 +94,7 @@ public static class StaticShapes {
         $"OVL resource count {ovl.Count} exceeds the SHS decoder limit {MaximumResourceCount}.");
     var context = new DecodeContext(limits);
     var shapeFiles = new List<OvlFile>();
-    foreach (var file in ovl.Keys.Where(file =>
-      file.Type == FileType.StaticShape &&
-      file.Path.EndsWith(".unique.ovl", StringComparison.OrdinalIgnoreCase))) {
+    foreach (var file in ovl.Keys.Where(file => file.Type == FileType.StaticShape)) {
       if (shapeFiles.Count >= MaximumShapeCount)
         throw Invalid(file.Name, $"shape count exceeds the decoder limit {MaximumShapeCount}");
       context.ReserveObjects(1, file.Name, "shape resource index");
@@ -107,6 +106,7 @@ public static class StaticShapes {
     foreach (var file in shapeFiles) {
       if (!ovl.TryGetDataPointer(file, out var address))
         throw Invalid(file.Name, "resource data pointer is missing");
+      source.RequireStaticShapeLoader(file, address);
 
       shapes.Add(Decode(file.Name, address, source, context));
     }
@@ -134,20 +134,31 @@ public static class StaticShapes {
     var header = ReadExact(source, address, ShapeSize, name, "shape header", context);
     var boundsMin = ReadVector3(header, 0);
     var boundsMax = ReadVector3(header, 12);
-    ValidateBounds(name, boundsMin, boundsMax);
 
     var totalVertexCount = ReadUInt32(header, 24);
     var totalIndexCount = ReadUInt32(header, 28);
     var unsupportedMeshCount = ReadUInt32(header, 32);
     var meshCount = ReadUInt32(header, 36);
-    if (meshCount == 0)
-      throw Invalid(name, "mesh count is zero");
+    var effectCount = ReadUInt32(header, 44);
+    if (meshCount == 0) {
+      ValidateEmptyShape(
+        name,
+        header,
+        boundsMin,
+        boundsMax,
+        totalVertexCount,
+        totalIndexCount,
+        unsupportedMeshCount,
+        effectCount);
+      context.ReserveObjects(1, name, "empty shape object");
+      return new StaticShape(name, boundsMin, boundsMax, [], []);
+    }
+
+    ValidateBounds(name, boundsMin, boundsMax);
     if (meshCount > MaximumMeshCount)
       throw Invalid(name, $"mesh count {meshCount} exceeds the decoder limit {MaximumMeshCount}");
     if (unsupportedMeshCount > meshCount)
       throw Invalid(name, "unsupported mesh count exceeds mesh count");
-
-    var effectCount = ReadUInt32(header, 44);
     if (effectCount > MaximumEffectCount)
       throw Invalid(name, $"effect count {effectCount} exceeds the decoder limit {MaximumEffectCount}");
     context.ReserveObjects(1 + Convert.ToUInt64(meshCount) + effectCount, name, "shape, mesh, and effect objects");
@@ -599,6 +610,28 @@ public static class StaticShapes {
       throw Invalid(name, "bounding box minimum exceeds its maximum");
   }
 
+  private static void ValidateEmptyShape(
+    string name,
+    byte[] header,
+    Vector3 min,
+    Vector3 max,
+    uint totalVertexCount,
+    uint totalIndexCount,
+    uint unsupportedMeshCount,
+    uint effectCount
+  ) {
+    var expectedMin = new Vector3(EmptyShapeBoundsExtent);
+    var expectedMax = new Vector3(-EmptyShapeBoundsExtent);
+    if (min != expectedMin || max != expectedMax)
+      throw Invalid(name, "mesh count is zero without the installed empty-shape bounds sentinel");
+    if (totalVertexCount != 0 || totalIndexCount != 0 || unsupportedMeshCount != 0 ||
+        effectCount != 0)
+      throw Invalid(name, "empty-shape sentinel has non-zero aggregate counts");
+    if (ReadUInt32(header, 40) != 0 || ReadUInt32(header, 48) != 0 ||
+        ReadUInt32(header, 52) != 0)
+      throw Invalid(name, "empty-shape sentinel has non-null payload pointers");
+  }
+
   private static bool IsFinite(Vector2 value) => float.IsFinite(value.X) && float.IsFinite(value.Y);
   private static bool IsFinite(Vector3 value) =>
     float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
@@ -718,6 +751,7 @@ public static class StaticShapes {
   private sealed class OvlStaticShapeDataSource : IStaticShapeDataSource {
     private readonly Ovl ovl;
     private readonly DecodeContext context;
+    private readonly IReadOnlyDictionary<uint, IReadOnlyList<OvlLoaderEntry>> loadersByDataAddress;
 
     public OvlStaticShapeDataSource(Ovl ovl, DecodeContext context) {
       this.ovl = ovl;
@@ -732,17 +766,18 @@ public static class StaticShapes {
         Convert.ToUInt64(ovl.LoaderEntriesInOrder.Count) * 4,
         "OVL",
         "loader metadata index");
-      var loaderMetadata = new Dictionary<uint, OvlLoaderEntry>();
+      var mutableLoaders = new Dictionary<uint, List<OvlLoaderEntry>>();
       var shapeLoaders = new HashSet<uint>();
       foreach (var entry in ovl.LoaderEntriesInOrder) {
-        if (loaderMetadata.TryGetValue(entry.DataAddress, out var existing) &&
-            !string.Equals(existing.Tag, entry.Tag, StringComparison.OrdinalIgnoreCase))
-          throw new InvalidDataException(
-            $"OVL loader data address {entry.DataAddress} has conflicting archive types.");
-        loaderMetadata[entry.DataAddress] = entry;
+        if (!mutableLoaders.TryGetValue(entry.DataAddress, out var entries))
+          mutableLoaders.Add(entry.DataAddress, entries = []);
+        entries.Add(entry);
         if (entry.Tag.ToFileType() == FileType.StaticShape)
           shapeLoaders.Add(entry.DataAddress);
       }
+      loadersByDataAddress = mutableLoaders.ToDictionary(
+        pair => pair.Key,
+        pair => (IReadOnlyList<OvlLoaderEntry>)pair.Value);
       StaticShapeLoaderDataAddresses = shapeLoaders;
 
       var byAddress = new Dictionary<uint, StaticShapeResourceMetadata>();
@@ -753,7 +788,7 @@ public static class StaticShapes {
         context.ReserveObjects(1, key, "local resource key index");
         localKeys.Add(key);
         if (!ovl.TryGetDataPointer(file, out var address) ||
-            !loaderMetadata.TryGetValue(address, out var loader))
+            !TryGetExactLoader(address, file.Path, out var loader))
           continue;
         context.ReserveObjects(3, key, "resource metadata indexes");
         var metadata = new StaticShapeResourceMetadata(key, loader.Tag);
@@ -772,6 +807,13 @@ public static class StaticShapes {
     public IReadOnlySet<string> LocalResourceKeys { get; }
     public IReadOnlyDictionary<uint, StaticShapeResourceReference> ResourceReferences { get; }
     public IReadOnlySet<uint> StaticShapeLoaderDataAddresses { get; }
+
+    public void RequireStaticShapeLoader(OvlFile file, uint address) {
+      if (!TryGetExactLoader(address, file.Path, out var loader) ||
+          loader.Tag.ToFileType() != FileType.StaticShape)
+        throw Invalid(file.Name,
+          $"address {address} is not owned by one exact shs loader-table entry");
+    }
 
     public bool TryReadBytes(uint address, int length, out byte[] bytes) {
       if (ovl.TryReadBytes(address, length, out var resolved)) {
@@ -811,6 +853,20 @@ public static class StaticShapes {
         return false;
       }
       value = Encoding.ASCII.GetString(block, start, end - start);
+      return true;
+    }
+
+    private bool TryGetExactLoader(
+      uint address,
+      string sourcePath,
+      out OvlLoaderEntry loader
+    ) {
+      loader = null!;
+      if (!loadersByDataAddress.TryGetValue(address, out var entries)) return false;
+      var matches = entries.Where(entry => string.Equals(
+        entry.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase)).ToList();
+      if (matches.Count != 1) return false;
+      loader = matches[0];
       return true;
     }
 

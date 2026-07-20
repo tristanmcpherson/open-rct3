@@ -24,11 +24,10 @@ public sealed record SceneryResourceEntry(Ovl Archive, OvlFile File);
 /// </summary>
 /// <remarks>
 /// Search order is the named pair and every dependency reachable from already-loaded owners, exact
-/// owner filenames beneath its directory tree, sibling common archives, then a deterministic
-/// fallback over the remaining descendants. Each newly probed owner brings its transitive declared
-/// dependencies into the same resolution set. The fallback is bounded to the overlay tree; declared
-/// dependencies may leave that tree but must remain inside the installation root. Loaded archives
-/// are cached and disposed with the catalog.
+/// owner filenames inside the installation root, sibling common archives, then a deterministic
+/// fallback over the remaining overlay descendants. Each newly probed owner brings its transitive
+/// declared dependencies into the same resolution set. All fallbacks remain inside the installation
+/// root. Loaded archives are cached and disposed with the catalog.
 /// </remarks>
 public sealed class SceneryResourceCatalog : IDisposable {
   private const string CommonSuffix = ".common.ovl";
@@ -101,7 +100,7 @@ public sealed class SceneryResourceCatalog : IDisposable {
         loadedPairOrder.ToArray(), resourceName, type);
       if (loadedResult != null) return loadedResult;
 
-      var targetedResult = FindInFallbackCandidates(
+      var targetedResult = FindInTargetedOwners(
         GetTargetedCommonPaths(resourceName), resourceName, type);
       if (targetedResult != null) return targetedResult;
 
@@ -143,7 +142,7 @@ public sealed class SceneryResourceCatalog : IDisposable {
       var ownerResult = FindInReachableSet([ownerPath], resourceName, type);
       if (ownerResult != null) return ownerResult;
 
-      var targetedResult = FindInFallbackCandidates(
+      var targetedResult = FindInTargetedOwners(
         GetTargetedCommonPaths(resourceName), resourceName, type);
       if (targetedResult != null) return targetedResult;
 
@@ -152,6 +151,30 @@ public sealed class SceneryResourceCatalog : IDisposable {
       if (siblingResult != null) return siblingResult;
 
       return FindInFallbackCandidates(GetDescendantCommonPaths(), resourceName, type);
+    }
+  }
+
+  /// <summary>Finds a resource only inside one exact owner's dependency closure.</summary>
+  internal SceneryResourceEntry? FindWithinOwnerClosure(
+    SceneryResourceEntry owner,
+    string resourceName,
+    FileType type
+  ) {
+    ArgumentNullException.ThrowIfNull(owner);
+    ArgumentException.ThrowIfNullOrWhiteSpace(resourceName);
+    if (type == FileType.Unknown || !Enum.IsDefined(type))
+      throw new ArgumentOutOfRangeException(
+        nameof(type),
+        type,
+        "A known resource type is required.");
+
+    lock (syncRoot) {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      if (!loadedPathsByArchive.TryGetValue(owner.Archive, out var ownerPath))
+        throw new ArgumentException(
+          "The owner resource does not belong to this catalog.",
+          nameof(owner));
+      return FindInReachableSet([ownerPath], resourceName, type);
     }
   }
 
@@ -212,18 +235,34 @@ public sealed class SceneryResourceCatalog : IDisposable {
     IEnumerable<string> commonPaths,
     string resourceName,
     FileType type
+  ) => FindInReachableSet(commonPaths, resourceName, type);
+
+  private SceneryResourceEntry? FindInTargetedOwners(
+    IReadOnlyList<string> commonPaths,
+    string resourceName,
+    FileType type
   ) {
-    foreach (var commonPath in commonPaths) {
-      var result = FindInReachableSet([commonPath], resourceName, type);
-      if (result != null) return result;
-    }
-    return null;
+    var localPaths = commonPaths.Where(IsInsideOverlayTree).ToArray();
+    var localResult = FindInReachableSet(
+      localPaths,
+      resourceName,
+      type,
+      requireRootPairs: true);
+    if (localResult != null) return localResult;
+
+    var globalPaths = commonPaths.Where(path => !IsInsideOverlayTree(path)).ToArray();
+    return FindInReachableSet(
+      globalPaths,
+      resourceName,
+      type,
+      requireRootPairs: true);
   }
 
   private SceneryResourceEntry? FindInReachableSet(
     IEnumerable<string> rootPaths,
     string resourceName,
-    FileType type
+    FileType type,
+    bool requireRootPairs = false
   ) {
     var queue = new Queue<DependencyNode>();
     var scheduled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -232,7 +271,7 @@ public sealed class SceneryResourceCatalog : IDisposable {
       if (scheduled.Count > MaximumDependencyPairs)
         throw InvalidDependency(
           $"reachable pair count exceeds {MaximumDependencyPairs}");
-      queue.Enqueue(new DependencyNode(rootPath, 0, false));
+      queue.Enqueue(new DependencyNode(rootPath, 0, requireRootPairs));
     }
 
     SceneryResourceEntry? match = null;
@@ -379,21 +418,26 @@ public sealed class SceneryResourceCatalog : IDisposable {
     }
 
     var ownerFileName = resourceName + CommonSuffix;
-    var paths = source.EnumerateMatchingCommonOvls(exactDirectory, ownerFileName)
-      .Select(NormalizeEnumeratedPath)
-      .Where(path => path != null)
-      .Select(path => path!)
-      .Where(IsCommonOvl)
-      .Where(path => string.Equals(
-        Path.GetFileName(path),
-        ownerFileName,
-        StringComparison.OrdinalIgnoreCase))
-      .Where(IsInsideOverlayTree)
-      .Where(IsInsideInstallRoot)
-      .Where(path => !string.Equals(path, exactCommonPath, StringComparison.OrdinalIgnoreCase))
-      .OrderBy(path => Path.GetRelativePath(exactDirectory, path), StringComparer.OrdinalIgnoreCase)
-      .ThenBy(path => Path.GetRelativePath(exactDirectory, path), StringComparer.Ordinal)
-      .Distinct(StringComparer.OrdinalIgnoreCase)
+    var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var candidate in source.EnumerateMatchingCommonOvls(
+               installRoot,
+               ownerFileName)) {
+      var path = NormalizeEnumeratedPath(candidate, installRoot);
+      if (path == null || !IsCommonOvl(path) || !IsInsideInstallRoot(path) ||
+          string.Equals(path, exactCommonPath, StringComparison.OrdinalIgnoreCase) ||
+          !string.Equals(
+            Path.GetFileName(path),
+            ownerFileName,
+            StringComparison.OrdinalIgnoreCase)) continue;
+      if (!candidates.Add(path)) continue;
+      if (candidates.Count > MaximumDependencyPairs)
+        throw InvalidDependency(
+          $"targeted owner pair count exceeds {MaximumDependencyPairs} for " +
+          $"'{ownerFileName}'");
+    }
+    var paths = candidates
+      .OrderBy(path => Path.GetRelativePath(installRoot, path), StringComparer.OrdinalIgnoreCase)
+      .ThenBy(path => Path.GetRelativePath(installRoot, path), StringComparer.Ordinal)
       .ToArray();
     targetedCommonPaths.Add(resourceName, paths);
     return paths;
@@ -417,12 +461,18 @@ public sealed class SceneryResourceCatalog : IDisposable {
     return descendantCommonPaths;
   }
 
-  private string? NormalizeEnumeratedPath(string? path) {
+  private string? NormalizeEnumeratedPath(string? path) =>
+    NormalizeEnumeratedPath(path, exactDirectory);
+
+  private static string? NormalizeEnumeratedPath(
+    string? path,
+    string relativeRoot
+  ) {
     if (string.IsNullOrWhiteSpace(path)) return null;
 
     try {
       return Path.GetFullPath(
-        Path.IsPathRooted(path) ? path : Path.Combine(exactDirectory, path));
+        Path.IsPathRooted(path) ? path : Path.Combine(relativeRoot, path));
     } catch (ArgumentException) {
       return null;
     } catch (NotSupportedException) {
@@ -638,7 +688,7 @@ internal sealed class FileSystemSceneryResourceCatalogSource : ISceneryResourceC
       .Where(path => path.EndsWith(".common.ovl", StringComparison.OrdinalIgnoreCase));
 
   public IEnumerable<string> EnumerateMatchingCommonOvls(string directory, string fileName) =>
-    Directory.EnumerateFiles(directory, fileName, SearchOption.AllDirectories)
+    Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
       .Where(path => string.Equals(
         Path.GetFileName(path),
         fileName,

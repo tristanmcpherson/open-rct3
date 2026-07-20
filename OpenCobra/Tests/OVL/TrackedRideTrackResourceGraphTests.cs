@@ -146,6 +146,84 @@ public class TrackedRideTrackResourceGraphTests {
   }
 
   [Test]
+  public void Resolve_AcceptsNativeChainMetadataButKeepsExactChainTarget() {
+    var ride = RideSource(
+      Ride(
+        [new TrackedRideTrackSection(
+          "Medslope2steepslopechain:tks",
+          "medslope2steepslope",
+          10)],
+        EmptyReferences()),
+      "ride.common.ovl");
+    var ordinary = SectionSource("Medslope2steepslope", "track.common.ovl");
+    var chain = SectionSource("Medslope2steepslopechain", "track.common.ovl");
+
+    var graph = TrackedRideTrackResourceGraphResolver.Resolve(
+      [ride],
+      [ordinary, chain],
+      [],
+      [Closure(ride.File.Path, "track.common.ovl")]);
+    var link = graph.Rides.Single().TrackSections.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(graph.UnresolvedReferenceCount, Is.Zero);
+      Assert.That(link.IsResolved, Is.True);
+      Assert.That(link.Reference, Is.EqualTo("Medslope2steepslopechain:tks"));
+      Assert.That(link.Metadata!.InternalName, Is.EqualTo("medslope2steepslope"));
+      Assert.That(link.Source, Is.SameAs(chain));
+      Assert.That(link.Source, Is.Not.SameAs(ordinary));
+    }
+  }
+
+  [Test]
+  public void Resolve_DoesNotAliasMissingChainTargetToMetadataKey() {
+    var ride = RideSource(
+      Ride(
+        [new TrackedRideTrackSection(
+          "Medslope2steepslopechain:tks",
+          "medslope2steepslope",
+          10)],
+        EmptyReferences()),
+      "ride.common.ovl");
+    var ordinary = SectionSource("Medslope2steepslope", "track.common.ovl");
+
+    var graph = TrackedRideTrackResourceGraphResolver.Resolve(
+      [ride],
+      [ordinary],
+      [],
+      [Closure(ride.File.Path, "track.common.ovl")]);
+    var link = graph.Rides.Single().TrackSections.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(graph.UnresolvedReferenceCount, Is.EqualTo(1));
+      Assert.That(link.IsResolved, Is.False);
+      Assert.That(link.Source, Is.Null);
+      Assert.That(link.Reference, Is.EqualTo("Medslope2steepslopechain:tks"));
+    }
+  }
+
+  [TestCase("Section:tks", "sectionchain")]
+  [TestCase("Sectionchained:tks", "section")]
+  [TestCase("Sectionchainextra:tks", "section")]
+  public void Resolve_RejectsNonTerminalOrReverseChainAliases(
+    string reference,
+    string metadata
+  ) {
+    var ride = RideSource(
+      Ride(
+        [new TrackedRideTrackSection(reference, metadata, 10)],
+        EmptyReferences()),
+      "ride.common.ovl");
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      TrackedRideTrackResourceGraphResolver.Resolve(
+        [ride],
+        [],
+        [],
+        [Closure(ride.File.Path)])));
+  }
+
+  [Test]
   public void Resolve_RejectsCaseInsensitiveDuplicateSplineResources() {
     var ride = RideSource(
       Ride(
@@ -386,6 +464,82 @@ public class TrackedRideTrackResourceGraphTests {
         .Select(spline => spline.Source!.File.Path).Distinct(),
         Is.EqualTo(new[] { ridePath }).IgnoreCase);
       Assert.That(graph.UnresolvedReferenceCount, Is.EqualTo(2));
+    }
+  }
+
+  [Test]
+  [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
+  public void Resolve_InstalledWoodenWildMinePreservesNineExactChainTargets() {
+    var root = Environment.GetEnvironmentVariable("RCT3_PATH")!;
+    Assert.That(root, Is.Not.Null.And.Not.Empty, "RCT3_PATH is not configured.");
+    var ridePath = Path.Combine(
+      root,
+      "Tracks",
+      "Coasters",
+      "WoodenWildMine",
+      "WoodenWildMine.common.ovl");
+    var trackPath = Path.Combine(
+      root,
+      "Tracks",
+      "Coasters",
+      "Track21",
+      "Track21.common.ovl");
+    Assert.That(ridePath, Does.Exist, ridePath);
+    Assert.That(trackPath, Does.Exist, trackPath);
+
+    using var rideOvl = Ovl.Load(ridePath);
+    using var trackOvl = Ovl.Load(trackPath);
+    var ride = TrackedRides.Extract(rideOvl).Single(item =>
+      item.Name.Equals("WoodenWildMine", StringComparison.OrdinalIgnoreCase));
+    var sections = TrackSectionSources(trackOvl, TrackSections.Extract(trackOvl));
+    var splines = SplineSources(rideOvl);
+    var rideSource = new TrackedRideTrackResourceSource(
+      FindFile(rideOvl, ride.Name, FileType.TrackedRide, ".unique.ovl"),
+      ride);
+    var allowedTargetPaths = sections.Select(source => source.File.Path)
+      .Concat(splines.Select(source => source.File.Path))
+      .Distinct(StringComparer.OrdinalIgnoreCase)
+      .ToArray();
+
+    var graph = TrackedRideTrackResourceGraphResolver.Resolve(
+      [rideSource],
+      sections,
+      splines,
+      [Closure(rideSource.File.Path, allowedTargetPaths)]);
+    var construction = graph.Rides.Single().TrackSections.Where(section =>
+      section.Role == TrackedRideTrackSectionRole.Construction).ToArray();
+    var chain = construction.Where(section => section.Reference.EndsWith(
+      "chain:tks",
+      StringComparison.OrdinalIgnoreCase)).ToArray();
+    var aliases = chain.Select(section =>
+      $"{section.Reference}|{section.Metadata!.InternalName}")
+      .Order(StringComparer.OrdinalIgnoreCase)
+      .ToArray();
+
+    TestContext.Progress.WriteLine(
+      $"WoodenWildMine: construction={construction.Length}, chain={chain.Length}, " +
+      $"aliases={string.Join(',', aliases)}");
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(ride.TrackSections, Has.Count.EqualTo(22));
+      Assert.That(sections, Has.Count.EqualTo(22));
+      Assert.That(construction, Has.Length.EqualTo(22));
+      Assert.That(construction.All(section => section.IsResolved), Is.True);
+      Assert.That(chain, Has.Length.EqualTo(9));
+      Assert.That(chain.All(section => string.Equals(
+        section.Source!.Resource.Name + ":tks",
+        section.Reference,
+        StringComparison.OrdinalIgnoreCase)), Is.True);
+      Assert.That(aliases, Is.EqualTo(new[] {
+        "Medslope2steepslopechain:tks|medslope2steepslope",
+        "Medslope2straightchain:tks|medslope2straight",
+        "Medslopechain:tks|medslope",
+        "Steepslope2medslopechain:tks|steepslope2medslope",
+        "Steepslope2straightchain:tks|steepslope2straight",
+        "Steepslopechain:tks|steepslope",
+        "Straight2medslopechain:tks|straight2medslope",
+        "Straight2steepslopechain:tks|straight2steepslope",
+        "Straightchain:tks|straight",
+      }.Order(StringComparer.OrdinalIgnoreCase)));
     }
   }
 

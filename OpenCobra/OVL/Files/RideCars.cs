@@ -117,7 +117,7 @@ public sealed record RideCar(
   string Username,
   byte Seating,
   ushort Unused,
-  string Visual,
+  string? Visual,
   float Inertia,
   string? MovingVisual,
   float MovingInertia,
@@ -262,7 +262,7 @@ public static class RideCars {
         description);
     }
 
-    var visual = ReadBaseRef(12, required: true, "body visual");
+    var visual = ReadBaseRef(12, required: false, "body visual");
     var movingVisual = ReadBaseRef(20, required: false, "moving visual");
     var wheels = new RideCarWheelSettings(
       new RideCarVisualPart(
@@ -314,6 +314,11 @@ public static class RideCars {
         ReadInt32(wild, 36),
         ReadUInt32(wild, 40));
     }
+    // Frontier's Elephant transport omits the body SVD because RideCar_Wext.was_ref supplies the
+    // animal visual. No other decoded layout has an authoritative visual source when this is null.
+    if (visual == null && wildSettings?.AnimalSpecies == null)
+      throw Invalid(name,
+        "body visual SymbolRef is missing without a Wild animal species SymbolRef");
     ValidateOwnedReferences(name, owner, expectedReferenceFields, source);
 
     var seatTypes = ReadSeatTypes(
@@ -393,7 +398,7 @@ public static class RideCars {
       username,
       vanilla[8],
       ReadUInt16(vanilla, 10),
-      visual!,
+      visual,
       ReadFiniteSingle(vanilla, 16, name, "body inertia"),
       movingVisual,
       ReadFiniteSingle(vanilla, 28, name, "moving inertia"),

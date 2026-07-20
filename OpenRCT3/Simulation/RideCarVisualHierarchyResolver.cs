@@ -19,6 +19,7 @@ internal enum RideCarVisualHierarchyAnchorSource {
 internal enum RideCarVisualHierarchyPartStatus {
   Resolved,
   VisualNotDeclared,
+  AnimalSpeciesBodyUnsupported,
   VisualUnresolved,
   AxleVisualUnresolved,
   AxleAnchorUnavailable,
@@ -64,7 +65,7 @@ internal sealed record RideCarVisualHierarchyResolution(
   RideCarLink Car,
   RideVisualRole BodyRole,
   RideCarVisualHierarchyPartStatus BodyStatus,
-  RideVisualLink BodyVisual,
+  RideVisualLink? BodyVisual,
   RideCarVisualShapeLink? BodyShapeVisual,
   RideCarVisualHierarchyPart FrontAxle,
   RideCarVisualHierarchyPart RearAxle,
@@ -177,6 +178,8 @@ internal sealed class RideCarVisualHierarchyRegistry {
 /// case-insensitive names and declared-but-unresolved axle identities fail closed and never
 /// authorize the body fallback. Normal and Wild-flipped body SVDs produce separate keyed results;
 /// their anchors are never substituted for one another.
+/// Wild animal-species cars without a body SVD retain a typed unsupported body result; their WAS
+/// reference is never represented as an SVD or shape hierarchy.
 ///
 /// Anchor evidence uses the first resolved BSH LOD in serialized order. This preserves an exact
 /// source without pretending to select the renderer's distance-dependent LOD; the retained
@@ -336,18 +339,17 @@ internal static class RideCarVisualHierarchyResolver {
     Occurrence occurrence,
     IReadOnlyDictionary<RideVisualRole, RideVisualLink> graphVisuals,
     RideVisualRole bodyRole,
-    string bodyReference,
+    string? bodyReference,
     VisualResolution frontAxleVisual,
     VisualResolution rearAxleVisual,
     RideCarVisualHierarchyResolverLimits limits
   ) {
     var car = occurrence.Car.Car!;
-    var body = ResolveVisual(
+    var body = ResolveBodyVisual(
       occurrence,
       graphVisuals,
       bodyRole,
-      bodyReference,
-      required: true);
+      bodyReference);
 
     var frontAxle = ResolveAxle(
       RideVisualRole.FrontAxle,
@@ -423,7 +425,7 @@ internal static class RideCarVisualHierarchyResolver {
       occurrence.Car,
       bodyRole,
       body.Status,
-      body.Visual!,
+      body.Visual,
       body.ShapeVisual,
       frontAxle,
       rearAxle,
@@ -431,6 +433,30 @@ internal static class RideCarVisualHierarchyResolver {
       frontLeftWheel,
       backRightWheel,
       backLeftWheel);
+  }
+
+  private static VisualResolution ResolveBodyVisual(
+    Occurrence occurrence,
+    IReadOnlyDictionary<RideVisualRole, RideVisualLink> graphVisuals,
+    RideVisualRole bodyRole,
+    string? serializedReference
+  ) {
+    if (serializedReference != null)
+      return ResolveVisual(
+        occurrence,
+        graphVisuals,
+        bodyRole,
+        serializedReference,
+        required: true);
+
+    var car = occurrence.Car.Car!;
+    if (bodyRole != RideVisualRole.Body || car.Wild?.AnimalSpecies == null)
+      throw Invalid($"RIC '{occurrence.Car.Reference}' required {bodyRole} is null");
+    if (graphVisuals.ContainsKey(bodyRole))
+      throw Invalid(
+        $"RIC '{occurrence.Car.Reference}' exposes {bodyRole} without a serialized reference");
+    return VisualResolution.Unavailable(
+      RideCarVisualHierarchyPartStatus.AnimalSpeciesBodyUnsupported);
   }
 
   private static int AddGraphOccurrences(

@@ -97,7 +97,9 @@ internal sealed class RideTrainInstanceResourceRegistry {
         throw Invalid(
           $"ride instance {ride.EntryId} train count {ride.NTrains} is outside 0 through " +
           $"{MaximumTrainInstanceCount}");
-      if (ride.Trains.Count != ride.NTrains)
+      // A saved ride can retain its configured train-slot count after every live train instance
+      // has been removed. Once any forward reference exists, the collection must still be complete.
+      if (ride.Trains.Count != 0 && ride.Trains.Count != ride.NTrains)
         throw Invalid(
           $"ride instance {ride.EntryId} declares {ride.NTrains} trains but references " +
           $"{ride.Trains.Count}");

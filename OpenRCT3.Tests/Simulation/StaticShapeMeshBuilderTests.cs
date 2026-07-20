@@ -205,6 +205,35 @@ public class StaticShapeMeshBuilderTests {
       Does.Contain("does not match the 9 retained permutation indices"));
   }
 
+  [Test]
+  public void BuildBatches_InstalledEmptyShapeSentinelReturnsNoRenderBatches() {
+    var shape = new StaticShape(
+      "empty",
+      new Vector3(100_000_000f),
+      new Vector3(-100_000_000f),
+      [],
+      []);
+
+    var batches = StaticShapeMeshBuilder.BuildBatches(shape);
+
+    Assert.That(batches, Is.Empty);
+  }
+
+  [Test]
+  public void BuildBatches_ZeroMeshShapeWithoutInstalledSentinelFailsClosed() {
+    var shape = new StaticShape(
+      "empty",
+      Vector3.Zero,
+      Vector3.One,
+      [],
+      []);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      StaticShapeMeshBuilder.BuildBatches(shape)));
+
+    Assert.That(exception!.Message, Does.Contain("without the installed empty-shape sentinel"));
+  }
+
   private static StaticShape Shape(params StaticShapeMesh[] meshes) => new(
     "shape",
     new Vector3(-1f),

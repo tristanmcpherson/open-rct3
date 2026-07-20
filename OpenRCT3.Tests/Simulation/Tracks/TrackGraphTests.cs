@@ -49,6 +49,43 @@ public class TrackGraphTests {
     Assert.That(graph.Nodes, Has.Count.EqualTo(4));
     Assert.That(graph.Edges, Has.Count.EqualTo(3));
     Assert.That(graph.GetOutgoing(junction), Has.Count.EqualTo(2));
+    Assert.That(graph.Continuity, Is.EqualTo(TrackGraphContinuity.StrictC1));
+  }
+
+  [Test]
+  public void CreateImportedPiecewise_RetainsFramesButRequiresPositionContinuousRails() {
+    var first = new TrackNode("first");
+    var join = new TrackNode("join");
+    var last = new TrackNode("last");
+    var incoming = Piece(
+      Vector3.Zero,
+      new(10f, 0f, 0f),
+      Vector3.UnitX,
+      Vector3.UnitX);
+    TrackPiece Outgoing(Vector3 offset) => Piece(
+      new Vector3(10f, 0f, 0f) + offset,
+      new Vector3(20f, 5f, 0f) + offset,
+      Vector3.UnitY,
+      Vector3.UnitY,
+      startBank: 1f,
+      endBank: 1f);
+    var nodes = new[] { first, join, last };
+    TrackEdge[] Edges(Vector3 offset) => [
+      new("incoming", first, join, incoming),
+      new("outgoing", join, last, Outgoing(offset)),
+    ];
+
+    Assert.Throws<ArgumentException>(new Action(() =>
+      new TrackGraph(nodes, Edges(Vector3.Zero))));
+
+    var imported = TrackGraph.CreateImportedPiecewise(nodes, Edges(Vector3.Zero));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(imported.Continuity, Is.EqualTo(TrackGraphContinuity.ImportedPiecewise));
+      Assert.That(imported.Edges, Has.Count.EqualTo(2));
+      Assert.Throws<ArgumentException>(new Action(() =>
+        TrackGraph.CreateImportedPiecewise(nodes, Edges(new Vector3(0f, 0.01f, 0f)))));
+    }
   }
 
   [Test]

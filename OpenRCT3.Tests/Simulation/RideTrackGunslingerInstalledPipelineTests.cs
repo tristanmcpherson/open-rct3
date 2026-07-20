@@ -6,6 +6,7 @@ using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
 using OpenRCT3.Serialization;
 using OpenRCT3.Simulation;
+using OpenRCT3.Simulation.Tracks;
 
 namespace OpenRCT3.Tests.Simulation;
 
@@ -70,6 +71,8 @@ public class RideTrackGunslingerInstalledPipelineTests {
         [targetRide],
         targetTrains);
       var resources = loaded.Catalog.ResolveAll(park.RideTrackPlacements);
+      var geometry = RideTrackGeometryResolver.Resolve(terrain, park.RideTracks, resources);
+      var resolvedTrack = geometry.Tracks.Single();
       var trackVisuals = RideTrackVisualResourceBridge.Resolve(
         loaded.TrackVisualResources);
       var chainVisuals = trackVisuals.Visuals.Where(visual =>
@@ -108,6 +111,7 @@ public class RideTrackGunslingerInstalledPipelineTests {
         $"trackStaticLods={trackVisuals.StaticLodCount}, " +
         $"trackBoneLods={trackVisuals.BoneLodCount}, " +
         $"trackMeshes={trackVisuals.MeshCount}, " +
+        $"geometry={resolvedTrack.Status}, " +
         $"chainVisuals={chainVisuals.Length}, " +
         $"chainLods={chainVisuals.Sum(visual => visual.Lods.Count)}, " +
         $"chainMeshes={chainVisuals.Sum(visual => visual.Lods.Sum(lod => lod.Materials.Count))}, " +
@@ -136,6 +140,16 @@ public class RideTrackGunslingerInstalledPipelineTests {
           Has.Count.EqualTo(data.TrackedRideInstances.Sum(ride => ride.Trains.Count)));
         Assert.That(loaded.IsComplete, Is.True);
         Assert.That(resources.UnresolvedPlacementCount, Is.Zero);
+        Assert.That(geometry.Tracks, Has.Count.EqualTo(1));
+        Assert.That(geometry.UnsupportedGeometryTrackCount, Is.Zero);
+        Assert.That(geometry.UnsupportedTopologyTrackCount, Is.Zero);
+        Assert.That(resolvedTrack.Status, Is.EqualTo(RideTrackGeometryStatus.Circuit));
+        Assert.That(resolvedTrack.Graph, Is.Null);
+        Assert.That(resolvedTrack.Circuit, Is.Not.Null);
+        Assert.That(resolvedTrack.Circuit!.Continuity,
+          Is.EqualTo(TrackCircuitContinuity.ImportedPiecewise));
+        Assert.That(resolvedTrack.Circuit.Pieces,
+          Has.Count.EqualTo(resources.Placements.Count));
         Assert.That(loaded.Context.LoadedCommonPaths, Has.Count.EqualTo(39));
         Assert.That(trackVisuals.Visuals, Has.Count.EqualTo(22));
         Assert.That(trackVisuals.StaticLodCount, Is.EqualTo(66));
@@ -193,6 +207,65 @@ public class RideTrackGunslingerInstalledPipelineTests {
         Assert.That(chainResource?.File.Type, Is.EqualTo(FileType.TrackSection));
         Assert.That(operatingTrain.HasSavedMotionState, Is.True);
         Assert.That(operatingTrain.Speed, Is.EqualTo(14.1913595f));
+      }
+      VerifyConfiguredEmptyRideOpenTrack(installRoot!, data, configuredEmptyRide);
+    } finally {
+      terrain.TextureCatalog?.Dispose();
+    }
+  }
+
+  private static void VerifyConfiguredEmptyRideOpenTrack(
+    string installRoot,
+    DatTerrainData data,
+    DatTrackedRideInstanceData ride
+  ) {
+    var tracks = data.RideTracks.Where(track =>
+      track.TrackedRideInstance == ride.EntryId).ToArray();
+    var trackIds = tracks.Select(track => track.EntryId).ToHashSet();
+    var segments = data.TrackSegments.Where(segment =>
+      trackIds.Contains(segment.Track)).ToArray();
+    var segmentIds = segments.Select(segment => segment.EntryId).ToHashSet();
+    var pieces = data.TrackPieces.Where(piece =>
+      segmentIds.Contains(piece.Segment)).ToArray();
+    var sceneryIds = pieces.Select(piece => piece.SceneryItem).ToHashSet();
+    var terrain = Terrain.FromData(data);
+    try {
+      var park = new Park(terrain);
+      SceneryManagerLoader.Load(
+        park,
+        terrain,
+        data.SceneryItems.Where(item => sceneryIds.Contains(item.EntryId)).ToArray(),
+        data.SceneryItemPlacements.Where(placement =>
+          sceneryIds.Contains(placement.SceneryItem)).ToArray());
+      RideTrackManagerLoader.Load(park, terrain, pieces);
+      RideTrackTopologyLoader.Load(park, tracks, segments);
+
+      using var loaded = RideTrackResourceCatalogLoader.Load(
+        installRoot,
+        park.RideTrackPlacements,
+        [ride],
+        []);
+      var resources = loaded.Catalog.ResolveAll(park.RideTrackPlacements);
+      var geometry = RideTrackGeometryResolver.Resolve(terrain, park.RideTracks, resources);
+      var resolved = geometry.Tracks.Single();
+
+      TestContext.Progress.WriteLine(
+        $"Gunslinger configured empty ride: ride={ride.EntryId}, " +
+        $"track={resolved.Track.SourceEntryId}, placements={resources.Placements.Count}, " +
+        $"geometry={resolved.Status}");
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(tracks, Has.Length.EqualTo(1));
+        Assert.That(loaded.IsComplete, Is.True);
+        Assert.That(resources.UnresolvedPlacementCount, Is.Zero);
+        Assert.That(geometry.UnsupportedGeometryTrackCount, Is.Zero);
+        Assert.That(geometry.UnsupportedTopologyTrackCount, Is.Zero);
+        Assert.That(resolved.Status, Is.EqualTo(RideTrackGeometryStatus.OpenTrack));
+        Assert.That(resolved.Graph, Is.Not.Null);
+        Assert.That(resolved.Circuit, Is.Null);
+        Assert.That(resolved.Graph!.Continuity,
+          Is.EqualTo(TrackGraphContinuity.ImportedPiecewise));
+        Assert.That(resolved.Graph.Edges,
+          Has.Count.EqualTo(resources.Placements.Count));
       }
     } finally {
       terrain.TextureCatalog?.Dispose();

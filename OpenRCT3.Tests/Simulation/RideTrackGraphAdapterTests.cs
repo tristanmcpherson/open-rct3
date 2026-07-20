@@ -24,6 +24,7 @@ public class RideTrackGraphAdapterTests {
       placement => StraightPiece(placement.SourceEntryId == 500 ? 0f : 1f));
 
     using (Assert.EnterMultipleScope()) {
+      Assert.That(graph.Continuity, Is.EqualTo(TrackGraphContinuity.ImportedPiecewise));
       Assert.That(graph.Nodes.Select(node => node.Id), Is.EqualTo(new[] {
         "track-700-boundary-0",
         "track-700-boundary-1",
@@ -299,27 +300,43 @@ public class RideTrackGraphAdapterTests {
   }
 
   [Test]
-  public void Build_UsesNativeImportDirectionPolicyWithoutRequiringDerivativeMagnitude() {
+  public void Build_PreservesNativePiecewiseFramesWithoutWeakeningPositionClosure() {
     var track = Track([500, 501]);
     var placements = new[] {
       Placement(500, previous: 1697, next: 501),
       Placement(501, previous: 500, next: 1697),
     };
-    var directionOffset = RideTrackGraphAdapter.ImportedJoinDirectionTolerance * 0.99f;
+    TrackPiece CreatePiece(RideTrackPlacement placement, Vector3 offset) =>
+      placement.SourceEntryId == 500
+        ? StraightPiece(0f, Vector3.UnitX)
+        : StraightPiece(
+          1f + offset.X,
+          Vector3.Normalize(new Vector3(1f, 0.1f, 0f)) * 5f);
 
-    Assert.DoesNotThrow(new Action(() => RideTrackGraphAdapter.Build(
+    Assert.Throws<ArgumentException>(new Action(() => new TrackGraph(
+      [new TrackNode("first"), new TrackNode("join"), new TrackNode("last")],
+      [
+        new TrackEdge("first", new TrackNode("first"), new TrackNode("join"),
+          CreatePiece(placements[0], Vector3.Zero)),
+        new TrackEdge("second", new TrackNode("join"), new TrackNode("last"),
+          CreatePiece(placements[1], Vector3.Zero)),
+      ])));
+
+    var graph = RideTrackGraphAdapter.Build(
       track,
       placements,
-      placement => placement.SourceEntryId == 500
-        ? StraightPiece(0f, Vector3.UnitX)
-        : StraightPiece(1f, Vector3.Normalize(new Vector3(1f, directionOffset, 0f)) * 5f))));
+      placement => CreatePiece(placement, Vector3.Zero));
 
-    Assert.Throws<ArgumentException>(new Action(() => RideTrackGraphAdapter.Build(
-      track,
-      placements,
-      placement => placement.SourceEntryId == 500
-        ? StraightPiece(0f, Vector3.UnitX)
-        : StraightPiece(1f, Vector3.Normalize(new Vector3(1f, 0.04f, 0f)) * 5f))));
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(graph.Continuity, Is.EqualTo(TrackGraphContinuity.ImportedPiecewise));
+      Assert.That(graph.Edges, Has.Count.EqualTo(2));
+      Assert.Throws<ArgumentException>(new Action(() => RideTrackGraphAdapter.Build(
+        track,
+        placements,
+        placement => CreatePiece(
+          placement,
+          placement.SourceEntryId == 501 ? new Vector3(0.01f, 0f, 0f) : Vector3.Zero))));
+    }
   }
 
   private static RideTrack Track(

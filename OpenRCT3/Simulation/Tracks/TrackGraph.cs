@@ -18,14 +18,22 @@ public sealed record TrackNode(string Id);
 /// <summary>One graph connection carrying a complete, locally addressable track piece.</summary>
 public sealed record TrackEdge(string Id, TrackNode From, TrackNode To, TrackPiece Piece);
 
+/// <summary>The geometric continuity retained by one directed track graph.</summary>
+public enum TrackGraphContinuity {
+  StrictC1,
+  ImportedPiecewise,
+}
+
 /// <summary>An immutable, validated DAG of dual-rail track pieces.</summary>
 public sealed class TrackGraph {
+  private const float ImportedJoinPositionTolerance = 0.001f;
   private readonly ReadOnlyCollection<TrackNode> nodes;
   private readonly ReadOnlyCollection<TrackEdge> edges;
   private readonly IReadOnlyDictionary<string, ReadOnlyCollection<TrackEdge>> outgoing;
 
   public IReadOnlyList<TrackNode> Nodes => nodes;
   public IReadOnlyList<TrackEdge> Edges => edges;
+  public TrackGraphContinuity Continuity { get; }
 
   public TrackGraph(
     IEnumerable<TrackNode> nodes,
@@ -48,29 +56,52 @@ public sealed class TrackGraph {
     IEnumerable<TrackNode> nodes,
     IEnumerable<TrackEdge> edges,
     TrackJoinValidationPolicy joinValidation
+  ) : this(nodes, edges, joinValidation, TrackGraphContinuity.StrictC1) {
+  }
+
+  private TrackGraph(
+    IEnumerable<TrackNode> nodes,
+    IEnumerable<TrackEdge> edges,
+    TrackJoinValidationPolicy? joinValidation,
+    TrackGraphContinuity continuity
   ) {
     ArgumentNullException.ThrowIfNull(nodes);
     ArgumentNullException.ThrowIfNull(edges);
-    ArgumentNullException.ThrowIfNull(joinValidation);
+    if (continuity == TrackGraphContinuity.StrictC1)
+      ArgumentNullException.ThrowIfNull(joinValidation);
+    else if (continuity != TrackGraphContinuity.ImportedPiecewise)
+      throw new ArgumentOutOfRangeException(nameof(continuity), continuity, null);
 
     var nodeArray = nodes.ToArray();
     var edgeArray = edges.ToArray();
     var nodesById = BuildNodeIndex(nodeArray);
     ValidateEdges(edgeArray, nodesById);
     ValidateAcyclic(nodeArray, edgeArray);
-    ValidateJoins(
-      nodeArray,
-      edgeArray,
-      joinValidation
-    );
+    if (continuity == TrackGraphContinuity.StrictC1)
+      ValidateJoins(nodeArray, edgeArray, joinValidation!);
+    else
+      ValidatePositionJoins(nodeArray, edgeArray, ImportedJoinPositionTolerance);
 
     this.nodes = Array.AsReadOnly(nodeArray);
     this.edges = Array.AsReadOnly(edgeArray);
+    Continuity = continuity;
     outgoing = nodeArray.ToDictionary(
       node => node.Id,
       node => Array.AsReadOnly(edgeArray.Where(edge => edge.From.Id == node.Id).ToArray())
     );
   }
+
+  /// <summary>
+  /// Creates a native-style DAG from exact DAT links and position-continuous piece seams.
+  /// </summary>
+  /// <remarks>
+  /// Imported RCT3 tracks retain each piece's endpoint tangent and bank instead of manufacturing a
+  /// blended frame at a boundary. Topology, endpoint positions, and rail identity remain strict.
+  /// </remarks>
+  internal static TrackGraph CreateImportedPiecewise(
+    IEnumerable<TrackNode> nodes,
+    IEnumerable<TrackEdge> edges
+  ) => new(nodes, edges, null, TrackGraphContinuity.ImportedPiecewise);
 
   public IReadOnlyList<TrackEdge> GetOutgoing(TrackNode node) {
     ArgumentNullException.ThrowIfNull(node);
@@ -154,6 +185,49 @@ public sealed class TrackGraph {
       foreach (var actual in endpoints.Skip(1))
         ValidateJoin(expected, actual, validation, node.Id);
     }
+  }
+
+  private static void ValidatePositionJoins(
+    IEnumerable<TrackNode> nodes,
+    IReadOnlyList<TrackEdge> edges,
+    float positionTolerance
+  ) {
+    foreach (var node in nodes) {
+      var endpoints = edges
+        .Where(edge => edge.From.Id == node.Id || edge.To.Id == node.Id)
+        .Select(edge => edge.From.Id == node.Id ? edge.Piece.Entry : edge.Piece.Exit)
+        .ToArray();
+      if (endpoints.Length < 2) continue;
+
+      var expected = endpoints[0];
+      foreach (var actual in endpoints.Skip(1)) {
+        ValidateRailPositionJoin(
+          expected.Left,
+          actual.Left,
+          positionTolerance,
+          node.Id,
+          RailSide.Left);
+        ValidateRailPositionJoin(
+          expected.Right,
+          actual.Right,
+          positionTolerance,
+          node.Id,
+          RailSide.Right);
+      }
+    }
+  }
+
+  private static void ValidateRailPositionJoin(
+    RailEndpoint expected,
+    RailEndpoint actual,
+    float positionTolerance,
+    string nodeId,
+    RailSide side
+  ) {
+    if (TrackMath.Distance(expected.Position, actual.Position) > positionTolerance)
+      throw new ArgumentException(
+        $"Imported track pieces do not form a position-continuous {side} rail join at node " +
+        $"'{nodeId}'.");
   }
 
   private static void ValidateJoin(

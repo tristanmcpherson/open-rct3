@@ -30,13 +30,9 @@ internal static class RideTrackGraphAdapter {
   // RCT3.exe's paired TKS evaluator at 0x00F62070 samples each car spline by its own arc distance
   // and normalizes the resulting direction. BoxOffice's 432 rail joins have a maximum normalized
   // direction delta of 0.031452168, but 410 raw derivative magnitudes differ because each SPL has
-  // an independent parameterization. Keep this evidence-backed exception local to DAT imports.
+  // an independent parameterization. Keep this evidence-backed exception local to DAT imports by
+  // retaining piece-local frames across exact, position-continuous DAT seams.
   internal const float ImportedJoinDirectionTolerance = 0.032f;
-  private static readonly TrackJoinValidationPolicy ImportedJoinValidation = new(
-    positionTolerance: 0.001f,
-    tangentDirectionTolerance: ImportedJoinDirectionTolerance,
-    tangentMagnitudeTolerance: null,
-    bankToleranceRadians: 0.001f);
 
   public static TrackGraph Build(
     RideTrack track,
@@ -69,7 +65,7 @@ internal static class RideTrackGraphAdapter {
         piece);
     }
 
-    return new TrackGraph(nodes, edges, ImportedJoinValidation);
+    return TrackGraph.CreateImportedPiecewise(nodes, edges);
   }
 
   /// <summary>Adapts one link-derived cyclic piece order into a closed track circuit.</summary>

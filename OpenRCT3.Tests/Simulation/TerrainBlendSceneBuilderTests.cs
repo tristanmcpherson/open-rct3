@@ -274,6 +274,43 @@ public class TerrainBlendSceneBuilderTests {
   }
 
   [Test]
+  public void Build_ModelPreloadedWithCreatedMaterialReleasesItThroughTheModel() {
+    var terrain = NewTerrain(1, 1, (_, _) => 1);
+    var mesh = NewMesh("surface");
+    var texture = NewTexture("surface");
+    TerrainBlend? material = null;
+    var directMaterialCleanup = 0;
+    var modelCleanup = 0;
+    var operations = Operations(
+      [new TerrainBlendLayerMeshBatch(TerrainBlendLayerPassRole.Base, 1, mesh)],
+      new Dictionary<byte, Texture> { [1] = texture }) with {
+      CreateMaterial = pass => material = new TerrainBlend(pass),
+      CreateModel = source => new Model(source) { Material = material },
+      DisposeMaterial = resource => {
+        directMaterialCleanup++;
+        resource.Dispose();
+      },
+      DisposeModel = model => {
+        modelCleanup++;
+        model.Dispose();
+      },
+    };
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      TerrainBlendSceneBuilder.Build(
+        terrain, Vector4.One, "Preloaded Material", operations)));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error!.Message, Does.Contain("fresh model"));
+      Assert.That(modelCleanup, Is.EqualTo(1));
+      Assert.That(directMaterialCleanup, Is.Zero);
+      Assert.That(material!.State, Is.EqualTo(State.Disposed));
+      Assert.That(mesh.State, Is.EqualTo(State.Disposed));
+    }
+    texture.Dispose();
+  }
+
+  [Test]
   public void Build_ModelMustAdoptTheExactLayerMesh() {
     var terrain = NewTerrain(1, 1, (_, _) => 1);
     var layerMesh = NewMesh("layer");

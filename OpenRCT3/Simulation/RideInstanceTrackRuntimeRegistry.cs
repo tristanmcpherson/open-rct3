@@ -9,6 +9,16 @@ using System.Linq;
 
 namespace OpenRCT3.Simulation;
 
+/// <summary>One exact TrackSegment circuit paired with its immutable runtime traversal.</summary>
+internal sealed record RideTrackSegmentCircuitTraversal(
+  RideTrackSegmentCircuit Geometry,
+  TrackCircuitTraversal Traversal
+) {
+  public ulong SegmentSourceEntryId => Geometry.SegmentSourceEntryId;
+  public IReadOnlyList<ulong> PieceSourceEntryIds => Geometry.PieceSourceEntryIds;
+  public TrackCircuit Circuit => Geometry.Circuit;
+}
+
 /// <summary>One exact DAT ride instance composed with its typed runtime track outcome.</summary>
 internal sealed record RideInstanceTrackRuntimeEntry(
   int DatInstanceIndex,
@@ -25,7 +35,17 @@ internal sealed record RideInstanceTrackRuntimeEntry(
   public RideTrackGeometryStatus Status => Geometry.Status;
   public TrackGraph? Graph => Geometry.Graph;
   public TrackCircuit? Circuit => Geometry.Circuit;
-  public bool IsResolved => GraphTraversal != null || CircuitTraversal != null;
+  public IReadOnlyList<RideTrackSegmentCircuitTraversal> SegmentCircuitTraversals {
+    get;
+    init;
+  } = CircuitTraversal is null || Geometry?.SegmentCircuits?.Count != 1
+    ? Array.Empty<RideTrackSegmentCircuitTraversal>()
+    : Array.AsReadOnly(new[] {
+      new RideTrackSegmentCircuitTraversal(
+        Geometry.SegmentCircuits[0],
+        CircuitTraversal),
+    });
+  public bool IsResolved => GraphTraversal != null || SegmentCircuitTraversals?.Count > 0;
 }
 
 /// <summary>
@@ -41,6 +61,7 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
   public int ResolvedTrackCount { get; }
   public int OpenTrackCount { get; }
   public int CircuitTrackCount { get; }
+  public int MultiCircuitTrackCount { get; }
   public int UnresolvedResourceTrackCount { get; }
   public int UnsupportedGeometryTrackCount { get; }
   public int UnsupportedTopologyTrackCount { get; }
@@ -49,6 +70,7 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
     RideInstanceTrackRuntimeEntry[] entries,
     int openTrackCount,
     int circuitTrackCount,
+    int multiCircuitTrackCount,
     int unresolvedResourceTrackCount,
     int unsupportedGeometryTrackCount,
     int unsupportedTopologyTrackCount
@@ -56,7 +78,8 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
     Entries = Array.AsReadOnly(entries);
     OpenTrackCount = openTrackCount;
     CircuitTrackCount = circuitTrackCount;
-    ResolvedTrackCount = openTrackCount + circuitTrackCount;
+    MultiCircuitTrackCount = multiCircuitTrackCount;
+    ResolvedTrackCount = openTrackCount + circuitTrackCount + multiCircuitTrackCount;
     UnresolvedResourceTrackCount = unresolvedResourceTrackCount;
     UnsupportedGeometryTrackCount = unsupportedGeometryTrackCount;
     UnsupportedTopologyTrackCount = unsupportedTopologyTrackCount;
@@ -95,6 +118,7 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
       (int DatTrackIndex, RideTrackGeometryLink Link)>(geometry.Tracks.Count);
     var openCount = 0;
     var circuitCount = 0;
+    var multiCircuitCount = 0;
     var unresolvedCount = 0;
     var unsupportedGeometryCount = 0;
     var unsupportedTopologyCount = 0;
@@ -105,6 +129,7 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
         index,
         ref openCount,
         ref circuitCount,
+        ref multiCircuitCount,
         ref unresolvedCount,
         ref unsupportedGeometryCount,
         ref unsupportedTopologyCount);
@@ -112,7 +137,7 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
         throw Invalid($"geometry track ID {link.Track.SourceEntryId} is duplicated");
     }
 
-    var advertisedCount = Convert.ToInt64(openCount + circuitCount)
+    var advertisedCount = Convert.ToInt64(openCount + circuitCount + multiCircuitCount)
       + geometry.UnresolvedResourceTrackCount
       + geometry.UnsupportedGeometryTrackCount
       + geometry.UnsupportedTopologyTrackCount;
@@ -166,22 +191,83 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
       var circuitTraversal = item.Geometry.Status == RideTrackGeometryStatus.Circuit
         ? new TrackCircuitTraversal(item.Geometry.Circuit!)
         : null;
+      IReadOnlyList<RideTrackSegmentCircuitTraversal> segmentCircuitTraversals;
+      if (circuitTraversal != null) {
+        segmentCircuitTraversals = Array.AsReadOnly(new[] {
+          new RideTrackSegmentCircuitTraversal(
+            item.Geometry.SegmentCircuits[0],
+            circuitTraversal),
+        });
+      } else if (item.Geometry.Status == RideTrackGeometryStatus.MultiCircuit) {
+        segmentCircuitTraversals = Array.AsReadOnly(item.Geometry.SegmentCircuits
+          .Select(segment => new RideTrackSegmentCircuitTraversal(
+            segment,
+            new TrackCircuitTraversal(segment.Circuit)))
+          .ToArray());
+      } else {
+        segmentCircuitTraversals = Array.Empty<RideTrackSegmentCircuitTraversal>();
+      }
       entries[index] = new(
         item.DatInstanceIndex,
         item.DatTrackIndex,
         item.Identity,
         item.Geometry,
         graphTraversal,
-        circuitTraversal);
+        circuitTraversal) {
+        SegmentCircuitTraversals = segmentCircuitTraversals,
+      };
     }
 
     return new(
       entries,
       openCount,
       circuitCount,
+      multiCircuitCount,
       unresolvedCount,
       unsupportedGeometryCount,
       unsupportedTopologyCount);
+  }
+
+  private static void ValidateSegmentCircuits(
+    RideTrackGeometryLink link,
+    int expectedMinimumCount,
+    int? expectedMaximumCount
+  ) {
+    var segmentCircuits = link.SegmentCircuits;
+    if (segmentCircuits is null || segmentCircuits.Count < expectedMinimumCount ||
+        (expectedMaximumCount != null && segmentCircuits.Count > expectedMaximumCount))
+      throw Invalid(
+        $"circuit track {link.Track.SourceEntryId} has an invalid segment-circuit count");
+    if (!segmentCircuits.Select(segment => segment?.SegmentSourceEntryId ?? 0ul)
+      .SequenceEqual(link.Track.SegmentSourceEntryIds))
+      throw Invalid(
+        $"circuit track {link.Track.SourceEntryId} changed exact TrackSegment order");
+
+    var pieceIds = new HashSet<ulong>();
+    var flattenedPieceIds = new List<ulong>();
+    foreach (var segment in segmentCircuits) {
+      if (segment?.Circuit is null || segment.PieceSourceEntryIds is null ||
+          segment.PieceSourceEntryIds.Count == 0 ||
+          segment.PieceSourceEntryIds.Count != segment.Circuit.Pieces.Count)
+        throw Invalid(
+          $"circuit track {link.Track.SourceEntryId} contains incomplete segment geometry");
+      foreach (var index in Enumerable.Range(0, segment.PieceSourceEntryIds.Count)) {
+        var pieceId = segment.PieceSourceEntryIds[index];
+        var piece = segment.Circuit.Pieces[index];
+        if (pieceId == 0 || !pieceIds.Add(pieceId) || piece?.Piece is null ||
+            !string.Equals(piece.Id, $"track-piece-{pieceId}", StringComparison.Ordinal))
+          throw Invalid(
+            $"circuit track {link.Track.SourceEntryId} changed exact TrackPiece identity");
+        flattenedPieceIds.Add(pieceId);
+      }
+    }
+    if (!flattenedPieceIds.SequenceEqual(link.Track.TrackPieceSourceEntryIds))
+      throw Invalid(
+        $"circuit track {link.Track.SourceEntryId} changed authoritative TrackPiece order");
+    if (link.Circuit != null &&
+        !ReferenceEquals(link.Circuit, segmentCircuits[0].Circuit))
+      throw Invalid(
+        $"circuit track {link.Track.SourceEntryId} changed singular circuit identity");
   }
 
   private static void ValidateGeometryLink(
@@ -189,6 +275,7 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
     int index,
     ref int openCount,
     ref int circuitCount,
+    ref int multiCircuitCount,
     ref int unresolvedCount,
     ref int unsupportedGeometryCount,
     ref int unsupportedTopologyCount
@@ -197,16 +284,26 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
       throw Invalid($"geometry track {index} is incomplete");
     switch (link.Status) {
       case RideTrackGeometryStatus.OpenTrack:
-        if (link.Graph is null || link.Circuit != null)
+        if (link.Graph is null || link.Circuit != null ||
+            link.SegmentCircuits?.Count != 0)
           throw Invalid(
             $"open track {link.Track.SourceEntryId} has inconsistent geometry");
         openCount++;
         break;
       case RideTrackGeometryStatus.Circuit:
-        if (link.Circuit is null || link.Graph != null)
+        if (link.Circuit is null || link.Graph != null ||
+            link.SegmentCircuits?.Count != 1 ||
+            !ReferenceEquals(link.SegmentCircuits[0].Circuit, link.Circuit))
           throw Invalid(
             $"circuit {link.Track.SourceEntryId} has inconsistent geometry");
         circuitCount++;
+        break;
+      case RideTrackGeometryStatus.MultiCircuit:
+        if (link.Circuit != null || link.Graph != null)
+          throw Invalid(
+            $"multi-circuit track {link.Track.SourceEntryId} has singular geometry");
+        ValidateSegmentCircuits(link, expectedMinimumCount: 2, expectedMaximumCount: null);
+        multiCircuitCount++;
         break;
       case RideTrackGeometryStatus.UnresolvedResources:
         ValidateSkipped(link);
@@ -251,11 +348,22 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
     RideInstanceTrackRuntimeRegistryLimits limits,
     ref ulong pieceCount
   ) {
-    var addition = geometry.Status switch {
-      RideTrackGeometryStatus.OpenTrack => geometry.Graph!.Edges.Count,
-      RideTrackGeometryStatus.Circuit => geometry.Circuit!.Pieces.Count,
-      _ => 0,
-    };
+    if (geometry.Status == RideTrackGeometryStatus.OpenTrack) {
+      ReservePieceCount(geometry.Graph!.Edges.Count, limits, ref pieceCount);
+      return;
+    }
+    if (geometry.Status is not (
+      RideTrackGeometryStatus.Circuit or RideTrackGeometryStatus.MultiCircuit))
+      return;
+    foreach (var segment in geometry.SegmentCircuits)
+      ReservePieceCount(segment.Circuit.Pieces.Count, limits, ref pieceCount);
+  }
+
+  private static void ReservePieceCount(
+    int addition,
+    RideInstanceTrackRuntimeRegistryLimits limits,
+    ref ulong pieceCount
+  ) {
     var count = Convert.ToUInt64(addition);
     var maximum = Convert.ToUInt64(limits.MaximumPieceCount);
     if (count > maximum || pieceCount > maximum - count)
@@ -264,7 +372,8 @@ internal sealed class RideInstanceTrackRuntimeRegistry {
   }
 
   private static void ValidateSkipped(RideTrackGeometryLink link) {
-    if (link.Graph != null || link.Circuit != null || link.IsResolved)
+    if (link.Graph != null || link.Circuit != null ||
+        link.SegmentCircuits?.Count != 0 || link.IsResolved)
       throw Invalid(
         $"skipped track {link.Track.SourceEntryId} unexpectedly contains resolved geometry");
   }

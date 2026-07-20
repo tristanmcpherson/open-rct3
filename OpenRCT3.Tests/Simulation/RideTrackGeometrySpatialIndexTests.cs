@@ -77,6 +77,41 @@ public class RideTrackGeometrySpatialIndexTests {
   }
 
   [Test]
+  public void Build_UnionsSeparateMultiCircuitBoundsWithoutJoiningTraversals() {
+    var track = MultiCircuitTrack();
+    var first = Circuit(10f, 900, 901);
+    var second = Circuit(30f, 902, 903);
+    var link = new RideTrackGeometryLink(
+      track,
+      RideTrackGeometryStatus.MultiCircuit,
+      Graph: null,
+      Circuit: null) {
+      SegmentCircuits = [
+        new(800, Array.AsReadOnly(new ulong[] { 900, 901 }), first),
+        new(801, Array.AsReadOnly(new ulong[] { 902, 903 }), second),
+      ],
+    };
+    var resolution = new RideTrackGeometryResolution(
+      [link],
+      UnresolvedResourceTrackCount: 0,
+      UnsupportedGeometryTrackCount: 0,
+      UnsupportedTopologyTrackCount: 0);
+
+    var entry = RideTrackGeometrySpatialIndex.Build(resolution).Entries.Single();
+    var firstBounds = TrackBoundsBuilder.FromCircuit(first);
+    var secondBounds = TrackBoundsBuilder.FromCircuit(second);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(entry.Status, Is.EqualTo(RideTrackGeometryStatus.MultiCircuit));
+      Assert.That(entry.Bounds.Min,
+        Is.EqualTo(Vector3.Min(firstBounds.Min, secondBounds.Min)));
+      Assert.That(entry.Bounds.Max,
+        Is.EqualTo(Vector3.Max(firstBounds.Max, secondBounds.Max)));
+      Assert.That(first, Is.Not.SameAs(second));
+    }
+  }
+
+  [Test]
   public void Build_RejectsOutcomeCountsThatDoNotConserveTracks() {
     var resolution = new RideTrackGeometryResolution(
       [Link(Track(700), RideTrackGeometryStatus.UnresolvedResources)],
@@ -140,6 +175,23 @@ public class RideTrackGeometrySpatialIndexTests {
     flippedTrackSections: null,
     tunnelLightColour: null);
 
+  private static RideTrack MultiCircuitTrack() => new(
+    sourceEntryId: 700,
+    direction: 0,
+    firstSegmentSourceEntryId: 800,
+    lastSegmentSourceEntryId: 801,
+    isCircuit: null,
+    prototype: true,
+    hasSerializedTrackPieceOrder: true,
+    trackPieceSourceEntryIds: [900, 901, 902, 903],
+    segmentSourceEntryIds: [800, 801],
+    flexiColour0: 0,
+    flexiColour1: 0,
+    flexiColour2: 0,
+    trackedRideInstanceReference: 1_000,
+    flippedTrackSections: null,
+    tunnelLightColour: null);
+
   private static TrackGraph Graph(float startX, float endX) {
     var start = new TrackNode($"start-{startX}");
     var end = new TrackNode($"end-{endX}");
@@ -157,6 +209,19 @@ public class RideTrackGeometrySpatialIndexTests {
   private static TrackCircuit Circuit(float offsetX) => new([
     new TrackCircuitPiece("first", HalfCircuit(offsetX, first: true)),
     new TrackCircuitPiece("second", HalfCircuit(offsetX, first: false)),
+  ]);
+
+  private static TrackCircuit Circuit(
+    float offsetX,
+    ulong firstPieceId,
+    ulong secondPieceId
+  ) => new([
+    new TrackCircuitPiece(
+      $"track-piece-{firstPieceId}",
+      HalfCircuit(offsetX, first: true)),
+    new TrackCircuitPiece(
+      $"track-piece-{secondPieceId}",
+      HalfCircuit(offsetX, first: false)),
   ]);
 
   private static TrackPiece HalfCircuit(float offsetX, bool first) {

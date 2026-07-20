@@ -125,6 +125,71 @@ public class RideCarInstanceRuntimeRegistryTests {
   }
 
   [Test]
+  public void Build_BindsSavedPiecesToTheirExactMultiCircuitSegment() {
+    var ride = Instance(900, 700, [1_000]);
+    var train = Train(1_000, ride, 0, [2_000]);
+    var car = Car(
+      2_000,
+      train.EntryId,
+      whichCar: 0,
+      RideTrainCarRole.Front,
+      trackPiece: 712,
+      rearTrackPiece: 713);
+    var track = new RideTrack(
+      sourceEntryId: ride.Track,
+      direction: 0,
+      firstSegmentSourceEntryId: 800,
+      lastSegmentSourceEntryId: 801,
+      isCircuit: null,
+      prototype: true,
+      hasSerializedTrackPieceOrder: true,
+      trackPieceSourceEntryIds: [710, 711, 712, 713],
+      segmentSourceEntryIds: [800, 801],
+      flexiColour0: 0,
+      flexiColour1: 0,
+      flexiColour2: 0,
+      trackedRideInstanceReference: ride.EntryId,
+      flippedTrackSections: null,
+      tunnelLightColour: null);
+    var first = Circuit(0f, 710, 711);
+    var second = Circuit(10f, 712, 713);
+    var geometry = new RideTrackGeometryLink(
+      track,
+      RideTrackGeometryStatus.MultiCircuit,
+      Graph: null,
+      Circuit: null) {
+      SegmentCircuits = [
+        new(800, Array.AsReadOnly(new ulong[] { 710, 711 }), first),
+        new(801, Array.AsReadOnly(new ulong[] { 712, 713 }), second),
+      ],
+    };
+    var trackRuntime = RideInstanceTrackRuntimeRegistry.Build(
+      RideInstanceTrackGraph.Build([ride], [track]),
+      new RideTrackGeometryResolution(
+        [geometry],
+        UnresolvedResourceTrackCount: 0,
+        UnsupportedGeometryTrackCount: 0,
+        UnsupportedTopologyTrackCount: 0));
+    var trainRuntime = RideInstanceTrainRuntimeRegistry.Build(
+      trackRuntime,
+      RideTrainInstanceResourceRegistry.Build([ride], [train], []));
+
+    var entry = RideCarInstanceRuntimeRegistry.Build(trainRuntime, [car]).Entries.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(entry.TrackStatus, Is.EqualTo(RideTrackGeometryStatus.MultiCircuit));
+      Assert.That(entry.TrackPiece.PieceIndex, Is.EqualTo(0));
+      Assert.That(entry.TrackPiece.CircuitIndex, Is.EqualTo(1));
+      Assert.That(entry.TrackPiece.SegmentSourceEntryId, Is.EqualTo(801));
+      Assert.That(entry.TrackPiece.Piece, Is.SameAs(second.Pieces[0].Piece));
+      Assert.That(entry.RearTrackPiece.PieceIndex, Is.EqualTo(1));
+      Assert.That(entry.RearTrackPiece.CircuitIndex, Is.EqualTo(1));
+      Assert.That(entry.RearTrackPiece.SegmentSourceEntryId, Is.EqualTo(801));
+      Assert.That(entry.RearTrackPiece.Piece, Is.SameAs(second.Pieces[1].Piece));
+    }
+  }
+
+  [Test]
   public void Build_RetainsCarFromUnreferencedTrainWithoutInventingRuntimeOwner() {
     var ride = Instance(900, 700, []);
     var unreferencedTrain = Train(1_000, ride, 0, [2_000]);
@@ -513,6 +578,43 @@ public class RideCarInstanceRuntimeRegistryTests {
         tangent,
         end + halfGauge,
         tangent,
+        0f),
+    ]));
+  }
+
+  private static TrackCircuit Circuit(
+    float offsetX,
+    ulong firstPieceId,
+    ulong secondPieceId
+  ) => new([
+    new TrackCircuitPiece(
+      $"track-piece-{firstPieceId}",
+      HalfCircuit(offsetX, first: true)),
+    new TrackCircuitPiece(
+      $"track-piece-{secondPieceId}",
+      HalfCircuit(offsetX, first: false)),
+  ]);
+
+  private static TrackPiece HalfCircuit(float offsetX, bool first) {
+    var offset = Vector3.UnitX * offsetX;
+    var start = offset + (first ? Vector3.UnitX : -Vector3.UnitX);
+    var end = offset - (first ? Vector3.UnitX : -Vector3.UnitX);
+    var startTangent = first ? Vector3.UnitY * 3f : -Vector3.UnitY * 3f;
+    var halfGauge = Vector3.UnitZ * 0.5f;
+    return new(TrackPieceGeometry.FromHandAuthored([
+      new RailControlPair(
+        0f,
+        start - halfGauge,
+        startTangent,
+        start + halfGauge,
+        startTangent,
+        0f),
+      new RailControlPair(
+        1f,
+        end - halfGauge,
+        -startTangent,
+        end + halfGauge,
+        -startTangent,
         0f),
     ]));
   }

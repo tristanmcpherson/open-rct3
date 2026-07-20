@@ -128,6 +128,9 @@ public class RideTrackInstalledPipelineTests {
           loaded.RideResources.CarVisuals.UnresolvedShapeReferenceCount,
           Is.Zero);
         Assert.That(savedTrainLink.RideInstanceEntryId, Is.EqualTo(3_986));
+        Assert.That(
+          savedTrainLink.RideInstance.CarFlexiColours,
+          Is.EqualTo(new DatSceneryFlexiColour(6, 18, 25)));
         Assert.That(savedTrainLink.TrainInstanceEntryId, Is.EqualTo(3_987));
         Assert.That(savedTrainLink.Ordinal, Is.Zero);
         Assert.That(savedTrainLink.WhichTrain, Is.Zero);
@@ -287,11 +290,8 @@ public class RideTrackInstalledPipelineTests {
           carScene = RideCarStaticSceneBuilder.Build(
             variantCars,
             (entry, batch) => {
-              var track = entry.CarRuntime.TrainRuntime.TrackRuntime.Track!;
-              var colours = SceneryFlexiColours.FromSerialized(
-                track.FlexiColour0,
-                track.FlexiColour1,
-                track.FlexiColour2);
+              var colours = RideCarVisualMaterialResolver.ResolveSavedCarColours(
+                entry.CarRuntime);
               return visualMaterials.Resolve(
                 batch,
                 entry.BodyTemplate!.Link.Car.Source!.AllowedArchivePaths,

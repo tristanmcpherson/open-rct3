@@ -152,6 +152,59 @@ public class RideInstanceTrackSpatialQueryTests {
       query.Query(new Vector3(float.NaN, 0f, 0f), 1)));
   }
 
+  [Test]
+  public void Query_MapsMultiCircuitBoundsToExactRuntimeEntry() {
+    var track = new RideTrack(
+      sourceEntryId: 700,
+      direction: 0,
+      firstSegmentSourceEntryId: 800,
+      lastSegmentSourceEntryId: 801,
+      isCircuit: null,
+      prototype: true,
+      hasSerializedTrackPieceOrder: true,
+      trackPieceSourceEntryIds: [900, 901, 902, 903],
+      segmentSourceEntryIds: [800, 801],
+      flexiColour0: 0,
+      flexiColour1: 0,
+      flexiColour2: 0,
+      trackedRideInstanceReference: 1_000,
+      flippedTrackSections: null,
+      tunnelLightColour: null);
+    var first = Circuit(0f, 900, 901);
+    var second = Circuit(10f, 902, 903);
+    var link = new RideTrackGeometryLink(
+      track,
+      RideTrackGeometryStatus.MultiCircuit,
+      Graph: null,
+      Circuit: null) {
+      SegmentCircuits = [
+        new(800, Array.AsReadOnly(new ulong[] { 900, 901 }), first),
+        new(801, Array.AsReadOnly(new ulong[] { 902, 903 }), second),
+      ],
+    };
+    var geometry = new RideTrackGeometryResolution(
+      [link],
+      UnresolvedResourceTrackCount: 0,
+      UnsupportedGeometryTrackCount: 0,
+      UnsupportedTopologyTrackCount: 0);
+    var runtime = RideInstanceTrackRuntimeRegistry.Build(
+      RideInstanceTrackGraph.Build([Instance(1_000, 700)], [track]),
+      geometry);
+    var query = RideInstanceTrackSpatialQuery.Build(
+      runtime,
+      RideTrackGeometrySpatialIndex.Build(geometry));
+
+    var hit = query.Query(new Vector3(10f, 0f, 0f), 1).Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(hit.Runtime, Is.SameAs(runtime.Entries.Single()));
+      Assert.That(hit.Runtime.Status, Is.EqualTo(RideTrackGeometryStatus.MultiCircuit));
+      Assert.That(hit.SpatialEntry.Status,
+        Is.EqualTo(RideTrackGeometryStatus.MultiCircuit));
+      Assert.That(hit.ContainsPoint, Is.True);
+    }
+  }
+
   private static RideTrackGeometryLink Link(
     RideTrack track,
     RideTrackGeometryStatus status,
@@ -203,6 +256,43 @@ public class RideInstanceTrackSpatialQueryTests {
       Pair(0f, new Vector3(startX, 0f, 0f)),
       Pair(1f, new Vector3(endX, 0f, 0f)),
     ]));
+
+  private static TrackCircuit Circuit(
+    float offsetX,
+    ulong firstPieceId,
+    ulong secondPieceId
+  ) => new([
+    new TrackCircuitPiece(
+      $"track-piece-{firstPieceId}",
+      HalfCircuit(offsetX, first: true)),
+    new TrackCircuitPiece(
+      $"track-piece-{secondPieceId}",
+      HalfCircuit(offsetX, first: false)),
+  ]);
+
+  private static TrackPiece HalfCircuit(float offsetX, bool first) {
+    var offset = Vector3.UnitX * offsetX;
+    var start = offset + (first ? Vector3.UnitX : -Vector3.UnitX);
+    var end = offset - (first ? Vector3.UnitX : -Vector3.UnitX);
+    var startTangent = first ? Vector3.UnitY * 3f : -Vector3.UnitY * 3f;
+    var halfGauge = Vector3.UnitZ * 0.5f;
+    return new(TrackPieceGeometry.FromHandAuthored([
+      new RailControlPair(
+        0f,
+        start - halfGauge,
+        startTangent,
+        start + halfGauge,
+        startTangent,
+        0f),
+      new RailControlPair(
+        1f,
+        end - halfGauge,
+        -startTangent,
+        end + halfGauge,
+        -startTangent,
+        0f),
+    ]));
+  }
 
   private static RailControlPair Pair(float parameter, Vector3 center) => new(
     parameter,

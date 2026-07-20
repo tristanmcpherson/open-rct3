@@ -91,6 +91,45 @@ public class RideTrackDiagnosticSceneBuilderTests {
   }
 
   [Test]
+  public void Build_RendersAllMultiCircuitPiecesInOneDiagnosticModel() {
+    var track = MultiCircuitTrack();
+    var first = Circuit(0f, 900, 901);
+    var second = Circuit(10f, 902, 903);
+    var link = new RideTrackGeometryLink(
+      track,
+      RideTrackGeometryStatus.MultiCircuit,
+      Graph: null,
+      Circuit: null) {
+      SegmentCircuits = [
+        new(800, Array.AsReadOnly(new ulong[] { 900, 901 }), first),
+        new(801, Array.AsReadOnly(new ulong[] { 902, 903 }), second),
+      ],
+    };
+    var resolution = new RideTrackGeometryResolution(
+      [link],
+      UnresolvedResourceTrackCount: 0,
+      UnsupportedGeometryTrackCount: 0,
+      UnsupportedTopologyTrackCount: 0);
+
+    var result = RideTrackDiagnosticSceneBuilder.Build(resolution);
+    try {
+      var expectedSamples = first.Pieces.Concat(second.Pieces)
+        .Sum(piece => piece.Piece.BakedSampleCount);
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(result.ResolvedTrackCount, Is.EqualTo(1));
+        Assert.That(result.Models, Has.Count.EqualTo(1));
+        Assert.That(result.Models[0].Mesh.Name,
+          Is.EqualTo("Ride Track 700 (diagnostic contact rails)"));
+        Assert.That(result.Models[0].Mesh.Vertices.Count,
+          Is.EqualTo(expectedSamples * 8));
+        Assert.That(first, Is.Not.SameAs(second));
+      }
+    } finally {
+      foreach (var model in result.Models) model.Dispose();
+    }
+  }
+
+  [Test]
   public void Build_RejectsTrackListsOverTheHardBound() {
     var resolution = new RideTrackGeometryResolution(
       new OversizedTrackList(),
@@ -123,6 +162,19 @@ public class RideTrackDiagnosticSceneBuilderTests {
       new TrackCircuitPiece("second", HalfCircuit(first: false)),
     ]);
 
+  private static TrackCircuit Circuit(
+    float offsetX,
+    ulong firstPieceId,
+    ulong secondPieceId
+  ) => new([
+    new TrackCircuitPiece(
+      $"track-piece-{firstPieceId}",
+      HalfCircuit(offsetX, first: true)),
+    new TrackCircuitPiece(
+      $"track-piece-{secondPieceId}",
+      HalfCircuit(offsetX, first: false)),
+  ]);
+
   private static RideTrack Track(ulong sourceEntryId, bool? isCircuit = null) => new(
     sourceEntryId,
     direction: 0,
@@ -140,6 +192,23 @@ public class RideTrackDiagnosticSceneBuilderTests {
     flippedTrackSections: null,
     tunnelLightColour: null);
 
+  private static RideTrack MultiCircuitTrack() => new(
+    sourceEntryId: 700,
+    direction: 0,
+    firstSegmentSourceEntryId: 800,
+    lastSegmentSourceEntryId: 801,
+    isCircuit: null,
+    prototype: true,
+    hasSerializedTrackPieceOrder: true,
+    trackPieceSourceEntryIds: [900, 901, 902, 903],
+    segmentSourceEntryIds: [800, 801],
+    flexiColour0: 0,
+    flexiColour1: 0,
+    flexiColour2: 0,
+    trackedRideInstanceReference: 1_000,
+    flippedTrackSections: null,
+    tunnelLightColour: null);
+
   private static TrackPiece StraightPiece(float offset) =>
     new(TrackPieceGeometry.FromHandAuthored([
       Pair(0f, new Vector3(offset, 0f, 0f), Vector3.UnitX),
@@ -149,6 +218,17 @@ public class RideTrackDiagnosticSceneBuilderTests {
   private static TrackPiece HalfCircuit(bool first) {
     var start = first ? Vector3.UnitX : -Vector3.UnitX;
     var end = -start;
+    var startTangent = first ? Vector3.UnitY * 3f : -Vector3.UnitY * 3f;
+    return new TrackPiece(TrackPieceGeometry.FromHandAuthored([
+      Pair(0f, start, startTangent),
+      Pair(1f, end, -startTangent),
+    ]));
+  }
+
+  private static TrackPiece HalfCircuit(float offsetX, bool first) {
+    var offset = Vector3.UnitX * offsetX;
+    var start = offset + (first ? Vector3.UnitX : -Vector3.UnitX);
+    var end = offset - (first ? Vector3.UnitX : -Vector3.UnitX);
     var startTangent = first ? Vector3.UnitY * 3f : -Vector3.UnitY * 3f;
     return new TrackPiece(TrackPieceGeometry.FromHandAuthored([
       Pair(0f, start, startTangent),

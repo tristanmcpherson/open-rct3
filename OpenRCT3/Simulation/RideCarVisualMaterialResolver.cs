@@ -63,7 +63,7 @@ internal sealed class RideCarVisualMaterialResolver : IDisposable {
   }
 
   /// <summary>
-  /// Resolves one material from the car's exact archive closure and owning track colours.
+  /// Resolves one material from the car's exact archive closure and owning ride's car colours.
   /// </summary>
   internal RideCarVisualMaterialResolution Resolve(
     RideCarStaticInstanceEntry car,
@@ -78,12 +78,7 @@ internal sealed class RideCarVisualMaterialResolver : IDisposable {
     if (!ContainsReference(car.BodyTemplate.Batches, batch))
       throw Invalid("material batch is not owned by the static car's exact body template");
 
-    var track = car.CarRuntime.TrainRuntime.TrackRuntime.Track
-      ?? throw Invalid("static car entry has no owning ride track");
-    var colours = SceneryFlexiColours.FromSerialized(
-      track.FlexiColour0,
-      track.FlexiColour1,
-      track.FlexiColour2);
+    var colours = ResolveSavedCarColours(car.CarRuntime);
     return Resolve(batch, car.BodyTemplate.Link.Car.Source.AllowedArchivePaths, colours);
   }
 
@@ -111,12 +106,7 @@ internal sealed class RideCarVisualMaterialResolver : IDisposable {
         !ContainsReference(part.MaterialBatches, batch))
       throw Invalid("hierarchy part changed exact saved-car, template, or batch identity");
 
-    var track = car.CarRuntime.TrainRuntime.TrackRuntime.Track
-      ?? throw Invalid("hierarchy part has no owning ride track");
-    var colours = SceneryFlexiColours.FromSerialized(
-      track.FlexiColour0,
-      track.FlexiColour1,
-      track.FlexiColour2);
+    var colours = ResolveSavedCarColours(car.CarRuntime);
     return Resolve(batch, source.AllowedArchivePaths, colours);
   }
 
@@ -124,6 +114,16 @@ internal sealed class RideCarVisualMaterialResolver : IDisposable {
     RideCarVisualHierarchyStaticPartInstance part,
     StaticShapeMeshBatch batch
   ) => Resolve(part, batch).Material;
+
+  internal static SceneryFlexiColours ResolveSavedCarColours(
+    RideCarInstanceRuntimeEntry car
+  ) {
+    ArgumentNullException.ThrowIfNull(car);
+    var ride = car.TrainRuntime.TrackRuntime.Instance
+      ?? throw Invalid("saved car has no owning tracked-ride instance");
+    var colours = ride.CarFlexiColours;
+    return SceneryFlexiColours.FromSerialized(colours.Col0, colours.Col1, colours.Col2);
+  }
 
   internal RideCarVisualMaterialResolution Resolve(
     StaticShapeMeshBatch batch,

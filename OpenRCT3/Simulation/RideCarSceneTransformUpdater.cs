@@ -49,18 +49,28 @@ internal static class RideCarSceneTransformUpdater {
     RideCarStaticSceneBuildResult scene,
     IReadOnlyList<RideCarSceneTransformTarget> targets,
     RideCarSceneTransformUpdaterLimits limits
+  ) => Prepare(scene, targets, limits).Apply();
+
+  /// <summary>
+  /// Preflights one complete body-scene update without mutating any model transform.
+  /// </summary>
+  internal static PreparedUpdate Prepare(
+    RideCarStaticSceneBuildResult scene,
+    IReadOnlyList<RideCarSceneTransformTarget> targets
+  ) => Prepare(scene, targets, RideCarSceneTransformUpdaterLimits.Default);
+
+  internal static PreparedUpdate Prepare(
+    RideCarStaticSceneBuildResult scene,
+    IReadOnlyList<RideCarSceneTransformTarget> targets,
+    RideCarSceneTransformUpdaterLimits limits
   ) {
     ArgumentNullException.ThrowIfNull(scene);
     ArgumentNullException.ThrowIfNull(targets);
     ValidateLimits(limits);
-
-    var plan = Preflight(scene, targets, limits);
-    foreach (var assignment in plan.Assignments)
-      assignment.Transform.Matrix = assignment.Matrix;
-    return new(plan.CarCount, plan.Assignments.Count);
+    return Preflight(scene, targets, limits);
   }
 
-  private static UpdatePlan Preflight(
+  private static PreparedUpdate Preflight(
     RideCarStaticSceneBuildResult scene,
     IReadOnlyList<RideCarSceneTransformTarget> targets,
     RideCarSceneTransformUpdaterLimits limits
@@ -86,9 +96,9 @@ internal static class RideCarSceneTransformUpdater {
     var assignments = new List<PlannedAssignment>(bindings.Count);
     foreach (var binding in bindings) {
       var target = targetsByIndex[binding.RegistryIndex];
-      assignments.Add(new(binding.Model.Transform, target.Transform));
+      assignments.Add(new(binding.Model, binding.Model.Transform, target.Transform));
     }
-    return new(Array.AsReadOnly(assignments.ToArray()), expectedCars.Count);
+    return new(assignments, expectedCars.Count);
   }
 
   private static IReadOnlyList<RideCarStaticSceneModelBinding> SnapshotBindings(
@@ -233,10 +243,37 @@ internal static class RideCarSceneTransformUpdater {
     ulong CarInstanceEntryId
   );
 
-  private sealed record PlannedAssignment(Transform Transform, Matrix4x4 Matrix);
-
-  private sealed record UpdatePlan(
-    IReadOnlyList<PlannedAssignment> Assignments,
-    int CarCount
+  internal sealed record PlannedAssignment(
+    Model Model,
+    Transform Transform,
+    Matrix4x4 Matrix
   );
+
+  /// <summary>
+  /// Immutable exact-transform assignments from one successful body-scene preflight.
+  /// </summary>
+  /// <remarks>
+  /// Applying a prepared update performs only the already-validated matrix assignments. This lets
+  /// a caller prepare other scene layers before any body transform is changed.
+  /// </remarks>
+  internal sealed class PreparedUpdate {
+    private readonly IReadOnlyList<PlannedAssignment> assignments;
+
+    internal IReadOnlyList<PlannedAssignment> Assignments => assignments;
+    internal RideCarSceneTransformUpdateResult Result { get; }
+
+    internal PreparedUpdate(
+      IEnumerable<PlannedAssignment> assignments,
+      int carCount
+    ) {
+      this.assignments = Array.AsReadOnly(assignments.ToArray());
+      Result = new(carCount, this.assignments.Count);
+    }
+
+    internal RideCarSceneTransformUpdateResult Apply() {
+      foreach (var assignment in assignments)
+        assignment.Transform.Matrix = assignment.Matrix;
+      return Result;
+    }
+  }
 }

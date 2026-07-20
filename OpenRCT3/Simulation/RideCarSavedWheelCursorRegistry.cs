@@ -107,18 +107,21 @@ internal sealed class RideCarSavedWheelCursorRegistry {
       var car = carRuntime.Entries[index];
       ValidateCarEntry(car, index, carIds);
       var trackRuntime = car.TrainRuntime.TrackRuntime;
-      var traversal = ResolveCircuitTraversal(trackRuntime);
+      var circuit = ResolveCircuitTraversal(
+        trackRuntime,
+        car.TrackPiece,
+        car.RearTrackPiece);
       var front = ResolveContact(
         car,
         car.CarInstance.FrontWheelDistance,
         car.TrackPiece,
-        traversal,
+        circuit,
         trackPiecesById);
       var rear = ResolveContact(
         car,
         car.CarInstance.RearWheelDistance,
         car.RearTrackPiece,
-        traversal,
+        circuit,
         trackPiecesById);
       entries[index] = new(index, car, front, rear);
     }
@@ -193,6 +196,18 @@ internal sealed class RideCarSavedWheelCursorRegistry {
         $"car {car.CarInstanceEntryId} changed its exact saved {contact} TrackPiece identity");
     if (link.IsResolved != (link.PieceIndex != null && link.Piece != null))
       throw Invalid($"car {car.CarInstanceEntryId} has an inconsistent {contact} TrackPiece link");
+    if ((link.CircuitIndex == null) != (link.SegmentSourceEntryId == null))
+      throw Invalid(
+        $"car {car.CarInstanceEntryId} has incomplete {contact} circuit identity");
+    if (!link.IsResolved &&
+        (link.CircuitIndex != null || link.SegmentSourceEntryId != null))
+      throw Invalid(
+        $"car {car.CarInstanceEntryId} has circuit identity on unresolved {contact} geometry");
+    if (link.IsResolved &&
+        car.TrainRuntime.TrackRuntime.Status == RideTrackGeometryStatus.MultiCircuit &&
+        link.CircuitIndex == null)
+      throw Invalid(
+        $"car {car.CarInstanceEntryId} lost exact {contact} multi-circuit identity");
     switch (link.Status) {
       case RideCarTrackPieceRuntimeStatus.MissingSavedReference:
         if (savedEntryId != 0)
@@ -213,29 +228,106 @@ internal sealed class RideCarSavedWheelCursorRegistry {
     }
   }
 
-  private static TrackCircuitTraversal? ResolveCircuitTraversal(
-    RideInstanceTrackRuntimeEntry trackRuntime
+  private static SelectedCircuit? ResolveCircuitTraversal(
+    RideInstanceTrackRuntimeEntry trackRuntime,
+    RideCarTrackPieceRuntimeLink front,
+    RideCarTrackPieceRuntimeLink rear
   ) {
-    if (trackRuntime.CircuitTraversal != null) {
-      if (trackRuntime.GraphTraversal != null || trackRuntime.Circuit == null ||
-          trackRuntime.Graph != null ||
-          !ReferenceEquals(trackRuntime.CircuitTraversal.Circuit, trackRuntime.Circuit))
-        throw Invalid(
-          $"ride {trackRuntime.InstanceEntryId} has inconsistent circuit traversal identity");
-      return trackRuntime.CircuitTraversal;
+    var segments = trackRuntime.SegmentCircuitTraversals;
+    if (segments is null)
+      throw Invalid($"ride {trackRuntime.InstanceEntryId} has no segment traversals");
+
+    switch (trackRuntime.Status) {
+      case RideTrackGeometryStatus.Circuit:
+        if (trackRuntime.CircuitTraversal is null || trackRuntime.GraphTraversal != null ||
+            trackRuntime.Circuit == null || trackRuntime.Graph != null ||
+            segments.Count != 1 ||
+            !ReferenceEquals(trackRuntime.CircuitTraversal.Circuit, trackRuntime.Circuit) ||
+            !ReferenceEquals(segments[0].Traversal, trackRuntime.CircuitTraversal) ||
+            !ReferenceEquals(segments[0].Circuit, trackRuntime.Circuit))
+          throw Invalid(
+            $"ride {trackRuntime.InstanceEntryId} has inconsistent circuit traversal identity");
+        ValidateCircuitLink(trackRuntime, front, 0, segments[0], requireIdentity: false);
+        ValidateCircuitLink(trackRuntime, rear, 0, segments[0], requireIdentity: false);
+        return new(0, segments[0]);
+      case RideTrackGeometryStatus.MultiCircuit:
+        if (trackRuntime.CircuitTraversal != null || trackRuntime.Circuit != null ||
+            trackRuntime.GraphTraversal != null || trackRuntime.Graph != null ||
+            segments.Count < 2)
+          throw Invalid(
+            $"ride {trackRuntime.InstanceEntryId} has inconsistent multi-circuit traversals");
+        var indices = new[] { front, rear }
+          .Where(link => link.IsResolved)
+          .Select(link => link.CircuitIndex!.Value)
+          .Distinct()
+          .ToArray();
+        if (indices.Length > 1)
+          throw Invalid(
+            $"ride {trackRuntime.InstanceEntryId} saved one car across separate circuits");
+        if (indices.Length == 0) return null;
+        var circuitIndex = indices[0];
+        if (circuitIndex < 0 || circuitIndex >= segments.Count)
+          throw Invalid(
+            $"ride {trackRuntime.InstanceEntryId} saved an out-of-range circuit index");
+        var segment = segments[circuitIndex];
+        ValidateCircuitLink(trackRuntime, front, circuitIndex, segment, requireIdentity: true);
+        ValidateCircuitLink(trackRuntime, rear, circuitIndex, segment, requireIdentity: true);
+        return new(circuitIndex, segment);
+      case RideTrackGeometryStatus.OpenTrack:
+        if (trackRuntime.GraphTraversal is null || trackRuntime.Graph is null ||
+            trackRuntime.CircuitTraversal != null || trackRuntime.Circuit != null ||
+            segments.Count != 0)
+          throw Invalid(
+            $"ride {trackRuntime.InstanceEntryId} has inconsistent open-track traversal");
+        return null;
+      default:
+        if (trackRuntime.GraphTraversal != null || trackRuntime.Graph != null ||
+            trackRuntime.CircuitTraversal != null || trackRuntime.Circuit != null ||
+            segments.Count != 0)
+          throw Invalid(
+            $"ride {trackRuntime.InstanceEntryId} has resolved skipped-track geometry");
+        return null;
     }
-    if (trackRuntime.Circuit != null)
-      throw Invalid($"ride {trackRuntime.InstanceEntryId} lost its circuit traversal");
-    return null;
+  }
+
+  private static void ValidateCircuitLink(
+    RideInstanceTrackRuntimeEntry trackRuntime,
+    RideCarTrackPieceRuntimeLink link,
+    int circuitIndex,
+    RideTrackSegmentCircuitTraversal segment,
+    bool requireIdentity
+  ) {
+    if (segment?.Traversal is null || segment.Circuit is null ||
+        !ReferenceEquals(segment.Traversal.Circuit, segment.Circuit))
+      throw Invalid(
+        $"ride {trackRuntime.InstanceEntryId} changed segment-circuit traversal identity");
+    if (!link.IsResolved) return;
+    if (requireIdentity && link.CircuitIndex == null)
+      throw Invalid(
+        $"ride {trackRuntime.InstanceEntryId} lost exact segment-circuit identity");
+    if (link.CircuitIndex != null &&
+        (link.CircuitIndex != circuitIndex ||
+         link.SegmentSourceEntryId != segment.SegmentSourceEntryId))
+      throw Invalid(
+        $"ride {trackRuntime.InstanceEntryId} changed exact segment-circuit identity");
+  }
+
+  private static TrackCircuitTraversal? GetTraversal(SelectedCircuit? circuit) {
+    if (circuit is null) return null;
+    if (!ReferenceEquals(circuit.Segment.Traversal.Circuit, circuit.Segment.Circuit))
+      throw Invalid(
+        "selected segment traversal changed exact circuit identity");
+    return circuit.Segment.Traversal;
   }
 
   private static RideCarSavedWheelContactCursor ResolveContact(
     RideCarInstanceRuntimeEntry car,
     float savedGlobalDistance,
     RideCarTrackPieceRuntimeLink savedPieceLink,
-    TrackCircuitTraversal? traversal,
+    SelectedCircuit? circuit,
     IReadOnlyDictionary<ulong, DatTrackPieceData> trackPiecesById
   ) {
+    var traversal = GetTraversal(circuit);
     var savedPieceId = savedPieceLink.SavedTrackPieceEntryId;
     if (savedPieceId == 0 ||
         savedPieceLink.Status == RideCarTrackPieceRuntimeStatus.MissingSavedReference)
@@ -270,7 +362,7 @@ internal sealed class RideCarSavedWheelCursorRegistry {
       car,
       savedPieceLink,
       trackPieceData,
-      traversal);
+      circuit!);
     if (!TryNormalizeCircuitDistance(
       savedGlobalDistance,
       traversal.Length,
@@ -333,10 +425,11 @@ internal sealed class RideCarSavedWheelCursorRegistry {
     RideCarInstanceRuntimeEntry car,
     RideCarTrackPieceRuntimeLink savedPieceLink,
     DatTrackPieceData trackPieceData,
-    TrackCircuitTraversal traversal
+    SelectedCircuit selected
   ) {
     var trackRuntime = car.TrainRuntime.TrackRuntime;
-    var ids = trackRuntime.Track.TrackPieceSourceEntryIds;
+    var traversal = selected.Segment.Traversal;
+    var ids = selected.Segment.PieceSourceEntryIds;
     var pieceIndex = savedPieceLink.PieceIndex!.Value;
     if (pieceIndex < 0 || pieceIndex >= ids.Count ||
         ids.Count != traversal.Circuit.Pieces.Count)
@@ -352,11 +445,17 @@ internal sealed class RideCarSavedWheelCursorRegistry {
       savedPieceLink.Piece))
       throw Invalid(
         $"car {car.CarInstanceEntryId} cached TrackPiece changed runtime object identity");
-    if (trackPieceData.Owner != trackPieceData.Segment ||
+    if (trackPieceData.Owner != selected.Segment.SegmentSourceEntryId ||
+        trackPieceData.Segment != selected.Segment.SegmentSourceEntryId ||
         !trackRuntime.Track.SegmentSourceEntryIds.Contains(trackPieceData.Segment))
       throw Invalid(
         $"saved TrackPiece {trackPieceData.EntryId} does not retain exact TrackSegment " +
         "ownership for its ride track");
+    if (savedPieceLink.CircuitIndex != null &&
+        (savedPieceLink.CircuitIndex != selected.Index ||
+         savedPieceLink.SegmentSourceEntryId != selected.Segment.SegmentSourceEntryId))
+      throw Invalid(
+        $"car {car.CarInstanceEntryId} cached TrackPiece changed exact circuit identity");
 
     var previousIndex = pieceIndex == 0 ? ids.Count - 1 : pieceIndex - 1;
     var nextIndex = pieceIndex == ids.Count - 1 ? 0 : pieceIndex + 1;
@@ -437,6 +536,10 @@ internal sealed class RideCarSavedWheelCursorRegistry {
 
   private static InvalidDataException Invalid(string message) =>
     new($"Ride-car saved wheel cursor input is invalid: {message}.");
+
+  private sealed record SelectedCircuit(
+    int Index,
+    RideTrackSegmentCircuitTraversal Segment);
 }
 
 internal readonly record struct RideCarSavedWheelCursorRegistryLimits(

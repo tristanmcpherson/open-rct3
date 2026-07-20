@@ -621,9 +621,9 @@ public class Game : IGame {
         logger.Trace("Game resumed");
       }
 
-      var currentTime = stopwatch.Elapsed;
-      var elapsed = FrameTime = currentTime - previousTime;
-      previousTime = currentTime;
+      var frameStartTime = stopwatch.Elapsed;
+      var elapsed = FrameTime = frameStartTime - previousTime;
+      previousTime = frameStartTime;
       // FIXME: Ought the game NOT accumulate lag if the game was paused?
       lag += elapsed;
 
@@ -637,16 +637,20 @@ public class Game : IGame {
 #endif
 
       // Simulation ticks are fixed steps to aid physics/AI determinism
-      // For example, a 60Hz target frame-rate would process one tick 60 times per second
-      LogLagWarning(lag);
-      for (var tickCount = 0; tickCount < MaxSimulationTicks && lag >= TargetFrameTime; tickCount++) {
+      // For example, a 60Hz target update rate processes one tick 60 times per second
+      var simulation = GameLoopTiming.PlanSimulation(
+        lag,
+        TargetUpdateRate,
+        MaxSimulationTicks);
+      LogLagWarning(lag, simulation.TickDelta);
+      for (var tickCount = 0; tickCount < simulation.TickCount; tickCount++) {
         Tick(
-          delta: TargetFrameTime,
-          // Normalize the lag to a percentage representing how far into the
-          // simulation step we are (0.0 = just started, 1.0 = just finished)
-          interpolation: lag.TotalMilliseconds / TargetFrameTime.TotalMilliseconds);
-        lag -= TargetFrameTime;
+          delta: simulation.TickDelta,
+          // A fixed tick completes one whole simulation step. Residual lag can later be
+          // normalized against the update interval when render interpolation is implemented.
+          interpolation: simulation.TickInterpolation);
       }
+      lag = simulation.RemainingLag;
 
       // Rendering can happen at arbitrary points between updates, and frames can
       // be dropped if the machine is slow.
@@ -655,11 +659,11 @@ public class Game : IGame {
       Volatile.Read(ref renderer)?.Render(Scene);
 
       // Reduce CPU usage by sleeping when ahead of schedule
-      var remaining = TargetFrameTime - lag;
-      if (remaining > TimeSpan.Zero) {
-        var sleepMs = remaining.TotalMilliseconds / 2.0;
-        if (sleepMs > 2) Thread.Sleep((int)sleepMs / 2);
-      }
+      var frameWorkDuration = stopwatch.Elapsed - frameStartTime;
+      var remaining = GameLoopTiming.CalculateFrameSleep(
+        TargetFrameTime,
+        frameWorkDuration);
+      if (remaining > TimeSpan.Zero) Thread.Sleep(remaining);
     }
 
     Exited?.Invoke();
@@ -686,12 +690,7 @@ public class Game : IGame {
         !car.MaterialBatches.Any(candidate => ReferenceEquals(candidate, batch)))
       throw new InvalidDataException("Selected ride-car variant changed exact body identity.");
 
-    var track = car.CarRuntime.TrainRuntime.TrackRuntime.Track
-      ?? throw new InvalidDataException("Selected ride-car variant has no owning ride track.");
-    var colours = SceneryFlexiColours.FromSerialized(
-      track.FlexiColour0,
-      track.FlexiColour1,
-      track.FlexiColour2);
+    var colours = RideCarVisualMaterialResolver.ResolveSavedCarColours(car.CarRuntime);
     return resolver.Resolve(
       batch,
       car.BodyTemplate.Link.Car.Source.AllowedArchivePaths,
@@ -828,16 +827,95 @@ public class Game : IGame {
   }
 
   [Conditional("DEBUG")]
-  private void LogLagWarning(TimeSpan lag) {
+  private void LogLagWarning(TimeSpan lag, TimeSpan targetUpdateRate) {
     // TODO: Detect excessive lag and lower the user's target frame-rate
     // TODO: Maybe even show a modal to the user:
     // "You are experiencing excessive lag. Lowering frame-rate to prevent stuttering."
     // "Consider lowering your target frame-rate in the game settings."
-    if (lag <= TargetFrameTime || DateTime.Now - lastLagWarning <= lagWarningDebounceInterval) return;
+    if (lag <= targetUpdateRate ||
+        DateTime.Now - lastLagWarning <= lagWarningDebounceInterval) return;
 
-    var details = $"{lag.TotalMilliseconds}ms (target: {TargetFrameTime.TotalMilliseconds}ms)";
-    logger.Warn($"Lag has exceeded target frame time budget: {details}");
+    var details = $"{lag.TotalMilliseconds}ms (target: {targetUpdateRate.TotalMilliseconds}ms)";
+    logger.Warn($"Lag has exceeded target simulation update interval: {details}");
     lastLagWarning = DateTime.Now;
+  }
+}
+
+internal readonly record struct GameLoopSimulationPlan(
+  int TickCount,
+  TimeSpan TickDelta,
+  double TickInterpolation,
+  TimeSpan RemainingLag
+);
+
+internal static class GameLoopTiming {
+  private readonly static TimeSpan MinimumInterval = TimeSpan.FromTicks(1);
+
+  internal static GameLoopSimulationPlan PlanSimulation(
+    TimeSpan lag,
+    TimeSpan targetUpdateRate,
+    int maxTicks
+  ) {
+    if (lag < TimeSpan.Zero)
+      throw new ArgumentOutOfRangeException(nameof(lag), lag, "Lag cannot be negative.");
+    ValidatePositiveInterval(targetUpdateRate, nameof(targetUpdateRate));
+    if (maxTicks < 0)
+      throw new ArgumentOutOfRangeException(
+        nameof(maxTicks),
+        maxTicks,
+        "Maximum ticks cannot be negative.");
+
+    var remainingLag = lag;
+    var tickCount = 0;
+    for (; tickCount < maxTicks && remainingLag >= targetUpdateRate; tickCount++)
+      remainingLag -= targetUpdateRate;
+    return new(tickCount, targetUpdateRate, 1.0, remainingLag);
+  }
+
+  internal static TimeSpan CalculateFrameSleep(
+    TimeSpan targetFrameTime,
+    TimeSpan frameWorkDuration
+  ) {
+    ValidatePositiveInterval(targetFrameTime, nameof(targetFrameTime));
+    if (frameWorkDuration < TimeSpan.Zero)
+      throw new ArgumentOutOfRangeException(
+        nameof(frameWorkDuration),
+        frameWorkDuration,
+        "Frame work duration cannot be negative.");
+    return frameWorkDuration < targetFrameTime
+      ? targetFrameTime - frameWorkDuration
+      : TimeSpan.Zero;
+  }
+
+  internal static double UpdatesPerSecond(TimeSpan targetUpdateRate) {
+    ValidatePositiveInterval(targetUpdateRate, nameof(targetUpdateRate));
+    return 1.0 / targetUpdateRate.TotalSeconds;
+  }
+
+  internal static TimeSpan UpdateInterval(double updatesPerSecond) {
+    if (!double.IsFinite(updatesPerSecond) || updatesPerSecond <= 0)
+      throw new ArgumentOutOfRangeException(
+        nameof(updatesPerSecond),
+        updatesPerSecond,
+        "Updates per second must be finite and positive.");
+
+    var secondsPerUpdate = 1.0 / updatesPerSecond;
+    if (!double.IsFinite(secondsPerUpdate) ||
+        secondsPerUpdate > TimeSpan.MaxValue.TotalSeconds ||
+        secondsPerUpdate < MinimumInterval.TotalSeconds)
+      throw new ArgumentOutOfRangeException(
+        nameof(updatesPerSecond),
+        updatesPerSecond,
+        "Updates per second must produce a representable positive interval.");
+    return TimeSpan.FromSeconds(secondsPerUpdate);
+  }
+
+  private static void ValidatePositiveInterval(TimeSpan interval, string parameterName) {
+    if (interval <= TimeSpan.Zero)
+      throw new ArgumentOutOfRangeException(
+        parameterName,
+        interval,
+        "Timing intervals must be positive.");
   }
 }
 

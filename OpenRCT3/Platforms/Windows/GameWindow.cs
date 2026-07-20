@@ -110,8 +110,13 @@ internal partial class GameWindow : Form, IWindow {
 
   [Category("Behavior")]
   public double UpdatesPerSecond {
-    get => Game.Instance?.TargetUpdateRate.TotalSeconds ?? 60;
-    set => Game.Instance?.TargetUpdateRate = TimeSpan.FromSeconds(value);
+    get => Game.Instance is { } game
+      ? GameLoopTiming.UpdatesPerSecond(game.TargetUpdateRate)
+      : 60;
+    set {
+      var targetUpdateRate = GameLoopTiming.UpdateInterval(value);
+      if (Game.Instance != null) Game.Instance.TargetUpdateRate = targetUpdateRate;
+    }
   }
 
   [Browsable(false)]

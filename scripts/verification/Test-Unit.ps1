@@ -52,7 +52,7 @@ $approvedInstalledAssetSkips = @(
   'OpenRCT3.Tests.Simulation.RideInstanceResourceResolverTests.Resolve_InstalledCampaignIdentitiesAgainstTheirExactOvlOverlays',
   'OpenRCT3.Tests.Simulation.RideInstanceTrackGraphTests.Build_InstalledCampaignsHaveExactNonSentinelReciprocalLinks',
   'OpenRCT3.Tests.Simulation.RideTrackInstalledPipelineTests.BoxOffice_DatThroughCatalogProducesTypedGeometryOutcomes',
-  'OpenRCT3.Tests.Simulation.RideTrackWildInstalledPipelineTests.ScrubGardens_SeizmicSelectsExactBodiesAndReportsUnsupportedTopology',
+  'OpenRCT3.Tests.Simulation.RideTrackWildInstalledPipelineTests.ScrubGardens_SeizmicResolvesTwoExactCircuitsAndSavedCars',
   'OpenRCT3.Tests.Simulation.RideTrackSectionResourceResolverTests.Resolve_InstalledCampaignsLinkExactDatOverlayAndTksIdentities'
 )
 $approvedSkippedTests = @($approvedDumperSkip) + $approvedInstalledAssetSkips

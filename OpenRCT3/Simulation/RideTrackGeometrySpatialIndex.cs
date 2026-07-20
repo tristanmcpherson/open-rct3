@@ -90,15 +90,25 @@ internal sealed class RideTrackGeometrySpatialIndex {
 
       switch (link.Status) {
         case RideTrackGeometryStatus.OpenTrack:
-          if (link.Graph is null || link.Circuit != null)
+          if (link.Graph is null || link.Circuit != null ||
+              link.SegmentCircuits?.Count != 0)
             throw Invalid(
               $"open track {link.Track.SourceEntryId} has inconsistent geometry");
           resolved.Add((index, link));
           break;
         case RideTrackGeometryStatus.Circuit:
-          if (link.Circuit is null || link.Graph != null)
+          if (link.Circuit is null || link.Graph != null ||
+              link.SegmentCircuits?.Count != 1 ||
+              !ReferenceEquals(link.SegmentCircuits[0].Circuit, link.Circuit))
             throw Invalid(
               $"circuit {link.Track.SourceEntryId} has inconsistent geometry");
+          resolved.Add((index, link));
+          break;
+        case RideTrackGeometryStatus.MultiCircuit:
+          if (link.Circuit != null || link.Graph != null)
+            throw Invalid(
+              $"multi-circuit track {link.Track.SourceEntryId} has singular geometry");
+          ValidateSegmentCircuits(link, 2);
           resolved.Add((index, link));
           break;
         case RideTrackGeometryStatus.UnresolvedResources:
@@ -150,9 +160,7 @@ internal sealed class RideTrackGeometrySpatialIndex {
       limits.MaximumRailSampleCount);
     foreach (var index in Enumerable.Range(0, resolved.Count)) {
       var item = resolved[index];
-      var bounds = item.Link.Status == RideTrackGeometryStatus.OpenTrack
-        ? TrackBoundsBuilder.FromGraph(item.Link.Graph!, boundsLimits)
-        : TrackBoundsBuilder.FromCircuit(item.Link.Circuit!, boundsLimits);
+      var bounds = BuildBounds(item.Link, boundsLimits);
       entries[index] = new(
         item.DatTrackIndex,
         item.Link.Track.SourceEntryId,
@@ -207,11 +215,57 @@ internal sealed class RideTrackGeometrySpatialIndex {
       return;
     }
 
-    foreach (var item in link.Circuit!.Pieces) {
-      if (item?.Piece is null)
-        throw Invalid($"circuit {link.Track.SourceEntryId} contains an incomplete piece");
-      ReservePiece(item.Piece, limits, ref pieceCount, ref railSampleCount);
+    foreach (var segment in link.SegmentCircuits) {
+      foreach (var item in segment.Circuit.Pieces) {
+        if (item?.Piece is null)
+          throw Invalid($"circuit {link.Track.SourceEntryId} contains an incomplete piece");
+        ReservePiece(item.Piece, limits, ref pieceCount, ref railSampleCount);
+      }
     }
+  }
+
+  private static TrackAxisAlignedBounds BuildBounds(
+    RideTrackGeometryLink link,
+    TrackBoundsLimits limits
+  ) {
+    if (link.Status == RideTrackGeometryStatus.OpenTrack)
+      return TrackBoundsBuilder.FromGraph(link.Graph!, limits);
+    var bounds = link.SegmentCircuits
+      .Select(segment => TrackBoundsBuilder.FromCircuit(segment.Circuit, limits))
+      .ToArray();
+    var minimum = bounds[0].Min;
+    var maximum = bounds[0].Max;
+    foreach (var index in Enumerable.Range(1, bounds.Length - 1)) {
+      minimum = Vector3.Min(minimum, bounds[index].Min);
+      maximum = Vector3.Max(maximum, bounds[index].Max);
+    }
+    return new(minimum, maximum);
+  }
+
+  private static void ValidateSegmentCircuits(
+    RideTrackGeometryLink link,
+    int minimumCount
+  ) {
+    var segments = link.SegmentCircuits;
+    if (segments is null || segments.Count < minimumCount ||
+        (minimumCount == 1 && segments.Count != 1) ||
+        !segments.Select(segment => segment?.SegmentSourceEntryId ?? 0ul)
+          .SequenceEqual(link.Track.SegmentSourceEntryIds))
+      throw Invalid(
+        $"circuit track {link.Track.SourceEntryId} has inconsistent segment geometry");
+    var flattenedIds = new List<ulong>(link.Track.TrackPieceSourceEntryIds.Count);
+    foreach (var segment in segments) {
+      if (segment?.Circuit is null || segment.PieceSourceEntryIds is null ||
+          segment.PieceSourceEntryIds.Count == 0 ||
+          segment.PieceSourceEntryIds.Count != segment.Circuit.Pieces.Count)
+        throw Invalid(
+          $"circuit track {link.Track.SourceEntryId} has incomplete segment geometry");
+      flattenedIds.AddRange(segment.PieceSourceEntryIds);
+    }
+    if (!flattenedIds.SequenceEqual(link.Track.TrackPieceSourceEntryIds) ||
+        (link.Circuit != null && !ReferenceEquals(link.Circuit, segments[0].Circuit)))
+      throw Invalid(
+        $"circuit track {link.Track.SourceEntryId} changed exact piece geometry");
   }
 
   private static void ReservePiece(
@@ -261,7 +315,8 @@ internal sealed class RideTrackGeometrySpatialIndex {
   }
 
   private static void ValidateSkipped(RideTrackGeometryLink link) {
-    if (link.Graph != null || link.Circuit != null || link.IsResolved)
+    if (link.Graph != null || link.Circuit != null ||
+        link.SegmentCircuits?.Count != 0 || link.IsResolved)
       throw Invalid(
         $"skipped track {link.Track.SourceEntryId} unexpectedly contains resolved geometry");
   }

@@ -13,19 +13,29 @@ namespace OpenRCT3.Simulation;
 internal enum RideTrackGeometryStatus {
   OpenTrack,
   Circuit,
+  MultiCircuit,
   UnresolvedResources,
   UnsupportedGeometry,
   UnsupportedTopology,
 }
 
-/// <summary>One DAT ride track plus its resolved open or closed runtime representation.</summary>
+/// <summary>One DAT ride track plus its resolved open or per-circuit representation.</summary>
 internal sealed record RideTrackGeometryLink(
   RideTrack Track,
   RideTrackGeometryStatus Status,
   TrackGraph? Graph,
   TrackCircuit? Circuit
 ) {
-  public bool IsResolved => Graph != null || Circuit != null;
+  public IReadOnlyList<RideTrackSegmentCircuit> SegmentCircuits { get; init; } =
+    Circuit is null || Track?.SegmentSourceEntryIds.Count != 1
+      ? Array.Empty<RideTrackSegmentCircuit>()
+      : Array.AsReadOnly(new[] {
+        new RideTrackSegmentCircuit(
+          Track.SegmentSourceEntryIds[0],
+          Array.AsReadOnly(Track.TrackPieceSourceEntryIds.ToArray()),
+          Circuit),
+      });
+  public bool IsResolved => Graph != null || SegmentCircuits?.Count > 0;
   public string? Detail { get; init; }
 }
 
@@ -39,7 +49,7 @@ internal sealed record RideTrackGeometryResolution(
 
 /// <summary>
 /// Composes provenance-backed TKS/SPL resources, DAT placement transforms, and serialized track
-/// topology into the runtime dual-rail open-track or circuit substrates.
+/// topology into runtime dual-rail open-track or per-circuit substrates.
 /// </summary>
 internal static class RideTrackGeometryResolver {
   private const int MaximumTrackCount = 100_000;
@@ -188,7 +198,8 @@ internal static class RideTrackGeometryResolver {
         continue;
       }
 
-      if (!track.HasAuthoritativeTrackPieceOrder || track.IsCircuit is null) {
+      if (!track.HasAuthoritativeTrackPieceOrder ||
+          (track.IsCircuit is null && track.SegmentSourceEntryIds.Count < 2)) {
         links.Add(new(
           track,
           RideTrackGeometryStatus.UnsupportedTopology,
@@ -211,7 +222,7 @@ internal static class RideTrackGeometryResolver {
               track,
               trackPlacements,
               CreatePiece)));
-        } else {
+        } else if (track.IsCircuit == false) {
           links.Add(new(
             track,
             RideTrackGeometryStatus.OpenTrack,
@@ -220,6 +231,17 @@ internal static class RideTrackGeometryResolver {
               trackPlacements,
               CreatePiece),
             Circuit: null));
+        } else {
+          links.Add(new(
+            track,
+            RideTrackGeometryStatus.MultiCircuit,
+            Graph: null,
+            Circuit: null) {
+            SegmentCircuits = RideTrackGraphAdapter.BuildCircuits(
+              track,
+              trackPlacements,
+              CreatePiece),
+          });
         }
       } catch (InvalidDataException error) {
         links.Add(new(

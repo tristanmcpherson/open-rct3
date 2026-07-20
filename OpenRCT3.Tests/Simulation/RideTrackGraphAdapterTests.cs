@@ -124,6 +124,125 @@ public class RideTrackGraphAdapterTests {
   }
 
   [Test]
+  public void BuildCircuits_KeepsClosedTrackSegmentsAsSeparateTraversals() {
+    var track = Track(
+      [500, 501, 600, 601],
+      isCircuit: null,
+      segmentIds: [800, 801]);
+    var placements = new[] {
+      Placement(500, previous: 501, next: 501, segmentId: 800),
+      Placement(501, previous: 500, next: 500, segmentId: 800),
+      Placement(600, previous: 601, next: 601, segmentId: 801),
+      Placement(601, previous: 600, next: 600, segmentId: 801),
+    };
+
+    var circuits = RideTrackGraphAdapter.BuildCircuits(
+      track,
+      placements,
+      placement => HalfCircuit(placement.SourceEntryId is 500 or 600));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(circuits.Select(circuit => circuit.SegmentSourceEntryId),
+        Is.EqualTo(new ulong[] { 800, 801 }));
+      Assert.That(circuits[0].PieceSourceEntryIds,
+        Is.EqualTo(new ulong[] { 500, 501 }));
+      Assert.That(circuits[1].PieceSourceEntryIds,
+        Is.EqualTo(new ulong[] { 600, 601 }));
+      Assert.That(circuits.Select(circuit => circuit.Circuit.Pieces.Count),
+        Is.EqualTo(new[] { 2, 2 }));
+      Assert.That(circuits[0].Circuit, Is.Not.SameAs(circuits[1].Circuit));
+    }
+  }
+
+  [Test]
+  public void BuildCircuits_GroupsEveryPieceWithOneLinearMembershipRead() {
+    const int segmentCount = 512;
+    var segmentIds = Enumerable.Range(0, segmentCount)
+      .Select(index => 800ul + Convert.ToUInt64(index))
+      .ToArray();
+    var pieceIds = new List<ulong>(segmentCount * 2);
+    var placements = new List<RideTrackPlacement>(segmentCount * 2);
+    foreach (var index in Enumerable.Range(0, segmentCount)) {
+      var segmentId = segmentIds[index];
+      var firstId = 10_000ul + Convert.ToUInt64(index * 2);
+      var secondId = firstId + 1ul;
+      pieceIds.Add(firstId);
+      pieceIds.Add(secondId);
+      placements.Add(Placement(firstId, secondId, secondId, segmentId));
+      placements.Add(Placement(secondId, firstId, firstId, segmentId));
+    }
+    var track = Track(
+      pieceIds.ToArray(),
+      isCircuit: null,
+      segmentIds: segmentIds);
+    var firstPiece = HalfCircuit(first: true);
+    var secondPiece = HalfCircuit(first: false);
+    var segmentGroupingReads = 0;
+    var createPieceCalls = 0;
+
+    var circuits = RideTrackGraphAdapter.BuildCircuits(
+      track,
+      placements,
+      placement => {
+        createPieceCalls++;
+        return (placement.SourceEntryId - 10_000ul) % 2ul == 0ul
+          ? firstPiece
+          : secondPiece;
+      },
+      placement => {
+        segmentGroupingReads++;
+        return placement.SegmentReference;
+      });
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(segmentGroupingReads, Is.EqualTo(placements.Count));
+      Assert.That(createPieceCalls, Is.EqualTo(placements.Count));
+      Assert.That(circuits, Has.Count.EqualTo(segmentCount));
+      Assert.That(circuits.SelectMany(circuit => circuit.PieceSourceEntryIds),
+        Is.EqualTo(pieceIds));
+    }
+  }
+
+  [Test]
+  public void BuildCircuits_RejectsUnknownMissingAndNoncontiguousSegmentMembership() {
+    var twoSegments = new ulong[] { 800, 801 };
+    var twoPieces = new ulong[] { 500, 501 };
+    var unknown = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrackGraphAdapter.BuildCircuits(
+        Track(twoPieces, isCircuit: null, segmentIds: twoSegments),
+        [
+          Placement(500, 501, 501, segmentId: 800),
+          Placement(501, 500, 500, segmentId: 802),
+        ],
+        _ => HalfCircuit(first: true))));
+    var missing = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrackGraphAdapter.BuildCircuits(
+        Track(twoPieces, isCircuit: null, segmentIds: twoSegments),
+        [
+          Placement(500, 501, 501, segmentId: 800),
+          Placement(501, 500, 500, segmentId: 800),
+        ],
+        _ => HalfCircuit(first: true))));
+    var noncontiguous = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrackGraphAdapter.BuildCircuits(
+        Track([500, 600, 501, 601], isCircuit: null, segmentIds: twoSegments),
+        [
+          Placement(500, 501, 501, segmentId: 800),
+          Placement(501, 500, 500, segmentId: 800),
+          Placement(600, 601, 601, segmentId: 801),
+          Placement(601, 600, 600, segmentId: 801),
+        ],
+        _ => HalfCircuit(first: true))));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(unknown!.Message, Does.Contain("outside the track"));
+      Assert.That(missing!.Message, Does.Contain("contains no TrackPiece references"));
+      Assert.That(noncontiguous!.Message,
+        Does.Contain("does not retain contiguous TrackSegment order"));
+    }
+  }
+
+  [Test]
   public void Build_RejectsMissingOrDiscontinuousGeometry() {
     var track = Track([500, 501]);
     var placements = new[] {
@@ -168,17 +287,18 @@ public class RideTrackGraphAdapterTests {
     ulong[] pieceIds,
     bool? isCircuit = false,
     bool hasSerializedOrder = true,
-    bool? hasAuthoritativeOrder = null
+    bool? hasAuthoritativeOrder = null,
+    ulong[]? segmentIds = null
   ) => new(
     sourceEntryId: 700,
     direction: 0,
-    firstSegmentSourceEntryId: 800,
-    lastSegmentSourceEntryId: 800,
+    firstSegmentSourceEntryId: (segmentIds ?? [800UL])[0],
+    lastSegmentSourceEntryId: (segmentIds ?? [800UL])[^1],
     isCircuit,
     prototype: false,
     hasSerializedOrder,
     pieceIds,
-    segmentSourceEntryIds: [800],
+    segmentSourceEntryIds: segmentIds ?? [800],
     flexiColour0: 0,
     flexiColour1: 0,
     flexiColour2: 0,
@@ -190,7 +310,8 @@ public class RideTrackGraphAdapterTests {
   private static RideTrackPlacement Placement(
     ulong sourceEntryId,
     ulong previous,
-    ulong next
+    ulong next,
+    ulong segmentId = 800
   ) => new(
     sourceEntryId,
     sceneryPlacementSourceEntryId: sourceEntryId + 100,
@@ -204,8 +325,8 @@ public class RideTrackGraphAdapterTests {
     serializedDirection: 0,
     serializedHeight: 0,
     corner: 0,
-    ownerReference: 800,
-    segmentReference: 800,
+    ownerReference: segmentId,
+    segmentReference: segmentId,
     previousPieceReference: previous,
     nextPieceReference: next,
     platformPieceReference: 0,

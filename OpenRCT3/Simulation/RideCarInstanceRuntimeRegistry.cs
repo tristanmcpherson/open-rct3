@@ -24,6 +24,8 @@ internal sealed record RideCarTrackPieceRuntimeLink(
   int? PieceIndex,
   TrackPiece? Piece
 ) {
+  public int? CircuitIndex { get; init; }
+  public ulong? SegmentSourceEntryId { get; init; }
   public bool IsResolved => Status == RideCarTrackPieceRuntimeStatus.Resolved;
 }
 
@@ -384,28 +386,70 @@ internal sealed class RideCarInstanceRuntimeRegistry {
       return unresolved;
     }
 
-    var ids = runtime.Track.TrackPieceSourceEntryIds;
-    IReadOnlyList<TrackPiece> pieces;
-    if (runtime.Circuit != null && runtime.Graph == null)
-      pieces = runtime.Circuit.Pieces.Select(piece => piece.Piece).ToArray();
-    else if (runtime.Graph != null && runtime.Circuit == null)
-      pieces = runtime.Graph.Edges.Select(edge => edge.Piece).ToArray();
-    else
+    var trackPieceIds = runtime.Track.TrackPieceSourceEntryIds;
+    var byId = new Dictionary<ulong, ResolvedTrackPiece>(trackPieceIds.Count);
+    if (runtime.Graph != null && runtime.GraphTraversal != null &&
+        runtime.Circuit == null && runtime.SegmentCircuitTraversals.Count == 0) {
+      if (trackPieceIds.Count != runtime.Graph.Edges.Count)
+        throw Invalid(
+          $"ride {rideId} has {trackPieceIds.Count} saved track-piece identities but " +
+          $"{runtime.Graph.Edges.Count} runtime pieces");
+      foreach (var index in Enumerable.Range(0, trackPieceIds.Count))
+        AddTrackPiece(
+          trackPieceIds[index],
+          index,
+          runtime.Graph.Edges[index].Piece,
+          circuitIndex: null,
+          segmentSourceEntryId: null);
+    } else if (runtime.Graph == null && runtime.GraphTraversal == null &&
+               runtime.SegmentCircuitTraversals.Count > 0) {
+      var flattenedIds = new List<ulong>(trackPieceIds.Count);
+      foreach (var circuitIndex in Enumerable.Range(
+        0,
+        runtime.SegmentCircuitTraversals.Count)) {
+        var segment = runtime.SegmentCircuitTraversals[circuitIndex];
+        if (segment?.Traversal is null || segment.PieceSourceEntryIds is null ||
+            !ReferenceEquals(segment.Traversal.Circuit, segment.Circuit) ||
+            segment.PieceSourceEntryIds.Count != segment.Circuit.Pieces.Count)
+          throw Invalid($"ride {rideId} has incomplete segment-circuit geometry");
+        foreach (var pieceIndex in Enumerable.Range(0, segment.PieceSourceEntryIds.Count)) {
+          var pieceId = segment.PieceSourceEntryIds[pieceIndex];
+          flattenedIds.Add(pieceId);
+          AddTrackPiece(
+            pieceId,
+            pieceIndex,
+            segment.Circuit.Pieces[pieceIndex].Piece,
+            circuitIndex,
+            segment.SegmentSourceEntryId);
+        }
+      }
+      if (!flattenedIds.SequenceEqual(trackPieceIds))
+        throw Invalid(
+          $"ride {rideId} changed authoritative segment-circuit TrackPiece order");
+    } else {
       throw Invalid($"ride {rideId} has inconsistent resolved track geometry");
-    if (ids.Count != pieces.Count)
-      throw Invalid(
-        $"ride {rideId} has {ids.Count} saved track-piece identities but " +
-        $"{pieces.Count} runtime pieces");
-
-    var byId = new Dictionary<ulong, ResolvedTrackPiece>(ids.Count);
-    foreach (var index in Enumerable.Range(0, ids.Count)) {
-      var id = ids[index];
-      if (id == 0 || !byId.TryAdd(id, new(index, pieces[index])))
-        throw Invalid($"ride {rideId} has a missing or duplicate track-piece identity {id}");
     }
+
     var resolved = new TrackPieceIndex(byId);
     cache.Add(rideId, resolved);
     return resolved;
+
+    void AddTrackPiece(
+      ulong pieceId,
+      int pieceIndex,
+      TrackPiece piece,
+      int? circuitIndex,
+      ulong? segmentSourceEntryId
+    ) {
+      if (pieceId == 0 || piece is null ||
+          !byId.TryAdd(pieceId, new(
+            pieceIndex,
+            piece,
+            circuitIndex,
+            segmentSourceEntryId)))
+        throw Invalid(
+          $"ride {rideId} has a missing or duplicate track-piece identity {pieceId}");
+    }
   }
 
   private static RideCarTrackPieceRuntimeLink ResolveTrackPiece(
@@ -434,7 +478,10 @@ internal sealed class RideCarInstanceRuntimeRegistry {
       savedTrackPieceEntryId,
       RideCarTrackPieceRuntimeStatus.Resolved,
       resolved.Index,
-      resolved.Piece);
+      resolved.Piece) {
+      CircuitIndex = resolved.CircuitIndex,
+      SegmentSourceEntryId = resolved.SegmentSourceEntryId,
+    };
   }
 
   private static void ValidateLimits(RideCarInstanceRuntimeRegistryLimits limits) {
@@ -453,7 +500,11 @@ internal sealed class RideCarInstanceRuntimeRegistry {
 
   private sealed record IndexedCar(int SavedIndex, DatRideCarInstanceData Instance);
 
-  private sealed record ResolvedTrackPiece(int Index, TrackPiece Piece);
+  private sealed record ResolvedTrackPiece(
+    int Index,
+    TrackPiece Piece,
+    int? CircuitIndex,
+    ulong? SegmentSourceEntryId);
 
   private sealed record TrackPieceIndex(
     IReadOnlyDictionary<ulong, ResolvedTrackPiece>? ById

@@ -7,6 +7,7 @@ using OpenCobra.GDK.Materials;
 using OpenCobra.GDK.Meshes;
 using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
+using OpenRCT3.Serialization;
 using OpenRCT3.Simulation;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
@@ -17,7 +18,7 @@ namespace OpenRCT3.Tests.Simulation;
 [TestFixture]
 public class RideCarVisualMaterialResolverTests {
   [Test]
-  public void Resolve_UsesTrackColoursCachesFirstFrameAndReturnsFreshLeasedMaterials() {
+  public void Resolve_UsesSavedCarColoursCachesFirstFrameAndReturnsFreshLeasedMaterials() {
     var path = FixturePath("ride-textures.unique.ovl");
     using var archive = Archive(path, "Body");
     using var context = Context(archive);
@@ -26,7 +27,7 @@ public class RideCarVisualMaterialResolverTests {
     var resolver = new RideCarVisualMaterialResolver(context, (_, _) => {
       decodeCount++;
       return new FlexiTextureList(0, [
-        IndexedFrame(Recolorable.First, 43),
+        IndexedFrame(Recolorable.First, 42),
         new FlexiTexture(Recolorable.None, unusedFrame),
       ]);
     });
@@ -52,6 +53,9 @@ public class RideCarVisualMaterialResolverTests {
       Assert.That(secondMaterial.AlbedoTexture, Is.SameAs(greenTexture));
       Assert.That(redTexture, Is.Not.SameAs(greenTexture));
       Assert.That(redTexture.CacheKey, Is.Not.EqualTo(greenTexture.CacheKey));
+      Assert.That(greenTexture.Pixels[0, 0], Is.EqualTo(FlexiColourPalette.Get(11)));
+      Assert.That(redTexture.Pixels[0, 0], Is.EqualTo(FlexiColourPalette.Get(28)));
+      Assert.That(greenTexture.Pixels[0, 0], Is.Not.EqualTo(FlexiColourPalette.Get(12)));
       Assert.That(decodeCount, Is.EqualTo(1));
       Assert.Throws<ObjectDisposedException>(new Action(() => _ = unusedFrame[0, 0]));
     }
@@ -220,13 +224,24 @@ public class RideCarVisualMaterialResolverTests {
       false,
       [],
       [],
-      first,
-      second,
-      third,
-      0,
+      12,
+      2,
+      2,
+      2,
       null,
       null);
-    var identity = new RideInstanceTrackLink(null!, track);
+    var ride = new DatTrackedRideInstanceData(
+      entryId: 2,
+      name: "Synthetic ride",
+      track: track.SourceEntryId,
+      trackedRideOverlayName: "SyntheticRide",
+      trackedRideSymbolName: "SyntheticRide:trr",
+      nTrains: 1,
+      nCarsPerTrain: 1,
+      trainSelection: 0,
+      trains: [3],
+      carFlexiColours: new DatSceneryFlexiColour(first, second, third));
+    var identity = new RideInstanceTrackLink(ride, track);
     var geometry = new RideTrackGeometryLink(
       track,
       RideTrackGeometryStatus.UnsupportedGeometry,

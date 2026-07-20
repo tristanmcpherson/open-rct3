@@ -59,16 +59,29 @@ internal static class RideTrackDiagnosticSceneBuilder {
           throw Invalid("track list contains an incomplete link");
         switch (link.Status) {
           case RideTrackGeometryStatus.OpenTrack:
-            if (link.Graph is null || link.Circuit != null)
+            if (link.Graph is null || link.Circuit != null ||
+                link.SegmentCircuits?.Count != 0)
               throw Invalid(
                 $"open track {link.Track.SourceEntryId} has inconsistent geometry");
             BuildResolved(link, link.Graph.Edges.Select(edge => edge.Piece));
             break;
           case RideTrackGeometryStatus.Circuit:
-            if (link.Circuit is null || link.Graph != null)
+            if (link.Circuit is null || link.Graph != null ||
+                link.SegmentCircuits?.Count != 1 ||
+                !ReferenceEquals(link.SegmentCircuits[0].Circuit, link.Circuit))
               throw Invalid(
                 $"circuit {link.Track.SourceEntryId} has inconsistent geometry");
             BuildResolved(link, link.Circuit.Pieces.Select(piece => piece.Piece));
+            break;
+          case RideTrackGeometryStatus.MultiCircuit:
+            if (link.Circuit != null || link.Graph != null)
+              throw Invalid(
+                $"multi-circuit track {link.Track.SourceEntryId} has singular geometry");
+            ValidateSegmentCircuits(link, 2);
+            BuildResolved(
+              link,
+              link.SegmentCircuits.SelectMany(segment =>
+                segment.Circuit.Pieces.Select(piece => piece.Piece)));
             break;
           case RideTrackGeometryStatus.UnresolvedResources:
             ValidateSkipped(link);
@@ -125,6 +138,7 @@ internal static class RideTrackDiagnosticSceneBuilder {
       var crossSectionCount = 0ul;
       var vertexCount = 0ul;
       var indexCount = 0ul;
+      var retainedPieces = new List<TrackPiece>();
       foreach (var piece in pieces) {
         if (piece is null || piece.BakedSampleCount < 2)
           throw Invalid(
@@ -141,6 +155,7 @@ internal static class RideTrackDiagnosticSceneBuilder {
         Reserve(ref totalVertices, vertices, MaximumVertexCount, "vertex");
         Reserve(ref totalIndices, indices, MaximumIndexCount, "index");
         pieceCount++;
+        retainedPieces.Add(piece);
         crossSectionCount += samples;
         vertexCount += vertices;
         indexCount += indices;
@@ -149,9 +164,16 @@ internal static class RideTrackDiagnosticSceneBuilder {
         throw Invalid($"resolved track {link.Track.SourceEntryId} contains no pieces");
 
       var name = $"Ride Track {link.Track.SourceEntryId} (diagnostic contact rails)";
-      var built = link.Status == RideTrackGeometryStatus.OpenTrack
-        ? RideTrackDiagnosticModelBuilder.Build(link.Graph!, name: name)
-        : RideTrackDiagnosticModelBuilder.Build(link.Circuit!, name: name);
+      var built = link.Status switch {
+        RideTrackGeometryStatus.OpenTrack =>
+          RideTrackDiagnosticModelBuilder.Build(link.Graph!, name: name),
+        RideTrackGeometryStatus.Circuit =>
+          RideTrackDiagnosticModelBuilder.Build(link.Circuit!, name: name),
+        RideTrackGeometryStatus.MultiCircuit =>
+          RideTrackDiagnosticModelBuilder.Build(retainedPieces, name: name),
+        _ => throw Invalid(
+          $"resolved track {link.Track.SourceEntryId} has skipped status {link.Status}"),
+      };
       var model = built.Model
         ?? throw Invalid(
           $"track {link.Track.SourceEntryId} returned a null diagnostic model");
@@ -173,9 +195,36 @@ internal static class RideTrackDiagnosticSceneBuilder {
   }
 
   private static void ValidateSkipped(RideTrackGeometryLink link) {
-    if (link.Graph != null || link.Circuit != null || link.IsResolved)
+    if (link.Graph != null || link.Circuit != null ||
+        link.SegmentCircuits?.Count != 0 || link.IsResolved)
       throw Invalid(
         $"skipped track {link.Track.SourceEntryId} unexpectedly contains resolved geometry");
+  }
+
+  private static void ValidateSegmentCircuits(
+    RideTrackGeometryLink link,
+    int minimumCount
+  ) {
+    var segments = link.SegmentCircuits;
+    if (segments is null || segments.Count < minimumCount ||
+        (minimumCount == 1 && segments.Count != 1) ||
+        !segments.Select(segment => segment?.SegmentSourceEntryId ?? 0ul)
+          .SequenceEqual(link.Track.SegmentSourceEntryIds))
+      throw Invalid(
+        $"circuit track {link.Track.SourceEntryId} has inconsistent segment geometry");
+    var flattenedIds = new List<ulong>(link.Track.TrackPieceSourceEntryIds.Count);
+    foreach (var segment in segments) {
+      if (segment?.Circuit is null || segment.PieceSourceEntryIds is null ||
+          segment.PieceSourceEntryIds.Count == 0 ||
+          segment.PieceSourceEntryIds.Count != segment.Circuit.Pieces.Count)
+        throw Invalid(
+          $"circuit track {link.Track.SourceEntryId} has incomplete segment geometry");
+      flattenedIds.AddRange(segment.PieceSourceEntryIds);
+    }
+    if (!flattenedIds.SequenceEqual(link.Track.TrackPieceSourceEntryIds) ||
+        (link.Circuit != null && !ReferenceEquals(link.Circuit, segments[0].Circuit)))
+      throw Invalid(
+        $"circuit track {link.Track.SourceEntryId} changed exact piece geometry");
   }
 
   private static void Reserve(

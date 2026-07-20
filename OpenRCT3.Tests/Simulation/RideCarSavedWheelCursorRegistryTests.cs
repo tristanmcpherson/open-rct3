@@ -167,6 +167,34 @@ public class RideCarSavedWheelCursorRegistryTests {
   }
 
   [Test]
+  public void Build_ResolvesOneMultiCircuitAndRejectsContactsAcrossCircuits() {
+    var fixture = MultiCircuitFixture(splitContacts: false);
+
+    var entry = RideCarSavedWheelCursorRegistry.Build(
+      fixture.CarRuntime,
+      fixture.TrackPieces).Entries.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(entry.IsResolved, Is.True);
+      Assert.That(entry.CarRuntime.TrackStatus,
+        Is.EqualTo(RideTrackGeometryStatus.MultiCircuit));
+      Assert.That(entry.CarRuntime.TrackPiece.CircuitIndex, Is.EqualTo(1));
+      Assert.That(entry.CarRuntime.RearTrackPiece.CircuitIndex, Is.EqualTo(1));
+      Assert.That(entry.Front.Cursor!.Value.PieceIndex, Is.EqualTo(1));
+      Assert.That(entry.Rear.Cursor!.Value.PieceIndex, Is.EqualTo(3));
+      Assert.That(entry.Front.Sample!.Value.CircuitPiece.Piece,
+        Is.SameAs(entry.CarRuntime.TrackPiece.Piece));
+      Assert.That(entry.Rear.Sample!.Value.CircuitPiece.Piece,
+        Is.SameAs(entry.CarRuntime.RearTrackPiece.Piece));
+    }
+
+    var split = MultiCircuitFixture(splitContacts: true);
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideCarSavedWheelCursorRegistry.Build(split.CarRuntime, split.TrackPieces)));
+    Assert.That(exception!.Message, Does.Contain("across separate circuits"));
+  }
+
+  [Test]
   public void Build_ExposesOpenUnresolvedAndMissingReferencesWithoutInventingCursors() {
     var open = NonCircuitFixture(resolvedOpenTrack: true, includeSavedReferences: true);
     var unresolved = NonCircuitFixture(resolvedOpenTrack: false, includeSavedReferences: true);
@@ -399,6 +427,67 @@ public class RideCarSavedWheelCursorRegistryTests {
     return new(carRuntime, raw, pieceIds);
   }
 
+  private static CircuitTestFixture MultiCircuitFixture(bool splitContacts) {
+    var pieceIds = new ulong[] { 710, 711, 712, 713, 720, 721, 722, 723 };
+    var firstPieces = CirclePieces();
+    var secondPieces = CirclePieces();
+    var first = new TrackCircuit(pieceIds.Take(4).Select((id, index) =>
+      new TrackCircuitPiece($"track-piece-{id}", firstPieces[index])));
+    var second = new TrackCircuit(pieceIds.Skip(4).Select((id, index) =>
+      new TrackCircuitPiece($"track-piece-{id}", secondPieces[index])));
+    var starts = PieceStarts(second);
+    var ride = Instance([2_000]);
+    var train = Train(ride, [3_000]);
+    var car = Car(
+      train,
+      Convert.ToSingle(starts[1] + 1d),
+      Convert.ToSingle(starts[3] + 1d),
+      splitContacts ? pieceIds[1] : pieceIds[5],
+      pieceIds[7],
+      reversed: false);
+    var track = new RideTrack(
+      sourceEntryId: ride.Track,
+      direction: 0,
+      firstSegmentSourceEntryId: 800,
+      lastSegmentSourceEntryId: 801,
+      isCircuit: null,
+      prototype: true,
+      hasSerializedTrackPieceOrder: true,
+      trackPieceSourceEntryIds: pieceIds,
+      segmentSourceEntryIds: [800, 801],
+      flexiColour0: 0,
+      flexiColour1: 0,
+      flexiColour2: 0,
+      trackedRideInstanceReference: ride.EntryId,
+      flippedTrackSections: null,
+      tunnelLightColour: null);
+    var geometry = new RideTrackGeometryLink(
+      track,
+      RideTrackGeometryStatus.MultiCircuit,
+      Graph: null,
+      Circuit: null) {
+      SegmentCircuits = [
+        new(800, Array.AsReadOnly(pieceIds.Take(4).ToArray()), first),
+        new(801, Array.AsReadOnly(pieceIds.Skip(4).ToArray()), second),
+      ],
+    };
+    var carRuntime = CarRuntime(ride, train, car, track, geometry);
+    var raw = pieceIds.Select((id, globalIndex) => {
+      var circuitOffset = globalIndex < 4 ? 0 : 4;
+      var localIndex = globalIndex - circuitOffset;
+      var segmentId = globalIndex < 4 ? 800ul : 801ul;
+      return TrackPieceData(
+        id,
+        owner: segmentId,
+        previous: pieceIds[circuitOffset + ((localIndex + 3) % 4)],
+        next: pieceIds[circuitOffset + ((localIndex + 1) % 4)],
+        forwardStart: Convert.ToSingle(starts[localIndex]),
+        backwardsStart: 100f,
+        segment: segmentId);
+    }).ToArray();
+    return new(carRuntime, raw, pieceIds);
+  }
+
   private static RideCarInstanceRuntimeRegistry CarRuntime(
     DatTrackedRideInstanceData ride,
     DatRideTrainInstanceData train,
@@ -490,7 +579,8 @@ public class RideCarSavedWheelCursorRegistryTests {
     ulong previous,
     ulong next,
     float forwardStart,
-    float backwardsStart
+    float backwardsStart,
+    ulong segment = 800
   ) => new(
     entryId: id,
     flexiColourField: new DatSceneryFlexiColour(0, 0, 0),
@@ -503,7 +593,7 @@ public class RideCarSavedWheelCursorRegistryTests {
     symbolName: "Synthetic:tks",
     sceneryItem: 1,
     sceneryItemDataField: new DatSceneryItemDataField(0, 0, 0, null, 1, 1),
-    segment: 800,
+    segment,
     startDistance: forwardStart,
     startDistanceBackwardsSpline: backwardsStart,
     userAngleDegrees: 0);

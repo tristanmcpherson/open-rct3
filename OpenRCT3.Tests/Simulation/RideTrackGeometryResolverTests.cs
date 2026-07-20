@@ -53,6 +53,43 @@ public class RideTrackGeometryResolverTests {
   }
 
   [Test]
+  public void Resolve_BuildsSeparateCircuitsForLinkDerivedMultiSegmentTopology() {
+    var placements = new[] {
+      Placement(500, previous: 501, next: 501, segmentId: 800),
+      Placement(501, previous: 500, next: 500, segmentId: 800),
+      Placement(600, previous: 601, next: 601, segmentId: 801),
+      Placement(601, previous: 600, next: 600, segmentId: 801),
+    };
+    var track = Track(
+      700,
+      [500, 501, 600, 601],
+      isCircuit: null,
+      segmentIds: [800, 801]);
+
+    var result = RideTrackGeometryResolver.Resolve(
+      [track],
+      placements,
+      new Dictionary<ulong, TrackPiece?> {
+        [500] = HalfCircuit(first: true),
+        [501] = HalfCircuit(first: false),
+        [600] = HalfCircuit(first: true),
+        [601] = HalfCircuit(first: false),
+      });
+
+    var link = result.Tracks.Single();
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(link.Status, Is.EqualTo(RideTrackGeometryStatus.MultiCircuit));
+      Assert.That(link.Graph, Is.Null);
+      Assert.That(link.Circuit, Is.Null);
+      Assert.That(link.SegmentCircuits.Select(circuit => circuit.SegmentSourceEntryId),
+        Is.EqualTo(new ulong[] { 800, 801 }));
+      Assert.That(link.SegmentCircuits.SelectMany(circuit => circuit.PieceSourceEntryIds),
+        Is.EqualTo(new ulong[] { 500, 501, 600, 601 }));
+      Assert.That(result.UnsupportedTopologyTrackCount, Is.Zero);
+    }
+  }
+
+  [Test]
   public void Resolve_SeparatesUnresolvedResourcesFromUnsupportedTopology() {
     var placements = new[] {
       Placement(500, previous: 1697, next: 1697),
@@ -251,17 +288,18 @@ public class RideTrackGeometryResolverTests {
     ulong sourceEntryId,
     ulong[] pieceIds,
     bool? isCircuit,
-    bool hasSerializedOrder = true
+    bool hasSerializedOrder = true,
+    ulong[]? segmentIds = null
   ) => new(
     sourceEntryId,
     direction: 0,
-    firstSegmentSourceEntryId: sourceEntryId + 100,
-    lastSegmentSourceEntryId: sourceEntryId + 100,
+    firstSegmentSourceEntryId: (segmentIds ?? [sourceEntryId + 100])[0],
+    lastSegmentSourceEntryId: (segmentIds ?? [sourceEntryId + 100])[^1],
     isCircuit,
     prototype: false,
     hasSerializedOrder,
     pieceIds,
-    segmentSourceEntryIds: [sourceEntryId + 100],
+    segmentSourceEntryIds: segmentIds ?? [sourceEntryId + 100],
     flexiColour0: 0,
     flexiColour1: 0,
     flexiColour2: 0,
@@ -272,7 +310,8 @@ public class RideTrackGeometryResolverTests {
   private static RideTrackPlacement Placement(
     ulong sourceEntryId,
     ulong previous,
-    ulong next
+    ulong next,
+    ulong? segmentId = null
   ) => new(
     sourceEntryId,
     sceneryPlacementSourceEntryId: sourceEntryId + 1000,
@@ -286,8 +325,8 @@ public class RideTrackGeometryResolverTests {
     serializedDirection: 0,
     serializedHeight: 0,
     corner: 0,
-    ownerReference: sourceEntryId < 600 ? 800UL : 801UL,
-    segmentReference: sourceEntryId < 600 ? 800UL : 801UL,
+    ownerReference: segmentId ?? (sourceEntryId < 600 ? 800UL : 801UL),
+    segmentReference: segmentId ?? (sourceEntryId < 600 ? 800UL : 801UL),
     previousPieceReference: previous,
     nextPieceReference: next,
     platformPieceReference: 0,

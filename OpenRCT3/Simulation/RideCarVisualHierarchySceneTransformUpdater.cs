@@ -51,22 +51,31 @@ internal static class RideCarVisualHierarchySceneTransformUpdater {
     RideCarVisualHierarchySceneBuildResult scene,
     IReadOnlyList<RideCarSceneTransformTarget> bodyTargets,
     RideCarVisualHierarchySceneTransformUpdaterLimits limits
+  ) => Prepare(scene, bodyTargets, limits).Apply();
+
+  /// <summary>
+  /// Preflights one complete hierarchy-scene update without mutating any model transform.
+  /// </summary>
+  internal static PreparedUpdate Prepare(
+    RideCarVisualHierarchySceneBuildResult scene,
+    IReadOnlyList<RideCarSceneTransformTarget> bodyTargets
+  ) => Prepare(
+    scene,
+    bodyTargets,
+    RideCarVisualHierarchySceneTransformUpdaterLimits.Default);
+
+  internal static PreparedUpdate Prepare(
+    RideCarVisualHierarchySceneBuildResult scene,
+    IReadOnlyList<RideCarSceneTransformTarget> bodyTargets,
+    RideCarVisualHierarchySceneTransformUpdaterLimits limits
   ) {
     ArgumentNullException.ThrowIfNull(scene);
     ArgumentNullException.ThrowIfNull(bodyTargets);
     ValidateLimits(limits);
-    var plan = Preflight(scene, bodyTargets, limits);
-    foreach (var assignment in plan.Assignments)
-      assignment.Transform.Matrix = assignment.Matrix;
-    return new(
-      bodyTargets.Count,
-      plan.UpdatedCarCount,
-      plan.UpdatedPartCount,
-      plan.Assignments.Count,
-      bodyTargets.Count - plan.UpdatedCarCount);
+    return Preflight(scene, bodyTargets, limits);
   }
 
-  private static UpdatePlan Preflight(
+  private static PreparedUpdate Preflight(
     RideCarVisualHierarchySceneBuildResult scene,
     IReadOnlyList<RideCarSceneTransformTarget> bodyTargets,
     RideCarVisualHierarchySceneTransformUpdaterLimits limits
@@ -81,10 +90,11 @@ internal static class RideCarVisualHierarchySceneTransformUpdater {
       if (!matrices.TryGetValue(binding.Instance, out var matrix))
         throw Invalid(
           $"part {binding.PartRegistryIndex} has no recomputed hierarchy pose");
-      assignments.Add(new(binding.Model.Transform, matrix));
+      assignments.Add(new(binding.Model, binding.Model.Transform, matrix));
     }
     return new(
-      Array.AsReadOnly(assignments.ToArray()),
+      assignments,
+      bodyTargets.Count,
       evidence.Cars.Count,
       evidence.Parts.Count);
   }
@@ -322,11 +332,44 @@ internal static class RideCarVisualHierarchySceneTransformUpdater {
     IReadOnlyDictionary<RideCarVisualHierarchyStaticPartInstance, ExpectedPart> Parts
   );
 
-  private sealed record PlannedAssignment(Transform Transform, Matrix4x4 Matrix);
-
-  private sealed record UpdatePlan(
-    IReadOnlyList<PlannedAssignment> Assignments,
-    int UpdatedCarCount,
-    int UpdatedPartCount
+  internal sealed record PlannedAssignment(
+    Model Model,
+    Transform Transform,
+    Matrix4x4 Matrix
   );
+
+  /// <summary>
+  /// Immutable exact-transform assignments from one successful hierarchy-scene preflight.
+  /// </summary>
+  /// <remarks>
+  /// Applying a prepared update performs only the already-validated matrix assignments. This lets
+  /// a caller prepare the body scene before either visual layer is changed.
+  /// </remarks>
+  internal sealed class PreparedUpdate {
+    private readonly IReadOnlyList<PlannedAssignment> assignments;
+
+    internal IReadOnlyList<PlannedAssignment> Assignments => assignments;
+    internal RideCarVisualHierarchySceneTransformUpdateResult Result { get; }
+
+    internal PreparedUpdate(
+      IEnumerable<PlannedAssignment> assignments,
+      int targetCarCount,
+      int updatedCarCount,
+      int updatedPartCount
+    ) {
+      this.assignments = Array.AsReadOnly(assignments.ToArray());
+      Result = new(
+        targetCarCount,
+        updatedCarCount,
+        updatedPartCount,
+        this.assignments.Count,
+        targetCarCount - updatedCarCount);
+    }
+
+    internal RideCarVisualHierarchySceneTransformUpdateResult Apply() {
+      foreach (var assignment in assignments)
+        assignment.Transform.Matrix = assignment.Matrix;
+      return Result;
+    }
+  }
 }

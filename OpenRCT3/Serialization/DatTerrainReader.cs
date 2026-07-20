@@ -479,6 +479,15 @@ internal static class DatTerrainReader {
     new("Track", FieldKind.ManagedObjectPtr, 8),
   ];
   private static readonly ExpectedField[] TrackedRideInstanceIdentityFields = [
+    new(
+      "CarFlexiColours",
+      FieldKind.Struct,
+      12,
+      [
+        new("COL0", FieldKind.Int32, 4),
+        new("COL1", FieldKind.Int32, 4),
+        new("COL2", FieldKind.Int32, 4),
+      ]),
     new("Name", FieldKind.String, 0),
     new("Track", FieldKind.ManagedObjectPtr, 8),
     new("TrackedRideOverlayName", FieldKind.String, 0),
@@ -1188,6 +1197,7 @@ internal static class DatTerrainReader {
     ValueReadState state
   ) {
     string? name = null;
+    DatSceneryFlexiColour? carFlexiColours = null;
     ulong? track = null;
     string? trackedRideOverlayName = null;
     string? trackedRideSymbolName = null;
@@ -1198,6 +1208,10 @@ internal static class DatTerrainReader {
 
     foreach (var field in structure.Fields) {
       switch (field.Name) {
+        case "CarFlexiColours":
+          CountSemanticSchemaValues(field, state);
+          carFlexiColours = ReadSceneryFlexiColour(reader);
+          break;
         case "Name":
           state.AddValue();
           name = ReadDatString(reader, "TrackedRideInstance Name");
@@ -1253,7 +1267,8 @@ internal static class DatTerrainReader {
       nTrains ?? throw MissingTrackedRideInstanceValue("NTrains"),
       nCarsPerTrain ?? throw MissingTrackedRideInstanceValue("NCarsPerTrain"),
       trainSelection ?? throw MissingTrackedRideInstanceValue("TrainSelection"),
-      trains ?? throw MissingTrackedRideInstanceValue("Trains"));
+      trains ?? throw MissingTrackedRideInstanceValue("Trains"),
+      carFlexiColours ?? throw MissingTrackedRideInstanceValue("CarFlexiColours"));
   }
 
   private static InvalidDataException MissingTrackedRideInstanceValue(string name) =>

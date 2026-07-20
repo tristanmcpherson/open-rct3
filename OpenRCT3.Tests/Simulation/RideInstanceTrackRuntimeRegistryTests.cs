@@ -170,7 +170,62 @@ public class RideInstanceTrackRuntimeRegistryTests {
       RideInstanceTrackRuntimeRegistry.Build(
         circuitIdentity,
         circuitGeometry,
-        new(MaximumEntryCount: 1, MaximumPieceCount: 1))));
+      new(MaximumEntryCount: 1, MaximumPieceCount: 1))));
+  }
+
+  [Test]
+  public void Build_RetainsSeparateTraversalsForMultiCircuitTrack() {
+    var track = new RideTrack(
+      sourceEntryId: 705,
+      direction: 0,
+      firstSegmentSourceEntryId: 805,
+      lastSegmentSourceEntryId: 806,
+      isCircuit: null,
+      prototype: true,
+      hasSerializedTrackPieceOrder: true,
+      trackPieceSourceEntryIds: [905, 906, 907, 908],
+      segmentSourceEntryIds: [805, 806],
+      flexiColour0: 0,
+      flexiColour1: 0,
+      flexiColour2: 0,
+      trackedRideInstanceReference: 909,
+      flippedTrackSections: null,
+      tunnelLightColour: null);
+    var first = Circuit(0f, 905, 906);
+    var second = Circuit(10f, 907, 908);
+    var geometry = new RideTrackGeometryLink(
+      track,
+      RideTrackGeometryStatus.MultiCircuit,
+      Graph: null,
+      Circuit: null) {
+      SegmentCircuits = [
+        new(805, Array.AsReadOnly(new ulong[] { 905, 906 }), first),
+        new(806, Array.AsReadOnly(new ulong[] { 907, 908 }), second),
+      ],
+    };
+    var identities = RideInstanceTrackGraph.Build([Instance(909, 705)], [track]);
+    var resolution = new RideTrackGeometryResolution(
+      [geometry],
+      UnresolvedResourceTrackCount: 0,
+      UnsupportedGeometryTrackCount: 0,
+      UnsupportedTopologyTrackCount: 0);
+
+    var registry = RideInstanceTrackRuntimeRegistry.Build(identities, resolution);
+    var entry = registry.Entries.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(registry.ResolvedTrackCount, Is.EqualTo(1));
+      Assert.That(registry.MultiCircuitTrackCount, Is.EqualTo(1));
+      Assert.That(registry.CircuitTrackCount, Is.Zero);
+      Assert.That(entry.Status, Is.EqualTo(RideTrackGeometryStatus.MultiCircuit));
+      Assert.That(entry.Circuit, Is.Null);
+      Assert.That(entry.CircuitTraversal, Is.Null);
+      Assert.That(entry.SegmentCircuitTraversals, Has.Count.EqualTo(2));
+      Assert.That(entry.SegmentCircuitTraversals.Select(segment =>
+        segment.SegmentSourceEntryId), Is.EqualTo(new ulong[] { 805, 806 }));
+      Assert.That(entry.SegmentCircuitTraversals.Select(segment =>
+        segment.Traversal.Circuit), Is.EqualTo(new[] { first, second }));
+    }
   }
 
   private static RideTrackGeometryLink Link(
@@ -229,6 +284,19 @@ public class RideInstanceTrackRuntimeRegistryTests {
   private static TrackCircuit Circuit(float offsetX) => new([
     new TrackCircuitPiece("first", HalfCircuit(offsetX, first: true)),
     new TrackCircuitPiece("second", HalfCircuit(offsetX, first: false)),
+  ]);
+
+  private static TrackCircuit Circuit(
+    float offsetX,
+    ulong firstPieceId,
+    ulong secondPieceId
+  ) => new([
+    new TrackCircuitPiece(
+      $"track-piece-{firstPieceId}",
+      HalfCircuit(offsetX, first: true)),
+    new TrackCircuitPiece(
+      $"track-piece-{secondPieceId}",
+      HalfCircuit(offsetX, first: false)),
   ]);
 
   private static TrackPiece HalfCircuit(float offsetX, bool first) {

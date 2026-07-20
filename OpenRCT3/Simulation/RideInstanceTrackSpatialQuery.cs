@@ -97,7 +97,9 @@ internal sealed class RideInstanceTrackSpatialQuery {
       if (spatial is null || spatial.TrackSourceEntryId == 0)
         throw Invalid($"spatial entry {index} is incomplete");
       if (spatial.Status is not (
-        RideTrackGeometryStatus.OpenTrack or RideTrackGeometryStatus.Circuit))
+        RideTrackGeometryStatus.OpenTrack or
+        RideTrackGeometryStatus.Circuit or
+        RideTrackGeometryStatus.MultiCircuit))
         throw Invalid(
           $"spatial entry {spatial.TrackSourceEntryId} has skipped status {spatial.Status}");
       if (!indexedTrackIds.Add(spatial.TrackSourceEntryId))
@@ -183,7 +185,9 @@ internal sealed class RideInstanceTrackSpatialQuery {
         throw Invalid(
           $"runtime track {entry.TrackEntryId} changed exact semantic object identity");
       var expectedResolved = entry.Status is (
-        RideTrackGeometryStatus.OpenTrack or RideTrackGeometryStatus.Circuit);
+        RideTrackGeometryStatus.OpenTrack or
+        RideTrackGeometryStatus.Circuit or
+        RideTrackGeometryStatus.MultiCircuit);
       if (entry.IsResolved != expectedResolved)
         throw Invalid(
           $"runtime track {entry.TrackEntryId} has inconsistent status and traversal state");

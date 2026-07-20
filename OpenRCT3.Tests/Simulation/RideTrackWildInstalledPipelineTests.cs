@@ -12,7 +12,7 @@ namespace OpenRCT3.Tests.Simulation;
 public class RideTrackWildInstalledPipelineTests {
   [Test]
   [Explicit("Requires installed RCT3 assets and the ScrubGardens DAT.")]
-  public void ScrubGardens_SeizmicSelectsExactBodiesAndReportsUnsupportedTopology() {
+  public void ScrubGardens_SeizmicResolvesTwoExactCircuitsAndSavedCars() {
     var installRoot = Environment.GetEnvironmentVariable("RCT3_PATH");
     Assert.That(
       string.IsNullOrWhiteSpace(installRoot),
@@ -241,14 +241,35 @@ public class RideTrackWildInstalledPipelineTests {
           Is.EqualTo(expectedRearDistances));
         Assert.That(targetCars.Select(car => car.Reversed), Is.All.False);
         Assert.That(targetGeometry.Status,
-          Is.EqualTo(RideTrackGeometryStatus.UnsupportedTopology));
+          Is.EqualTo(RideTrackGeometryStatus.MultiCircuit));
         Assert.That(targetGeometry.Graph, Is.Null);
         Assert.That(targetGeometry.Circuit, Is.Null);
-        Assert.That(targetGeometry.Detail, Is.EqualTo(
-          "The DAT links do not define one authoritative open/circuit traversal."));
-        Assert.That(trackRuntime.ResolvedTrackCount, Is.Zero);
-        Assert.That(trackRuntime.UnsupportedTopologyTrackCount, Is.EqualTo(1));
+        Assert.That(targetGeometry.SegmentCircuits.Select(circuit =>
+          circuit.SegmentSourceEntryId), Is.EqualTo(new ulong[] { 6_489, 6_490 }));
+        Assert.That(targetGeometry.SegmentCircuits.ToDictionary(
+          circuit => circuit.SegmentSourceEntryId,
+          circuit => circuit.PieceSourceEntryIds.ToArray()),
+          Is.EqualTo(expectedSegmentPieceOrders));
+        Assert.That(targetGeometry.SegmentCircuits.Select(circuit =>
+          circuit.Circuit.Pieces.Count), Is.EqualTo(new[] { 57, 57 }));
+        Assert.That(targetGeometry.Detail, Is.Null);
+        Assert.That(trackRuntime.ResolvedTrackCount, Is.EqualTo(1));
+        Assert.That(trackRuntime.MultiCircuitTrackCount, Is.EqualTo(1));
+        Assert.That(trackRuntime.UnsupportedTopologyTrackCount, Is.Zero);
+        Assert.That(trackRuntime.Entries.Single().CircuitTraversal, Is.Null);
+        Assert.That(trackRuntime.Entries.Single().SegmentCircuitTraversals,
+          Has.Count.EqualTo(2));
         Assert.That(trainRuntime.Entries, Has.Count.EqualTo(18));
+        Assert.That(trainRuntime.Entries.Select(train =>
+          RideTrainCircuitMotionAuthorization.Authorize(
+            train,
+            train.TrackRuntime).IsAuthorized), Is.All.False);
+        Assert.That(trainRuntime.Entries.Select(train =>
+          RideTrainCircuitMotionAuthorization.Authorize(
+            train,
+            train.TrackRuntime).Status),
+          Is.All.EqualTo(
+            RideTrainCircuitMotionAuthorizationStatus.UnprovenEndpointFallback));
         Assert.That(consistRuntime.Entries, Has.Count.EqualTo(18));
         Assert.That(consistRuntime.ResolvedCount, Is.EqualTo(18));
         Assert.That(consistRuntime.Entries.All(consist =>
@@ -259,24 +280,28 @@ public class RideTrackWildInstalledPipelineTests {
         Assert.That(carRuntime.Entries.Select(car => car.SavedRole),
           Is.All.EqualTo(RideTrainCarRole.Front));
         Assert.That(carRuntime.Entries.Select(car => car.TrackStatus),
-          Is.All.EqualTo(RideTrackGeometryStatus.UnsupportedTopology));
+          Is.All.EqualTo(RideTrackGeometryStatus.MultiCircuit));
         Assert.That(carRuntime.Entries.Select(car => car.TrackPiece.Status),
-          Is.All.EqualTo(RideCarTrackPieceRuntimeStatus.UnresolvedTrack));
+          Is.All.EqualTo(RideCarTrackPieceRuntimeStatus.Resolved));
         Assert.That(carRuntime.Entries.Select(car => car.RearTrackPiece.Status),
-          Is.All.EqualTo(RideCarTrackPieceRuntimeStatus.UnresolvedTrack));
+          Is.All.EqualTo(RideCarTrackPieceRuntimeStatus.Resolved));
+        Assert.That(carRuntime.Entries.Select(car => car.TrackPiece.CircuitIndex),
+          Is.EqualTo(Enumerable.Range(0, 18).Select(index => (int?)(index % 2))));
+        Assert.That(carRuntime.Entries.Select(car => car.RearTrackPiece.CircuitIndex),
+          Is.EqualTo(Enumerable.Range(0, 18).Select(index => (int?)(index % 2))));
         Assert.That(wheelCursors.CarCount, Is.EqualTo(18));
-        Assert.That(wheelCursors.ResolvedCarCount, Is.Zero);
-        Assert.That(wheelCursors.ResolvedContactCount, Is.Zero);
+        Assert.That(wheelCursors.ResolvedCarCount, Is.EqualTo(18));
+        Assert.That(wheelCursors.ResolvedContactCount, Is.EqualTo(36));
         Assert.That(wheelCursors.Entries.SelectMany(entry =>
           new[] { entry.Front.Status, entry.Rear.Status }),
-          Is.All.EqualTo(RideCarSavedWheelCursorStatus.UnresolvedTrack));
+          Is.All.EqualTo(RideCarSavedWheelCursorStatus.Resolved));
         Assert.That(wheelCursors.Entries.SelectMany(entry =>
           new[] { entry.Front, entry.Rear }).All(contact =>
-            contact.NormalizedCircuitDistance == null &&
-            contact.TrackPieceData == null &&
-            contact.SplineStart == null &&
-            contact.Cursor == null &&
-            contact.Sample == null), Is.True);
+            contact.NormalizedCircuitDistance != null &&
+            contact.TrackPieceData != null &&
+            contact.SplineStart != null &&
+            contact.Cursor != null &&
+            contact.Sample != null), Is.True);
         Assert.That(visualVariants.Entries, Has.Count.EqualTo(18));
         Assert.That(visualVariants.SelectedCount, Is.EqualTo(18));
         Assert.That(visualVariants.FailedCount, Is.Zero);
@@ -289,27 +314,21 @@ public class RideTrackWildInstalledPipelineTests {
         Assert.That(variantTemplates.ResolvedCount, Is.EqualTo(18));
         Assert.That(variantTemplates.FailedCount, Is.Zero);
         Assert.That(variantCars.CarCount, Is.EqualTo(18));
-        Assert.That(variantCars.ResolvedCount, Is.Zero);
-        Assert.That(variantCars.UnresolvedCount, Is.EqualTo(18));
-        Assert.That(variantCars.UnresolvedSavedCursorCount, Is.EqualTo(18));
+        Assert.That(variantCars.ResolvedCount, Is.EqualTo(18));
+        Assert.That(variantCars.UnresolvedCount, Is.Zero);
+        Assert.That(variantCars.UnresolvedSavedCursorCount, Is.Zero);
         Assert.That(variantCars.Entries.Select(entry => entry.Issues),
-          Is.All.EqualTo(RideCarVariantStaticInstanceIssue.UnresolvedSavedCursor));
+          Is.All.EqualTo(RideCarVariantStaticInstanceIssue.None));
         Assert.That(variantCars.Entries.Select(entry => entry.SelectedVariant),
           Is.EqualTo(expectedVariants));
         Assert.That(variantCars.Entries.Select(entry => entry.RequiredBodyRole),
           Is.EqualTo(expectedBodyRoles));
         Assert.That(visualHierarchy.AmbiguousPartCount, Is.Zero);
         Assert.That(hierarchyParts.SourceCarCount, Is.EqualTo(18));
-        Assert.That(hierarchyParts.EligibleCarCount, Is.Zero);
-        Assert.That(hierarchyParts.PlannedCarCount, Is.Zero);
+        Assert.That(hierarchyParts.EligibleCarCount, Is.EqualTo(18));
+        Assert.That(hierarchyParts.PlannedCarCount, Is.EqualTo(18));
         Assert.That(hierarchyParts.PartCount, Is.Zero);
-        Assert.That(hierarchyParts.Issues, Has.Count.EqualTo(18));
-        Assert.That(hierarchyParts.Issues.All(issue =>
-          issue.Status ==
-            RideCarVisualHierarchyStaticInstanceIssueStatus.UpstreamCarUnavailable &&
-          issue.Detail.Contains(
-            nameof(RideCarVariantStaticInstanceIssue.UnresolvedSavedCursor),
-            StringComparison.Ordinal)), Is.True);
+        Assert.That(hierarchyParts.Issues, Is.Empty);
       }
     } finally {
       terrain.TextureCatalog?.Dispose();

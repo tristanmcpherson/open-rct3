@@ -21,6 +21,9 @@ public class DatTrackedRideInstanceReaderTests {
       Assert.That(stream.Position, Is.EqualTo(stream.Length));
       Assert.That(ride.EntryId, Is.EqualTo(900));
       Assert.That(ride.Name, Is.EqualTo("Synthetic coaster"));
+      Assert.That(
+        ride.CarFlexiColours,
+        Is.EqualTo(new DatSceneryFlexiColour(6, 18, 25)));
       Assert.That(ride.Track, Is.EqualTo(700));
       Assert.That(ride.TrackedRideOverlayName, Is.EqualTo("rides\\synthetic"));
       Assert.That(ride.TrackedRideSymbolName, Is.EqualTo("Synthetic_Ride"));
@@ -51,6 +54,25 @@ public class DatTrackedRideInstanceReaderTests {
     using var stream = BuildDat(structure);
 
     Assert.Throws<InvalidDataException>(new Action(() => DatTerrainReader.Read(stream)));
+  }
+
+  [Test]
+  public void Read_CarFlexiColoursSchemaDriftFailsClosed() {
+    var structure = TrackedRideInstanceStructure(
+      carFlexiColoursField: new FieldSpec(
+        "CarFlexiColours",
+        "struct",
+        8,
+        [
+          new FieldSpec("COL0", "int32", 4),
+          new FieldSpec("COL1", "int32", 4),
+        ]));
+    using var stream = BuildDat(structure);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      DatTerrainReader.Read(stream)));
+
+    Assert.That(exception!.Message, Does.Contain("CarFlexiColours"));
   }
 
   [Test]
@@ -167,6 +189,9 @@ public class DatTrackedRideInstanceReaderTests {
     using (Assert.EnterMultipleScope()) {
       Assert.That(ride.Trains, Is.EqualTo(new ulong[] { 3_987 }));
       Assert.That(ride.TrainSelection, Is.Zero);
+      Assert.That(
+        ride.CarFlexiColours,
+        Is.EqualTo(new DatSceneryFlexiColour(6, 18, 25)));
       Assert.That(train.TrackedRideInstance, Is.EqualTo(ride.EntryId));
       Assert.That(train.RideTrainOverlayName,
         Is.EqualTo(@"Cars\TrackedRideCars\StreamlinedMono\StreamlinedMono"));
@@ -262,6 +287,9 @@ public class DatTrackedRideInstanceReaderTests {
     WriteDatString(writer, "Synthetic coaster");
     writer.Write(2u);
     writer.Write(Convert.ToUInt16(17));
+    writer.Write(6);
+    writer.Write(18);
+    writer.Write(25);
     writer.Write(2);
     WriteDatString(writer, "rides\\synthetic");
     writer.Write(16u);
@@ -301,7 +329,8 @@ public class DatTrackedRideInstanceReaderTests {
 
   private static StructureSpec TrackedRideInstanceStructure(
     FieldSpec? nameField = null,
-    FieldSpec? trainsField = null
+    FieldSpec? trainsField = null,
+    FieldSpec? carFlexiColoursField = null
   ) => new(
     "TrackedRideInstance",
     [
@@ -313,6 +342,15 @@ public class DatTrackedRideInstanceReaderTests {
         "struct",
         0,
         [new FieldSpec("Value", "uint16", 2)]),
+      carFlexiColoursField ?? new FieldSpec(
+        "CarFlexiColours",
+        "struct",
+        12,
+        [
+          new FieldSpec("COL0", "int32", 4),
+          new FieldSpec("COL1", "int32", 4),
+          new FieldSpec("COL2", "int32", 4),
+        ]),
       new FieldSpec("NTrains", "int32", 4),
       new FieldSpec("TrackedRideOverlayName", "string"),
       trainsField ?? new FieldSpec(

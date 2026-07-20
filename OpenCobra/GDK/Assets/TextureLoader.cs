@@ -125,6 +125,7 @@ public static class TextureLoader {
           terrain.Name,
           terrain.Number,
           terrain.Type,
+          terrain.Parameters,
           terrain.TextureRef,
           texture,
           layer,

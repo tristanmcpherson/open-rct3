@@ -29,15 +29,32 @@ public static class TerrainMeshBuilder {
   public static Mesh Build(Terrain terrain, Vector4 color, string? name = "Terrain") {
     var vertices = new List<Vertex>();
     var indices = new List<uint>();
+    var topTextureScale = DefaultTopTextureScale(terrain);
 
     for (var tileY = 0; tileY < terrain.Height; tileY++) {
       for (var tileX = 0; tileX < terrain.Width; tileX++) {
-        AddTopFace(terrain, tileX, tileY, color, vertices, indices);
+        AddTopFace(terrain, tileX, tileY, color, topTextureScale, vertices, indices);
 
         if (terrain.IsEdgeDetached(tileX, tileY, Edge.South))
-          AddCliffFace(terrain, tileX, tileY, Edge.South, color, vertices, indices);
+          AddCliffFace(
+            terrain,
+            tileX,
+            tileY,
+            Edge.South,
+            color,
+            DefaultCliffTextureScale(terrain, Edge.South),
+            vertices,
+            indices);
         if (terrain.IsEdgeDetached(tileX, tileY, Edge.West))
-          AddCliffFace(terrain, tileX, tileY, Edge.West, color, vertices, indices);
+          AddCliffFace(
+            terrain,
+            tileX,
+            tileY,
+            Edge.West,
+            color,
+            DefaultCliffTextureScale(terrain, Edge.West),
+            vertices,
+            indices);
       }
     }
 
@@ -58,7 +75,16 @@ public static class TerrainMeshBuilder {
     Terrain terrain,
     Vector4 color,
     string name = "Terrain"
+  ) => BuildBatches(terrain, color, (kind, index) =>
+    ResolveCatalogTextureScale(terrain, kind, index), name);
+
+  internal static IReadOnlyList<TerrainMeshBatch> BuildBatches(
+    Terrain terrain,
+    Vector4 color,
+    Func<TerrainMaterialKind, byte, Vector2?> resolveTextureScale,
+    string name = "Terrain"
   ) {
+    ArgumentNullException.ThrowIfNull(resolveTextureScale);
     var geometry = new Dictionary<(TerrainMaterialKind Kind, byte Index), MeshGeometry>();
 
     for (var tileY = 0; tileY < terrain.Height; tileY++) {
@@ -66,21 +92,50 @@ public static class TerrainMeshBuilder {
         var surfaceIndex = GetUniformMaterialIndex(
           terrain, tileX, tileY, TerrainMaterialKind.Surface);
         var surface = GetGeometry(geometry, TerrainMaterialKind.Surface, surfaceIndex);
-        AddTopFace(terrain, tileX, tileY, color, surface.Vertices, surface.Indices);
+        var surfaceTextureScale = resolveTextureScale(
+          TerrainMaterialKind.Surface, surfaceIndex) ?? DefaultTopTextureScale(terrain);
+        AddTopFace(
+          terrain,
+          tileX,
+          tileY,
+          color,
+          surfaceTextureScale,
+          surface.Vertices,
+          surface.Indices);
 
         if (terrain.IsEdgeDetached(tileX, tileY, Edge.South)) {
           var cliffIndex = GetUniformMaterialIndex(
             terrain, tileX, tileY, TerrainMaterialKind.Cliff);
           var cliff = GetGeometry(geometry, TerrainMaterialKind.Cliff, cliffIndex);
+          var cliffTextureScale = resolveTextureScale(
+            TerrainMaterialKind.Cliff, cliffIndex) ??
+            DefaultCliffTextureScale(terrain, Edge.South);
           AddCliffFace(
-            terrain, tileX, tileY, Edge.South, color, cliff.Vertices, cliff.Indices);
+            terrain,
+            tileX,
+            tileY,
+            Edge.South,
+            color,
+            cliffTextureScale,
+            cliff.Vertices,
+            cliff.Indices);
         }
         if (terrain.IsEdgeDetached(tileX, tileY, Edge.West)) {
           var cliffIndex = GetUniformMaterialIndex(
             terrain, tileX, tileY, TerrainMaterialKind.Cliff);
           var cliff = GetGeometry(geometry, TerrainMaterialKind.Cliff, cliffIndex);
+          var cliffTextureScale = resolveTextureScale(
+            TerrainMaterialKind.Cliff, cliffIndex) ??
+            DefaultCliffTextureScale(terrain, Edge.West);
           AddCliffFace(
-            terrain, tileX, tileY, Edge.West, color, cliff.Vertices, cliff.Indices);
+            terrain,
+            tileX,
+            tileY,
+            Edge.West,
+            color,
+            cliffTextureScale,
+            cliff.Vertices,
+            cliff.Indices);
         }
       }
     }
@@ -153,6 +208,7 @@ public static class TerrainMeshBuilder {
     int tileX,
     int tileY,
     Vector4 color,
+    Vector2 textureScale,
     List<Vertex> vertices,
     List<uint> indices) {
     var sw = CornerPosition(terrain, tileX, tileY, TerrainCornerSlot.SouthWest);
@@ -167,16 +223,28 @@ public static class TerrainMeshBuilder {
     var sharedNormal = Vector3.Normalize(southWestNormal + northEastNormal);
     var baseIndex = (uint)vertices.Count;
     vertices.Add(new Vertex {
-      Position = sw, Normal = southWestNormal, TexCoord = new Vector2(0, 0), Color = color
+      Position = sw,
+      Normal = southWestNormal,
+      TexCoord = TopTextureCoordinate(terrain, sw, textureScale),
+      Color = color
     });
     vertices.Add(new Vertex {
-      Position = se, Normal = sharedNormal, TexCoord = new Vector2(1, 0), Color = color
+      Position = se,
+      Normal = sharedNormal,
+      TexCoord = TopTextureCoordinate(terrain, se, textureScale),
+      Color = color
     });
     vertices.Add(new Vertex {
-      Position = ne, Normal = northEastNormal, TexCoord = new Vector2(1, 1), Color = color
+      Position = ne,
+      Normal = northEastNormal,
+      TexCoord = TopTextureCoordinate(terrain, ne, textureScale),
+      Color = color
     });
     vertices.Add(new Vertex {
-      Position = nw, Normal = sharedNormal, TexCoord = new Vector2(0, 1), Color = color
+      Position = nw,
+      Normal = sharedNormal,
+      TexCoord = TopTextureCoordinate(terrain, nw, textureScale),
+      Color = color
     });
     indices.AddRange([
       baseIndex,
@@ -194,6 +262,7 @@ public static class TerrainMeshBuilder {
     int tileY,
     Edge edge,
     Vector4 color,
+    Vector2 textureScale,
     List<Vertex> vertices,
     List<uint> indices) {
     var (nearSlot, farSlot) = edge switch {
@@ -214,23 +283,82 @@ public static class TerrainMeshBuilder {
 
     // Wind so the face's outward normal points away from this tile, into the neighbor.
     var normal = Vector3.Normalize(Vector3.Cross(farTop - nearTop, nearBottom - nearTop));
-    var edgeLength = edge == Edge.South ? terrain.TileSize.X : terrain.TileSize.Y;
-    var nearHeight = Math.Abs(nearTop.Z - nearBottom.Z) / edgeLength;
-    var farHeight = Math.Abs(farTop.Z - farBottom.Z) / edgeLength;
     var baseIndex = (uint)vertices.Count;
     vertices.Add(new Vertex {
-      Position = nearTop, Normal = normal, TexCoord = new Vector2(0, nearHeight), Color = color
+      Position = nearTop,
+      Normal = normal,
+      TexCoord = CliffTextureCoordinate(terrain, edge, nearTop, textureScale),
+      Color = color
     });
     vertices.Add(new Vertex {
-      Position = farTop, Normal = normal, TexCoord = new Vector2(1, farHeight), Color = color
+      Position = farTop,
+      Normal = normal,
+      TexCoord = CliffTextureCoordinate(terrain, edge, farTop, textureScale),
+      Color = color
     });
     vertices.Add(new Vertex {
-      Position = farBottom, Normal = normal, TexCoord = new Vector2(1, 0), Color = color
+      Position = farBottom,
+      Normal = normal,
+      TexCoord = CliffTextureCoordinate(terrain, edge, farBottom, textureScale),
+      Color = color
     });
     vertices.Add(new Vertex {
-      Position = nearBottom, Normal = normal, TexCoord = new Vector2(0, 0), Color = color
+      Position = nearBottom,
+      Normal = normal,
+      TexCoord = CliffTextureCoordinate(terrain, edge, nearBottom, textureScale),
+      Color = color
     });
     indices.AddRange([baseIndex, baseIndex + 1, baseIndex + 2, baseIndex, baseIndex + 2, baseIndex + 3]);
+  }
+
+  private static Vector2? ResolveCatalogTextureScale(
+    Terrain terrain,
+    TerrainMaterialKind kind,
+    byte index
+  ) {
+    if (terrain.TextureCatalog == null) return null;
+    var parameters = kind switch {
+      TerrainMaterialKind.Surface => terrain.TextureCatalog.GetSurfaceParameters(index),
+      TerrainMaterialKind.Cliff => terrain.TextureCatalog.GetCliffParameters(index),
+      _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+    };
+    return new Vector2(parameters.InvWidth, parameters.InvHeight);
+  }
+
+  private static Vector2 DefaultTopTextureScale(Terrain terrain) => new(
+    1f / terrain.TileSize.X,
+    1f / terrain.TileSize.Y);
+
+  private static Vector2 DefaultCliffTextureScale(Terrain terrain, Edge edge) {
+    var edgeLength = edge switch {
+      Edge.South => terrain.TileSize.X,
+      Edge.West => terrain.TileSize.Y,
+      _ => throw new ArgumentOutOfRangeException(nameof(edge), edge, null),
+    };
+    var inverseEdgeLength = 1f / edgeLength;
+    return new Vector2(inverseEdgeLength, inverseEdgeLength);
+  }
+
+  private static Vector2 TopTextureCoordinate(
+    Terrain terrain,
+    Vector3 position,
+    Vector2 textureScale
+  ) => new(
+    (position.X - terrain.Origin.X) * textureScale.X,
+    (position.Y - terrain.Origin.Y) * textureScale.Y);
+
+  private static Vector2 CliffTextureCoordinate(
+    Terrain terrain,
+    Edge edge,
+    Vector3 position,
+    Vector2 textureScale
+  ) {
+    var horizontalPosition = edge switch {
+      Edge.South => position.X - terrain.Origin.X,
+      Edge.West => position.Y - terrain.Origin.Y,
+      _ => throw new ArgumentOutOfRangeException(nameof(edge), edge, null),
+    };
+    return new Vector2(horizontalPosition * textureScale.X, position.Z * textureScale.Y);
   }
 
   private sealed class MeshGeometry {

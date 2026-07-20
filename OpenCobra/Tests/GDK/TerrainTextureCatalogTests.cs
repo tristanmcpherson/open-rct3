@@ -8,6 +8,7 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 
 using TerrainTypeKind = OpenCobra.OVL.Files.TerrainTypeKind;
+using TerrainParameters = OpenCobra.OVL.Files.TerrainParameters;
 
 namespace OVL.Tests.GDK;
 
@@ -30,6 +31,33 @@ public class TerrainTextureCatalogTests {
         && entry.Kind != TerrainTypeKind.Cliff).Texture));
     Assert.That(catalog.GetSurface(31), Is.SameAs(catalog.SurfaceTextures[31]));
     Assert.That(catalog.GetCliff(5), Is.SameAs(catalog.CliffTextures[5]));
+  }
+
+  [Test]
+  public void Catalog_PreservesTerKindsAndParametersByExactNumber() {
+    var entries = CreateCompleteEntries();
+    var surfaceParameters = new TerrainParameters(11, 12, 0.1f, 0.2f);
+    var cliffParameters = new TerrainParameters(21, 22, 0.25f, 0.5f);
+    ReplaceEntry(entries, "Terrain_08", CreateEntry(
+      "Terrain_08",
+      8,
+      TerrainTypeKind.GroundBlended,
+      TerrainTextureCatalogLayer.Base,
+      surfaceParameters));
+    ReplaceEntry(entries, "TerrainCliff3", CreateEntry(
+      "TerrainCliff3",
+      3,
+      TerrainTypeKind.Cliff,
+      TerrainTextureCatalogLayer.Base,
+      cliffParameters));
+    using var catalog = new TerrainTextureCatalog(entries.Reverse(), true);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(catalog.GetSurfaceKind(8), Is.EqualTo(TerrainTypeKind.GroundBlended));
+      Assert.That(catalog.GetSurfaceParameters(8), Is.SameAs(surfaceParameters));
+      Assert.That(catalog.GetCliffKind(3), Is.EqualTo(TerrainTypeKind.Cliff));
+      Assert.That(catalog.GetCliffParameters(3), Is.SameAs(cliffParameters));
+    }
   }
 
   [TestCase("Terrain_31", "surface index 31")]
@@ -371,11 +399,13 @@ public class TerrainTextureCatalogTests {
     string name,
     int number,
     TerrainTypeKind kind,
-    TerrainTextureCatalogLayer layer
+    TerrainTextureCatalogLayer layer,
+    TerrainParameters? parameters = null
   ) => new(
     name,
     Convert.ToUInt32(number),
     kind,
+    parameters ?? new TerrainParameters(0, 0, 0.25f, 0.25f),
     name,
     CreateTexture(name),
     layer,

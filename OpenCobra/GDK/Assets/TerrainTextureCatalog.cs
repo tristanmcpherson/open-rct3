@@ -21,6 +21,7 @@ internal sealed record TerrainTextureCatalogEntry(
   string TerrainName,
   uint Number,
   TerrainTypeKind Kind,
+  TerrainParameters Parameters,
   string TextureReference,
   Texture Texture,
   TerrainTextureCatalogLayer Layer,
@@ -42,6 +43,10 @@ public sealed class TerrainTextureCatalog : IDisposable {
   private readonly ReadOnlyCollection<Texture> cliffTextures;
   private readonly ReadOnlyCollection<string> surfaceNames;
   private readonly ReadOnlyCollection<string> cliffNames;
+  private readonly ReadOnlyCollection<TerrainTypeKind> surfaceKinds;
+  private readonly ReadOnlyCollection<TerrainTypeKind> cliffKinds;
+  private readonly ReadOnlyCollection<TerrainParameters> surfaceParameters;
+  private readonly ReadOnlyCollection<TerrainParameters> cliffParameters;
   private readonly bool includesCompleteEditionExpansion;
   private Action<TerrainTextureCatalog>? disposalCallback;
   private int disposed;
@@ -62,10 +67,14 @@ public sealed class TerrainTextureCatalog : IDisposable {
         includesCompleteEditionExpansion ? SurfaceCount : BaseSurfaceCount);
       var cliffs = OrderAndValidate(
         ownedEntries, entry => entry.Kind == TerrainTypeKind.Cliff, "cliff", CliffCount);
-      surfaceTextures = Array.AsReadOnly(surfaces);
-      cliffTextures = Array.AsReadOnly(cliffs);
-      surfaceNames = Array.AsReadOnly(surfaces.Select(texture => texture.Name).ToArray());
-      cliffNames = Array.AsReadOnly(cliffs.Select(texture => texture.Name).ToArray());
+      surfaceTextures = Array.AsReadOnly(surfaces.Select(entry => entry.Texture).ToArray());
+      cliffTextures = Array.AsReadOnly(cliffs.Select(entry => entry.Texture).ToArray());
+      surfaceNames = Array.AsReadOnly(surfaces.Select(entry => entry.Texture.Name).ToArray());
+      cliffNames = Array.AsReadOnly(cliffs.Select(entry => entry.Texture.Name).ToArray());
+      surfaceKinds = Array.AsReadOnly(surfaces.Select(entry => entry.Kind).ToArray());
+      cliffKinds = Array.AsReadOnly(cliffs.Select(entry => entry.Kind).ToArray());
+      surfaceParameters = Array.AsReadOnly(surfaces.Select(entry => entry.Parameters).ToArray());
+      cliffParameters = Array.AsReadOnly(cliffs.Select(entry => entry.Parameters).ToArray());
       this.includesCompleteEditionExpansion = includesCompleteEditionExpansion;
     } catch {
       foreach (var texture in ownedEntries
@@ -113,25 +122,43 @@ public sealed class TerrainTextureCatalog : IDisposable {
   /// <summary>Gets the texture addressed by a terrain cell's surface index.</summary>
   public Texture GetSurface(byte index) {
     ThrowIfDisposed();
-    if (!includesCompleteEditionExpansion && index >= BaseSurfaceCount && index < SurfaceCount)
-      throw new InvalidDataException(
-        $"Surface index {index} requires the Complete Edition Terrain_CT common/unique OVL pair; " +
-        "the base Terrain_RCT3 catalog only provides indices 0-25.");
-    if (index >= surfaceTextures.Count)
-      throw new ArgumentOutOfRangeException(
-        nameof(index), index,
-        $"Surface index {index} is out of range for {surfaceTextures.Count} catalog entries.");
+    ValidateSurfaceIndex(index);
     return surfaceTextures[index];
+  }
+
+  /// <summary>Gets the decoded rendering kind addressed by a terrain cell's surface index.</summary>
+  public TerrainTypeKind GetSurfaceKind(byte index) {
+    ThrowIfDisposed();
+    ValidateSurfaceIndex(index);
+    return surfaceKinds[index];
+  }
+
+  /// <summary>Gets the decoded rendering parameters addressed by a terrain cell's surface index.</summary>
+  public TerrainParameters GetSurfaceParameters(byte index) {
+    ThrowIfDisposed();
+    ValidateSurfaceIndex(index);
+    return surfaceParameters[index];
   }
 
   /// <summary>Gets the texture addressed by a terrain cell's cliff index.</summary>
   public Texture GetCliff(byte index) {
     ThrowIfDisposed();
-    if (index >= cliffTextures.Count)
-      throw new ArgumentOutOfRangeException(
-        nameof(index), index,
-        $"Cliff index {index} is out of range for {cliffTextures.Count} catalog entries.");
+    ValidateCliffIndex(index);
     return cliffTextures[index];
+  }
+
+  /// <summary>Gets the decoded rendering kind addressed by a terrain cell's cliff index.</summary>
+  public TerrainTypeKind GetCliffKind(byte index) {
+    ThrowIfDisposed();
+    ValidateCliffIndex(index);
+    return cliffKinds[index];
+  }
+
+  /// <summary>Gets the decoded rendering parameters addressed by a terrain cell's cliff index.</summary>
+  public TerrainParameters GetCliffParameters(byte index) {
+    ThrowIfDisposed();
+    ValidateCliffIndex(index);
+    return cliffParameters[index];
   }
 
   internal static bool IsCatalogAssetName(string name) =>
@@ -145,7 +172,7 @@ public sealed class TerrainTextureCatalog : IDisposable {
     Interlocked.Exchange(ref disposalCallback, null)?.Invoke(this);
   }
 
-  private static Texture[] OrderAndValidate(
+  private static TerrainTextureCatalogEntry[] OrderAndValidate(
     IEnumerable<TerrainTextureCatalogEntry> entries,
     Func<TerrainTextureCatalogEntry, bool> predicate,
     string kind,
@@ -178,7 +205,7 @@ public sealed class TerrainTextureCatalog : IDisposable {
         $"The terrain catalog must contain exactly {expectedCount} {kind} textures; " +
         $"found {indexed.Length}.");
 
-    return indexed.Select(entry => entry.Texture).ToArray();
+    return indexed;
   }
 
   private static void ValidateEntries(
@@ -188,6 +215,7 @@ public sealed class TerrainTextureCatalog : IDisposable {
     foreach (var entry in entries) {
       ArgumentNullException.ThrowIfNull(entry);
       ArgumentNullException.ThrowIfNull(entry.Texture);
+      ArgumentNullException.ThrowIfNull(entry.Parameters);
       if (string.IsNullOrWhiteSpace(entry.TerrainName))
         throw new InvalidDataException("Terrain resource names cannot be empty.");
       if (string.IsNullOrWhiteSpace(entry.TextureReference))
@@ -203,6 +231,10 @@ public sealed class TerrainTextureCatalog : IDisposable {
       if (entry.Number > byte.MaxValue)
         throw new InvalidDataException(
           $"Terrain resource '{entry.TerrainName}' has unsupported number {entry.Number}.");
+      if (!float.IsFinite(entry.Parameters.InvWidth) || entry.Parameters.InvWidth <= 0 ||
+          !float.IsFinite(entry.Parameters.InvHeight) || entry.Parameters.InvHeight <= 0)
+        throw new InvalidDataException(
+          $"Terrain resource '{entry.TerrainName}' has invalid inverse texture dimensions.");
 
       switch (entry.Kind) {
         case TerrainTypeKind.GroundUnblended:
@@ -266,6 +298,24 @@ public sealed class TerrainTextureCatalog : IDisposable {
   private static string FormatName(string prefix, int index) => prefix == SurfacePrefix
     ? $"{prefix}{index:D2}"
     : $"{prefix}{index}";
+
+  private void ValidateSurfaceIndex(byte index) {
+    if (!includesCompleteEditionExpansion && index >= BaseSurfaceCount && index < SurfaceCount)
+      throw new InvalidDataException(
+        $"Surface index {index} requires the Complete Edition Terrain_CT common/unique OVL pair; " +
+        "the base Terrain_RCT3 catalog only provides indices 0-25.");
+    if (index >= surfaceTextures.Count)
+      throw new ArgumentOutOfRangeException(
+        nameof(index), index,
+        $"Surface index {index} is out of range for {surfaceTextures.Count} catalog entries.");
+  }
+
+  private void ValidateCliffIndex(byte index) {
+    if (index >= cliffTextures.Count)
+      throw new ArgumentOutOfRangeException(
+        nameof(index), index,
+        $"Cliff index {index} is out of range for {cliffTextures.Count} catalog entries.");
+  }
 
   private void ThrowIfDisposed() =>
     ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);

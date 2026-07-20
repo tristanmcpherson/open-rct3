@@ -127,7 +127,7 @@ public class TerrainMeshBuilderTests {
   }
 
   [Test]
-  public void Build_FlatTerrain_AssignsRepeatingTileUvs() {
+  public void Build_FlatTerrain_AssignsMapContinuousTileUvs() {
     var mesh = TerrainMeshBuilder.Build(NewTerrain(), Vector4.One);
 
     Assert.That(mesh.Vertices.Take(4).Select(vertex => vertex.TexCoord), Is.EqualTo(new[] {
@@ -135,6 +135,78 @@ public class TerrainMeshBuilderTests {
       new Vector2(1, 0),
       new Vector2(1, 1),
       new Vector2(0, 1),
+    }));
+    Assert.That(mesh.Vertices.Skip(4).Take(4).Select(vertex => vertex.TexCoord), Is.EqualTo(new[] {
+      new Vector2(1, 0),
+      new Vector2(2, 0),
+      new Vector2(2, 1),
+      new Vector2(1, 1),
+    }));
+  }
+
+  [Test]
+  public void BuildBatches_TerInverseDimensionsScaleMapContinuousTopUvs() {
+    const float inverseWidth = 0.1f;
+    const float inverseHeight = 0.2f;
+    var data = new DatTerrainData(
+      2,
+      1,
+      -12f,
+      7f,
+      4f,
+      4f,
+      [
+        new DatTerrainCell(0f, 0f, 0f, 0f, 8, 0),
+        new DatTerrainCell(0f, 0f, 0f, 0f, 8, 0),
+      ]
+    );
+
+    var batches = TerrainMeshBuilder.BuildBatches(
+      Terrain.FromData(data),
+      Vector4.One,
+      (_, _) => new Vector2(inverseWidth, inverseHeight));
+    var surface = batches.Single(batch => batch.Kind == TerrainMaterialKind.Surface);
+
+    Assert.That(surface.Mesh.Vertices.Select(vertex => vertex.TexCoord), Is.EqualTo(new[] {
+      new Vector2(0f, 0f),
+      new Vector2(4f * inverseWidth, 0f),
+      new Vector2(4f * inverseWidth, 4f * inverseHeight),
+      new Vector2(0f, 4f * inverseHeight),
+      new Vector2(4f * inverseWidth, 0f),
+      new Vector2(8f * inverseWidth, 0f),
+      new Vector2(8f * inverseWidth, 4f * inverseHeight),
+      new Vector2(4f * inverseWidth, 4f * inverseHeight),
+    }));
+  }
+
+  [Test]
+  public void BuildBatches_TerInverseDimensionsScaleMapContinuousCliffUvs() {
+    const float inverseWidth = 0.1f;
+    const float inverseHeight = 0.2f;
+    var data = new DatTerrainData(
+      1,
+      2,
+      -12f,
+      7f,
+      2f,
+      5f,
+      [
+        new DatTerrainCell(0f, 0f, 0f, 0f, 8, 3),
+        new DatTerrainCell(5f, 10f, 5f, 10f, 8, 3),
+      ]
+    );
+
+    var batches = TerrainMeshBuilder.BuildBatches(
+      Terrain.FromData(data),
+      Vector4.One,
+      (_, _) => new Vector2(inverseWidth, inverseHeight));
+    var cliff = batches.Single(batch => batch.Kind == TerrainMaterialKind.Cliff);
+
+    Assert.That(cliff.Mesh.Vertices.Select(vertex => vertex.TexCoord), Is.EqualTo(new[] {
+      new Vector2(0f, 5f * inverseHeight),
+      new Vector2(2f * inverseWidth, 10f * inverseHeight),
+      new Vector2(2f * inverseWidth, 0f),
+      new Vector2(0f, 0f),
     }));
   }
 

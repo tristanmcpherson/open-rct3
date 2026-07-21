@@ -343,17 +343,6 @@ internal sealed record WildAnimalModelMaterialResolverOperations(
     Create,
     texture => texture.Dispose());
 
-  private static RenderTexture Create(WildAnimalModelTextureMaterialResource material) {
-    var pixels = material.Albedo.MipLevels[0].Clone();
-    try {
-      return new RenderTexture(
-        material.TextureReference,
-        pixels.Width,
-        pixels.Height,
-        pixels);
-    } catch {
-      pixels.Dispose();
-      throw;
-    }
-  }
+  private static RenderTexture Create(WildAnimalModelTextureMaterialResource material) =>
+    RenderTexture.FromDecoded(material.TextureReference, material.Albedo);
 }

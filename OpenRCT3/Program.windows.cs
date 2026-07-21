@@ -141,6 +141,7 @@ internal static class Program {
 
     // Start the game
     mainWindow.Start();
+    using var automation = GameAutomationPipeServer.StartFromEnvironment(mainWindow);
     Application.Run(mainWindow);
 
     logger.Info("Application exited");

@@ -98,7 +98,7 @@ public class CameraControllerTests {
   }
 
   [Test]
-  public void Update_RightMouseDragOrbitsWithoutChangingFraming() {
+  public void Update_RightMouseDragGrabsParkWithoutChangingFraming() {
     var camera = CreateCamera();
     var expectedCamera = CreateCamera();
     var input = new TestInputContext();
@@ -114,7 +114,7 @@ public class CameraControllerTests {
     input.Mouse.Press(MouseButton.Right);
     input.Mouse.MoveTo(new Vector2(220f, 100f));
     controller.Update(TimeSpan.Zero);
-    expectedCamera.Orbit(120f * CameraController.MouseOrbitRadiansPerPixel);
+    expectedCamera.Orbit(-120f * CameraController.MouseOrbitRadiansPerPixel);
 
     Assert.Multiple(new Action(() => {
       Assert.That(camera.Target, Is.EqualTo(initialTarget));
@@ -200,7 +200,7 @@ public class CameraControllerTests {
     input.Mouse.MoveTo(Vector2.Zero);
     input.Mouse.MoveTo(new Vector2(float.MaxValue, -float.MaxValue));
     controller.Update(TimeSpan.Zero);
-    expectedCamera.Orbit(CameraController.MaxPendingMouseOrbitRadians);
+    expectedCamera.Orbit(-CameraController.MaxPendingMouseOrbitRadians);
     expectedCamera.OrbitElevation(CameraController.MaxPendingMouseOrbitRadians);
 
     Assert.That(

@@ -1,0 +1,9 @@
+[mcp_servers.openrct3]
+enabled = true
+required = false
+command = "dotnet"
+args = ["run", "--project", "OpenRCT3.Mcp/OpenRCT3.Mcp.csproj"]
+cwd = ".."
+startup_timeout_sec = 60.0
+tool_timeout_sec = 120.0
+env = { DOTNET_CLI_USE_MSBUILD_SERVER = "0", MSBUILDDISABLENODEREUSE = "1", UseSharedCompilation = "false" }

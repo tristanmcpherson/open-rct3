@@ -10,12 +10,14 @@ using DryIoc.ImTools;
 using NLog;
 using OpenCobra.GDK;
 using OpenCobra.GDK.Platform;
+using OpenRCT3.Simulation;
 using Silk.NET.Core.Contexts;
 using Silk.NET.Input;
 using Silk.NET.Maths;
 using Silk.NET.OpenGL;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -60,6 +62,17 @@ internal partial class GameWindow : Form, IWindow {
   }
 
   public string Title { get => base.Text; set => Text = value; }
+
+  protected override bool ShowWithoutActivation => IsAutomationEnabled;
+
+  protected override CreateParams CreateParams {
+    get {
+      const int WS_EX_NOACTIVATE = 134217728;
+      var parameters = base.CreateParams;
+      if (IsAutomationEnabled) parameters.ExStyle |= WS_EX_NOACTIVATE;
+      return parameters;
+    }
+  }
 
   public Dpi Dpi {
     get {
@@ -250,6 +263,92 @@ internal partial class GameWindow : Form, IWindow {
     }
   }
 
+  internal object GetAutomationState() {
+    var game = Game.Instance
+      ?? throw new InvalidOperationException("The game is not running.");
+    var camera = game.Scene.Camera;
+    var mapPath = Environment.GetEnvironmentVariable("OPENRCT3_MAP_PATH")
+      ?? game.Config.MapPath;
+    var pathBounds = GetPathBounds(game);
+    return new {
+      process_id = Environment.ProcessId,
+      map_path = mapPath,
+      framebuffer = new[] { FramebufferSize.X, FramebufferSize.Y },
+      camera_eye = new[] { camera.Eye.X, camera.Eye.Y, camera.Eye.Z },
+      camera_target = new[] { camera.Target.X, camera.Target.Y, camera.Target.Z },
+      camera_distance = camera.Distance,
+      camera_minimum_distance = camera.MinimumDistance,
+      scene_model_count = game.Scene.Models.Count,
+      path_bounds = pathBounds,
+      path_surface_groups = GetPathSurfaceGroups(game),
+      is_paused = game.IsPaused,
+      is_closing = IsClosing
+    };
+  }
+
+  internal object ApplyAutomationCamera(GameAutomationCameraRequest request) {
+    var game = Game.Instance
+      ?? throw new InvalidOperationException("The game is not running.");
+    var targetValues = new[] { request.TargetX, request.TargetY, request.TargetZ };
+    if (targetValues.Any(value => value.HasValue) && targetValues.Any(value => !value.HasValue))
+      throw new ArgumentException("target_x, target_y, and target_z must be supplied together.");
+    if (targetValues.All(value => value.HasValue)) {
+      var target = new System.Numerics.Vector3(
+        request.TargetX!.Value,
+        request.TargetY!.Value,
+        request.TargetZ!.Value);
+      game.Scene.Camera.Pan(target - game.Scene.Camera.Target);
+    }
+    if (request.Distance.HasValue) game.Scene.Camera.SetDistance(request.Distance.Value);
+    using var controller = new CameraController(game.Scene.Camera);
+    controller.Update(
+      TimeSpan.FromSeconds(request.PanSeconds),
+      new CameraControlInput(
+        request.PanRight,
+        request.PanForward,
+        0f,
+        request.ZoomSteps,
+        MouseOrbitRadians: request.OrbitDegrees * MathF.PI / 180f,
+        MouseElevationRadians: request.ElevationDegrees * MathF.PI / 180f));
+    game.Scene.Camera.Update(glSurface.AspectRatio);
+    glSurface.PresentFrame();
+    return GetAutomationState();
+  }
+
+  internal object FrameAutomationTerrain() {
+    var game = Game.Instance
+      ?? throw new InvalidOperationException("The game is not running.");
+    var terrain = game.World.Terrain
+      ?? throw new InvalidOperationException("The game has no loaded terrain.");
+    var framing = TerrainCameraFraming.Calculate(terrain);
+    game.Scene.Camera.Frame(framing.Target, framing.Distance, framing.MinimumDistance);
+    game.Scene.Camera.Update(glSurface.AspectRatio);
+    glSurface.PresentFrame();
+    return GetAutomationState();
+  }
+
+  internal byte[] CaptureAutomationFrame() => glSurface.CaptureFramePng();
+
+  internal object SetAutomationPaused(bool paused) {
+    var game = Game.Instance
+      ?? throw new InvalidOperationException("The game is not running.");
+    if (paused) game.Pause();
+    else game.Resume();
+    return GetAutomationState();
+  }
+
+  internal object ResizeAutomationViewport(GameAutomationViewportRequest request) {
+    request.Validate();
+    ClientSize = new System.Drawing.Size(request.Width, request.Height);
+    var game = Game.Instance
+      ?? throw new InvalidOperationException("The game is not running.");
+    game.Scene.Camera.Update(glSurface.AspectRatio);
+    glSurface.PresentFrame();
+    return GetAutomationState();
+  }
+
+  internal void RequestAutomationShutdown() => Close();
+
   #region IView Methods
   public void Initialize() {
     if (glSurface.IsHandleCreated) rendererCreated.Set();
@@ -357,6 +456,85 @@ internal partial class GameWindow : Form, IWindow {
   }
 
   private void GlSurface_Resize(object sender, EventArgs e) => FramebufferResize?.Invoke(FramebufferSize);
+
+  private static bool IsAutomationEnabled => !string.IsNullOrWhiteSpace(
+    Environment.GetEnvironmentVariable(GameAutomationPipeServer.PipeEnvironmentVariable));
+
+  private static object? GetPathBounds(Game game) {
+    var park = game.World.Park;
+    var terrain = game.World.Terrain;
+    if (park == null || terrain == null || park.PathPlacements.Count == 0) return null;
+    var placements = park.PathPlacements;
+    var minimumX = placements.Min(placement => placement.TileX);
+    var maximumX = placements.Max(placement => placement.TileX);
+    var minimumY = placements.Min(placement => placement.TileY);
+    var maximumY = placements.Max(placement => placement.TileY);
+    var centerTileX = (minimumX + maximumX + 1f) / 2f;
+    var centerTileY = (minimumY + maximumY + 1f) / 2f;
+    var centerX = terrain.Origin.X + (centerTileX * terrain.TileSize.X);
+    var centerY = terrain.Origin.Y + (centerTileY * terrain.TileSize.Y);
+    var centerPlacement = placements.MinBy(placement =>
+      MathF.Abs(placement.TileX + 0.5f - centerTileX)
+      + MathF.Abs(placement.TileY + 0.5f - centerTileY));
+    var centerZ = Terrain.CornerHeightToWorldZ(centerPlacement.Tile.RaisedHeight);
+    if (!centerPlacement.Tile.Raised) {
+      centerZ = 0f;
+      var corners = terrain.GetCorners(centerPlacement.TileX, centerPlacement.TileY);
+      foreach (var corner in corners) centerZ += Terrain.CornerHeightToWorldZ(corner.Height);
+      centerZ /= corners.Length;
+    }
+    return new {
+      minimum_tile = new[] { minimumX, minimumY },
+      maximum_tile = new[] { maximumX, maximumY },
+      world_center = new[] { centerX, centerY, Convert.ToSingle(centerZ) }
+    };
+  }
+
+  private static object[] GetPathSurfaceGroups(Game game) {
+    var park = game.World.Park;
+    var terrain = game.World.Terrain;
+    if (park == null || terrain == null) return [];
+    return park.PathPlacements
+      .GroupBy(placement => new {
+        surface = placement.Tile.SurfaceSystemName ?? "(unresolved)",
+        queue = placement.Tile.IsQueue
+      })
+      .OrderBy(group => group.Key.surface, StringComparer.Ordinal)
+      .ThenBy(group => group.Key.queue)
+      .Select(group => {
+        var minimumX = group.Min(placement => placement.TileX);
+        var maximumX = group.Max(placement => placement.TileX);
+        var minimumY = group.Min(placement => placement.TileY);
+        var maximumY = group.Max(placement => placement.TileY);
+        var centerTileX = (minimumX + maximumX + 1f) / 2f;
+        var centerTileY = (minimumY + maximumY + 1f) / 2f;
+        var centerPlacement = group.MinBy(placement =>
+          MathF.Abs(placement.TileX + 0.5f - centerTileX)
+          + MathF.Abs(placement.TileY + 0.5f - centerTileY));
+        return (object)new {
+          surface = group.Key.surface,
+          queue = group.Key.queue,
+          count = group.Count(),
+          minimum_tile = new[] { minimumX, minimumY },
+          maximum_tile = new[] { maximumX, maximumY },
+          world_center = new[] {
+            terrain.Origin.X + (centerTileX * terrain.TileSize.X),
+            terrain.Origin.Y + (centerTileY * terrain.TileSize.Y),
+            GetPathWorldZ(centerPlacement, terrain)
+          }
+        };
+      })
+      .ToArray();
+  }
+
+  private static float GetPathWorldZ(PathPlacement placement, Terrain terrain) {
+    if (placement.Tile.Raised)
+      return Terrain.CornerHeightToWorldZ(placement.Tile.RaisedHeight);
+    var height = 0f;
+    var corners = terrain.GetCorners(placement.TileX, placement.TileY);
+    foreach (var corner in corners) height += Terrain.CornerHeightToWorldZ(corner.Height);
+    return height / corners.Length;
+  }
 }
 
 internal sealed class GameLoopCloseCoordinator {

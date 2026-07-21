@@ -230,6 +230,31 @@ public class GLSurface : Control, IGraphicsSurface, IGLContextSource {
     WindowsFramePresentation.Present(prepareFrame, Invalidate, Update);
   }
 
+  internal unsafe byte[] CaptureFramePng() {
+    if (!IsValid || gl == null)
+      throw new InvalidOperationException("The OpenGL surface is not ready.");
+    var width = ClientSize.Width;
+    var height = ClientSize.Height;
+    if (width <= 0 || height <= 0)
+      throw new InvalidOperationException("The OpenGL surface has no drawable area.");
+
+    PresentFrame();
+    Context.MakeCurrent();
+    var pixels = new byte[checked(width * height * 4)];
+    fixed (byte* destination = pixels) {
+      gl.ReadBuffer(ReadBufferMode.Front);
+      gl.ReadPixels(
+        0,
+        0,
+        Convert.ToUInt32(width),
+        Convert.ToUInt32(height),
+        PixelFormat.Bgra,
+        PixelType.UnsignedByte,
+        destination);
+    }
+    return FramebufferPngEncoder.EncodeBgraBottomUp(width, height, pixels);
+  }
+
   protected override void OnPaint(PaintEventArgs e) {
     if (DesignMode) {
       e.Graphics.Clear(Drawing.Color.FromArgb(45, 45, 48));

@@ -304,7 +304,7 @@ internal sealed class CameraController : IDisposable {
       var boundedDeltaX = Math.Clamp(deltaX, -MaxMouseMovePixels, MaxMouseMovePixels);
       var boundedDeltaY = Math.Clamp(deltaY, -MaxMouseMovePixels, MaxMouseMovePixels);
       pendingMouseOrbitRadians = Math.Clamp(
-        pendingMouseOrbitRadians + (boundedDeltaX * MouseOrbitRadiansPerPixel),
+        pendingMouseOrbitRadians - (boundedDeltaX * MouseOrbitRadiansPerPixel),
         -MaxPendingMouseOrbitRadians,
         MaxPendingMouseOrbitRadians
       );

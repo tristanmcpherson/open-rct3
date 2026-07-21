@@ -32,6 +32,11 @@ internal record OvlBlockEntry(
   int RecordStride,
   uint RecordCount
 );
+internal sealed record OvlDataBlockIdentity(
+  object Identity,
+  string SourcePath,
+  int TypeIndex
+);
 
 internal class FileBlock {
   /// <summary>
@@ -138,6 +143,23 @@ public sealed class Ovl(string name) : IDictionary<OvlFile, OvlEntry>, IDisposab
     }
 
     data = block.AsSpan(start, length).ToArray();
+    return true;
+  }
+
+  /// <summary>
+  /// Resolves a complete slice while retaining the exact archive block's identity and metadata.
+  /// </summary>
+  internal bool TryResolveDataBlock(
+    uint address,
+    int length,
+    [MaybeNullWhen(false)] out OvlDataBlockIdentity block
+  ) {
+    var resolved = address == 0 ? null : FindBlock(address);
+    if (resolved?.Data == null || !TryGetBlockSlice(resolved, address, length, out _)) {
+      block = null;
+      return false;
+    }
+    block = new OvlDataBlockIdentity(resolved.Data, resolved.Path, resolved.TypeIndex);
     return true;
   }
 

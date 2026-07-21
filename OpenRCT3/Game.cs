@@ -502,6 +502,19 @@ public class Game : IGame {
                   wheelCursors,
                   carVisualVariants,
                   variantTemplates);
+                logger.Debug(
+                  "Resolved {ResolvedCount} of {CarCount} selected ride-car bodies: " +
+                  "{CarResourceCount} car-resource, {CursorCount} cursor, " +
+                  "{SelectionCount} selection, {TemplateCount} template, " +
+                  "{GeometryCount} geometry, and {PoseCount} pose blockers",
+                  variantCars.ResolvedCount,
+                  variantCars.CarCount,
+                  variantCars.UnresolvedCarResourceCount,
+                  variantCars.UnresolvedSavedCursorCount,
+                  variantCars.UnavailableVisualSelectionCount,
+                  variantCars.UnavailableBodyTemplateCount,
+                  variantCars.UnavailableModelGeometryCount,
+                  variantCars.UnavailableStaticPoseCount);
                 carScene = RideCarStaticSceneBuilder.Build(
                   variantCars,
                   (entry, batch) => ResolveRideCarVariantMaterial(
@@ -586,6 +599,19 @@ public class Game : IGame {
                 trainSceneMotion.AnimatedTrainCount,
                 trainSceneMotion.TrainCount,
                 trainSceneMotion.AnimatedCarCount);
+              foreach (var outcome in trainSceneMotion.Entries.Where(entry => !entry.IsAnimated))
+                logger.Debug(
+                  "Ride train {TrainId} scene-motion outcome {Status}: {Detail}; " +
+                  "operational authorization {OperationalAuthorization}, saved state " +
+                  "{SavedOperationalState}, circuit authorization {CircuitAuthorization}",
+                  outcome.TrainRuntime.TrainInstanceEntryId,
+                  outcome.Status,
+                  outcome.Detail,
+                  outcome.Authorization.Status,
+                  outcome.TrainRuntime.HasSavedOperationalState
+                    ? outcome.TrainRuntime.SavedOperationalState
+                    : null,
+                  outcome.CircuitAuthorization.Status);
             }
             catch (Exception error) when (
               error is InvalidDataException or ArgumentException or InvalidOperationException) {

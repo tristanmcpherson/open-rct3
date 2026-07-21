@@ -10,7 +10,7 @@ namespace OpenRCT3.Simulation;
 /// <summary>One car's authoritative inputs to native ordinary consist spacing.</summary>
 internal sealed record RideTrainOrdinaryCarDistanceInput(
   float Length,
-  RideCarLongitudinalGeometry Geometry,
+  RideCarLongitudinalGeometry? Geometry,
   bool HasRearGeometry
 );
 
@@ -26,8 +26,9 @@ internal sealed record RideTrainOrdinaryCarDistancePlan(
 /// current ride-car length at <c>+0x190</c> before a reversed car at <c>0x00AB6B30</c>, and
 /// subtracts it after an ordinary car at <c>0x00AB6C49</c>. Every circuit correction is at most one
 /// add or subtract. The caller must supply that current runtime value; this layer does not claim a
-/// serialized length snapshot is bit-identical. It preserves scalar-float operation order and
-/// never infers missing geometry, track topology, contacts, or poses.
+/// serialized length snapshot is bit-identical. Exact non-body Link entries can therefore retain
+/// their scalar spacing length without supplying pose geometry. It preserves scalar-float
+/// operation order and never infers missing geometry, track topology, contacts, or poses.
 /// </remarks>
 internal static class RideTrainOrdinaryCarDistanceResolver {
   public static RideTrainOrdinaryCarDistancePlan Resolve(
@@ -102,7 +103,7 @@ internal static class RideTrainOrdinaryCarDistanceResolver {
     IReadOnlyList<RideTrainOrdinaryCarDistanceInput> cars
   ) {
     if (!train.Reversed) {
-      var frontOffset = cars[0].Geometry.FrontWheelCenterOffsetFromCarFront;
+      var frontOffset = cars[0].Geometry!.FrontWheelCenterOffsetFromCarFront;
       var clampedOffset = MathF.Max(frontOffset, 0f);
       var cursor = train.Distance - clampedOffset;
       if (!float.IsFinite(cursor)) throw Invalid("initial ordinary cursor is non-finite");
@@ -115,7 +116,7 @@ internal static class RideTrainOrdinaryCarDistanceResolver {
     var last = cars[^1];
     if (!last.HasRearGeometry) return reversedCursor;
 
-    var rearExtent = -last.Geometry.RearWheelCenterOffsetFromFrontWheelCenter;
+    var rearExtent = -last.Geometry!.RearWheelCenterOffsetFromFrontWheelCenter;
     if (!float.IsFinite(rearExtent)) throw Invalid("last-car rear extent is non-finite");
     if (rearExtent <= last.Length) return reversedCursor;
     rearExtent -= last.Length;
@@ -127,12 +128,12 @@ internal static class RideTrainOrdinaryCarDistanceResolver {
 
   private static void ValidateCar(RideTrainOrdinaryCarDistanceInput? car, int index) {
     if (car == null) throw Invalid($"car {index} is null");
-    ArgumentNullException.ThrowIfNull(car.Geometry);
     ValidateFiniteNonnegative(car.Length, $"cars[{index}].Length");
-    if (!float.IsFinite(car.Geometry.FrontWheelCenterOffsetFromCarFront))
+    if (index == 0 && (car.Geometry == null ||
+        !float.IsFinite(car.Geometry.FrontWheelCenterOffsetFromCarFront)))
       throw Invalid($"car {index} front offset is non-finite");
-    if (car.HasRearGeometry &&
-        !float.IsFinite(car.Geometry.RearWheelCenterOffsetFromFrontWheelCenter))
+    if (car.HasRearGeometry && (car.Geometry == null ||
+        !float.IsFinite(car.Geometry.RearWheelCenterOffsetFromFrontWheelCenter)))
       throw Invalid($"car {index} rear offset is non-finite");
   }
 

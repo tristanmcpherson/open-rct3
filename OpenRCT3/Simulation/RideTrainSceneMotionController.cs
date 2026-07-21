@@ -2,6 +2,7 @@
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 
+using OpenCobra.OVL.Files;
 using OpenRCT3.Simulation.Tracks;
 using System.Collections.Generic;
 using System.Linq;
@@ -66,6 +67,7 @@ internal sealed record RideTrainSceneMotionControllerOperations(
   Func<
     RideInstanceTrainRuntimeEntry,
     RideInstanceTrackRuntimeEntry,
+    IReadOnlyList<RideCarInstanceRuntimeEntry>,
     IReadOnlyList<RideCarStaticInstanceEntry>,
     RideTrainCircuitMotionAuthorizationResult> AuthorizeCircuit,
   Func<RideTrainMotionState, float, float, RideTrainMotionState> Advance,
@@ -120,7 +122,7 @@ internal sealed class RideTrainSceneMotionController {
   public int AnimatedTrainCount => Entries.Count(entry => entry.IsAnimated);
   public int AnimatedCarCount => Entries
     .Where(entry => entry.IsAnimated)
-    .Sum(entry => entry.Cars.Count);
+    .Sum(entry => entry.Cars.Count(car => car.IsRendered));
 
   private RideTrainSceneMotionController(
     RideCarStaticSceneBuildResult bodyScene,
@@ -149,8 +151,33 @@ internal sealed class RideTrainSceneMotionController {
     RideTrainSceneMotionControllerLimits.Default,
     RideTrainSceneMotionControllerOperations.Default);
 
+  public static RideTrainSceneMotionController Build(
+    IReadOnlyList<RideInstanceTrainRuntimeEntry> trains,
+    IReadOnlyList<RideCarInstanceRuntimeEntry> cars,
+    RideCarStaticSceneBuildResult bodyScene,
+    RideCarVisualHierarchySceneBuildResult? hierarchyScene = null
+  ) {
+    ArgumentNullException.ThrowIfNull(cars);
+    return Build(
+      trains,
+      cars,
+      bodyScene,
+      hierarchyScene,
+      RideTrainSceneMotionControllerLimits.Default,
+      RideTrainSceneMotionControllerOperations.Default);
+  }
+
   internal static RideTrainSceneMotionController Build(
     IReadOnlyList<RideInstanceTrainRuntimeEntry> trains,
+    RideCarStaticSceneBuildResult bodyScene,
+    RideCarVisualHierarchySceneBuildResult? hierarchyScene,
+    RideTrainSceneMotionControllerLimits limits,
+    RideTrainSceneMotionControllerOperations operations
+  ) => Build(trains, null, bodyScene, hierarchyScene, limits, operations);
+
+  internal static RideTrainSceneMotionController Build(
+    IReadOnlyList<RideInstanceTrainRuntimeEntry> trains,
+    IReadOnlyList<RideCarInstanceRuntimeEntry>? runtimeCarEntries,
     RideCarStaticSceneBuildResult bodyScene,
     RideCarVisualHierarchySceneBuildResult? hierarchyScene,
     RideTrainSceneMotionControllerLimits limits,
@@ -164,6 +191,7 @@ internal sealed class RideTrainSceneMotionController {
     ValidateCount(trains.Count, limits.MaximumTrainCount, "train");
 
     var sceneCars = SnapshotSceneCars(bodyScene, limits);
+    var runtimeCars = SnapshotRuntimeCars(runtimeCarEntries, sceneCars, limits);
     var baselineTargets = sceneCars.Values
       .OrderBy(car => car.Entry.RegistryIndex)
       .Select(car => new RideCarSceneTransformTarget(
@@ -176,7 +204,8 @@ internal sealed class RideTrainSceneMotionController {
       .ToDictionary(pair => pair.RegistryIndex, pair => pair.index);
     var initialTargets = baselineTargets.ToArray();
     var initializedCars = new HashSet<int>();
-    var carsByTrain = IndexSceneCarsByTrain(sceneCars.Values, limits);
+    var renderedCarsByTrain = IndexSceneCarsByTrain(sceneCars.Values, limits);
+    var runtimeCarsByTrain = IndexRuntimeCarsByTrain(runtimeCars.Values, limits);
     var trainSet = new HashSet<RideInstanceTrainRuntimeEntry>(
       ReferenceEqualityComparer.Instance);
     var entries = new RideTrainSceneMotionEntry[trains.Count];
@@ -191,12 +220,16 @@ internal sealed class RideTrainSceneMotionController {
         ?? throw Invalid($"train {index} authorization returned null");
       if (!ReferenceEquals(authorization.TrainRuntime, train))
         throw Invalid($"train {index} authorization changed exact runtime identity");
-      var renderedCars = carsByTrain.TryGetValue(train, out var trainCars)
+      var renderedCars = renderedCarsByTrain.TryGetValue(train, out var trainCars)
         ? trainCars
         : Array.Empty<RideCarStaticInstanceEntry>();
+      var exactRuntimeCars = runtimeCarsByTrain.TryGetValue(train, out var trainRuntimeCars)
+        ? trainRuntimeCars
+        : Array.Empty<RideCarInstanceRuntimeEntry>();
       var circuitAuthorization = operations.AuthorizeCircuit(
         train,
         train.TrackRuntime,
+        exactRuntimeCars,
         renderedCars)
         ?? throw Invalid($"train {index} circuit authorization returned null");
       if (train.SavedMotionState is not { } motionState) {
@@ -230,7 +263,8 @@ internal sealed class RideTrainSceneMotionController {
       if (!TryBuildConsist(
           train,
           traversal,
-          carsByTrain,
+          runtimeCarsByTrain,
+          renderedCarsByTrain,
           limits,
           out var cars,
           out var detail)) {
@@ -273,13 +307,16 @@ internal sealed class RideTrainSceneMotionController {
       }
     }
 
-    foreach (var group in carsByTrain)
+    foreach (var group in renderedCarsByTrain)
       if (!trainSet.Contains(group.Key))
         throw Invalid("rendered saved car belongs to a foreign train runtime");
+    foreach (var group in runtimeCarsByTrain)
+      if (!trainSet.Contains(group.Key))
+        throw Invalid("saved car belongs to a foreign train runtime");
 
     var animatedCarCount = entries
       .Where(entry => entry.IsAnimated)
-      .Sum(entry => entry.Cars.Count);
+      .Sum(entry => entry.Cars.Count(car => car.IsRendered));
     if (initializedCars.Count != animatedCarCount)
       throw Invalid("initial target count changed from the authorized consists");
     var motionTargets = initialTargets
@@ -427,6 +464,34 @@ internal sealed class RideTrainSceneMotionController {
     return result;
   }
 
+  private static IReadOnlyDictionary<int, RideCarInstanceRuntimeEntry> SnapshotRuntimeCars(
+    IReadOnlyList<RideCarInstanceRuntimeEntry>? cars,
+    IReadOnlyDictionary<int, SceneCar> sceneCars,
+    RideTrainSceneMotionControllerLimits limits
+  ) {
+    var source = cars ?? sceneCars.Values
+      .Select(sceneCar => sceneCar.Entry.CarRuntime)
+      .OrderBy(car => car.RegistryIndex)
+      .ToArray();
+    ValidateCount(source.Count, limits.MaximumCarCount, "saved car");
+
+    var result = new Dictionary<int, RideCarInstanceRuntimeEntry>();
+    foreach (var index in Enumerable.Range(0, source.Count)) {
+      var car = source[index]
+        ?? throw Invalid($"saved car list contains null at index {index}");
+      if (car.RegistryIndex < 0 || car.TrainRuntime == null || car.CarInstance == null ||
+          car.CarInstanceEntryId == 0 || !result.TryAdd(car.RegistryIndex, car))
+        throw Invalid($"saved car {index} changed or duplicated exact runtime identity");
+    }
+
+    foreach (var sceneCar in sceneCars.Values)
+      if (!result.TryGetValue(sceneCar.Entry.RegistryIndex, out var runtime) ||
+          !ReferenceEquals(runtime, sceneCar.Entry.CarRuntime))
+        throw Invalid(
+          $"rendered car {sceneCar.Entry.RegistryIndex} changed exact runtime identity");
+    return result;
+  }
+
   private static IReadOnlyDictionary<
     RideInstanceTrainRuntimeEntry,
     IReadOnlyList<RideCarStaticInstanceEntry>> IndexSceneCarsByTrain(
@@ -452,6 +517,35 @@ internal sealed class RideTrainSceneMotionController {
     var result = new Dictionary<
       RideInstanceTrainRuntimeEntry,
       IReadOnlyList<RideCarStaticInstanceEntry>>(ReferenceEqualityComparer.Instance);
+    foreach (var pair in mutable)
+      result.Add(pair.Key, Array.AsReadOnly(pair.Value.ToArray()));
+    return result;
+  }
+
+  private static IReadOnlyDictionary<
+    RideInstanceTrainRuntimeEntry,
+    IReadOnlyList<RideCarInstanceRuntimeEntry>> IndexRuntimeCarsByTrain(
+      IEnumerable<RideCarInstanceRuntimeEntry> runtimeCars,
+      RideTrainSceneMotionControllerLimits limits
+    ) {
+    var mutable = new Dictionary<
+      RideInstanceTrainRuntimeEntry,
+      List<RideCarInstanceRuntimeEntry>>(ReferenceEqualityComparer.Instance);
+    var count = 0;
+    foreach (var entry in runtimeCars) {
+      var train = entry.TrainRuntime
+        ?? throw Invalid($"saved car {entry.RegistryIndex} has no train runtime");
+      if (!mutable.TryGetValue(train, out var cars)) {
+        cars = [];
+        mutable.Add(train, cars);
+      }
+      cars.Add(entry);
+      count++;
+      ValidateCount(count, limits.MaximumCarCount, "saved car");
+    }
+    var result = new Dictionary<
+      RideInstanceTrainRuntimeEntry,
+      IReadOnlyList<RideCarInstanceRuntimeEntry>>(ReferenceEqualityComparer.Instance);
     foreach (var pair in mutable)
       result.Add(pair.Key, Array.AsReadOnly(pair.Value.ToArray()));
     return result;
@@ -533,44 +627,99 @@ internal sealed class RideTrainSceneMotionController {
     TrackCircuitTraversal traversal,
     IReadOnlyDictionary<
       RideInstanceTrainRuntimeEntry,
-      IReadOnlyList<RideCarStaticInstanceEntry>> carsByTrain,
+      IReadOnlyList<RideCarInstanceRuntimeEntry>> runtimeCarsByTrain,
+    IReadOnlyDictionary<
+      RideInstanceTrainRuntimeEntry,
+      IReadOnlyList<RideCarStaticInstanceEntry>> renderedCarsByTrain,
     RideTrainSceneMotionControllerLimits limits,
     out IReadOnlyList<RideTrainOrdinaryScenePoseCarInput> cars,
     out string? detail
   ) {
     var savedCars = train.TrainResource.TrainInstance.Cars;
     ValidateCount(savedCars.Count, limits.MaximumCarCount, "saved consist car");
-    if (!carsByTrain.TryGetValue(train, out var rendered) ||
-        rendered.Count != savedCars.Count || savedCars.Count == 0) {
+    if (!runtimeCarsByTrain.TryGetValue(train, out var runtimeCars) ||
+        runtimeCars.Count != savedCars.Count || savedCars.Count == 0) {
       cars = Array.Empty<RideTrainOrdinaryScenePoseCarInput>();
-      detail = $"rendered {rendered?.Count ?? 0} of {savedCars.Count} saved cars";
+      detail = $"retained {runtimeCars?.Count ?? 0} of {savedCars.Count} saved cars";
       return false;
     }
 
+    var orderedRuntime = new RideCarInstanceRuntimeEntry[savedCars.Count];
+    var occupiedRuntime = new bool[savedCars.Count];
+    foreach (var runtime in runtimeCars) {
+      var ordinal = runtime.WhichCar;
+      if (!ReferenceEquals(runtime.TrainRuntime, train) || ordinal < 0 ||
+          ordinal >= savedCars.Count || occupiedRuntime[ordinal] ||
+          savedCars[ordinal] != runtime.CarInstanceEntryId ||
+          runtime.CarInstance.RideTrainInstance != train.TrainInstanceEntryId) {
+        cars = Array.Empty<RideTrainOrdinaryScenePoseCarInput>();
+        detail = $"saved car {runtime.RegistryIndex} changed exact consist identity";
+        return false;
+      }
+      occupiedRuntime[ordinal] = true;
+      orderedRuntime[ordinal] = runtime;
+    }
+    if (occupiedRuntime.Any(value => !value)) {
+      cars = Array.Empty<RideTrainOrdinaryScenePoseCarInput>();
+      detail = "retained consist has a missing saved-car ordinal";
+      return false;
+    }
+
+    var rendered = renderedCarsByTrain.TryGetValue(train, out var trainCars)
+      ? trainCars
+      : Array.Empty<RideCarStaticInstanceEntry>();
+    var orderedRendered = new RideCarStaticInstanceEntry?[savedCars.Count];
     var ordered = new RideTrainOrdinaryScenePoseCarInput[savedCars.Count];
-    var occupied = new bool[savedCars.Count];
     foreach (var entry in rendered) {
       var runtime = entry.CarRuntime;
       var ordinal = runtime.WhichCar;
       if (!ReferenceEquals(runtime.TrainRuntime, train) || ordinal < 0 ||
-          ordinal >= savedCars.Count || occupied[ordinal] ||
-          savedCars[ordinal] != entry.CarInstanceEntryId || entry.Geometry == null ||
-          entry.SavedCursor?.IsResolved != true ||
-          entry.SavedCursor.RegistryIndex != runtime.RegistryIndex ||
-          !ReferenceEquals(entry.SavedCursor.CarRuntime, runtime) ||
-          !ContactUsesTraversal(entry.SavedCursor.Front, traversal) ||
-          !ContactUsesTraversal(entry.SavedCursor.Rear, traversal)) {
+          ordinal >= savedCars.Count || orderedRendered[ordinal] != null ||
+          !ReferenceEquals(orderedRuntime[ordinal], runtime) ||
+          savedCars[ordinal] != entry.CarInstanceEntryId) {
         cars = Array.Empty<RideTrainOrdinaryScenePoseCarInput>();
-        detail = $"rendered car {entry.RegistryIndex} changed exact consist or geometry identity";
+        detail = $"rendered car {entry.RegistryIndex} changed exact consist identity";
         return false;
       }
-      occupied[ordinal] = true;
-      ordered[ordinal] = new(runtime, entry, entry.Geometry, HasRearGeometry: true);
+      orderedRendered[ordinal] = entry;
     }
-    if (occupied.Any(value => !value)) {
-      cars = Array.Empty<RideTrainOrdinaryScenePoseCarInput>();
-      detail = "rendered consist has a missing saved-car ordinal";
-      return false;
+
+    foreach (var ordinal in Enumerable.Range(0, savedCars.Count)) {
+      var runtime = orderedRuntime[ordinal];
+      var renderedEntry = orderedRendered[ordinal];
+      if (runtime.SavedRole == RideTrainCarRole.Link) {
+        if (ordinal == 0 || ordinal == savedCars.Count - 1 ||
+            !RideTrainSpacingOnlyLinkEvidence.IsExact(runtime) || renderedEntry != null ||
+            !runtime.HasSavedPhysicalState || !float.IsFinite(runtime.SavedLength) ||
+            runtime.SavedLength < 0f) {
+          cars = Array.Empty<RideTrainOrdinaryScenePoseCarInput>();
+          detail = $"saved Link car {runtime.RegistryIndex} lacks exact spacing-only evidence";
+          return false;
+        }
+        ordered[ordinal] = new(
+          runtime,
+          StaticEntry: null,
+          Geometry: null,
+          Length: runtime.SavedLength,
+          HasRearGeometry: false);
+        continue;
+      }
+
+      if (renderedEntry?.Geometry is not { } geometry ||
+          renderedEntry.SavedCursor?.IsResolved != true ||
+          renderedEntry.SavedCursor.RegistryIndex != runtime.RegistryIndex ||
+          !ReferenceEquals(renderedEntry.SavedCursor.CarRuntime, runtime) ||
+          !ContactUsesTraversal(renderedEntry.SavedCursor.Front, traversal) ||
+          !ContactUsesTraversal(renderedEntry.SavedCursor.Rear, traversal)) {
+        cars = Array.Empty<RideTrainOrdinaryScenePoseCarInput>();
+        detail = $"body car {runtime.RegistryIndex} lacks rendered geometry or saved contacts";
+        return false;
+      }
+      ordered[ordinal] = new(
+        runtime,
+        renderedEntry,
+        geometry,
+        HasRearGeometry: true);
     }
 
     cars = Array.AsReadOnly(ordered);
@@ -599,15 +748,16 @@ internal sealed class RideTrainSceneMotionController {
     IReadOnlyList<RideTrainOrdinaryScenePoseCarInput> cars,
     RideTrainOrdinaryScenePosePlan? plan
   ) {
+    var renderedCars = cars.Where(car => car.IsRendered).ToArray();
     if (plan == null || !ReferenceEquals(plan.Traversal, traversal) ||
         plan.MotionState != motionState || plan.Targets == null ||
-        plan.Targets.Count != cars.Count)
+        plan.Targets.Count != renderedCars.Length)
       throw Invalid(
         $"train {train.TrainInstanceEntryId} pose plan changed its traversal, state, or count");
-    foreach (var index in Enumerable.Range(0, cars.Count)) {
-      var car = cars[index];
+    foreach (var index in Enumerable.Range(0, renderedCars.Length)) {
+      var car = renderedCars[index];
       var target = plan.Targets[index];
-      if (target.RegistryIndex != car.StaticEntry.RegistryIndex ||
+      if (target.RegistryIndex != car.StaticEntry!.RegistryIndex ||
           target.CarInstanceEntryId != car.StaticEntry.CarInstanceEntryId ||
           !TrackMath.IsFinite(target.Transform))
         throw Invalid(

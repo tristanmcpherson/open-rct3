@@ -72,6 +72,49 @@ public class RideTrainNativeLengthResolverTests {
   }
 
   [Test]
+  public void Resolve_ExactSpacingOnlyLinkRetainsSavedScalarWithoutBodyGeometry() {
+    var train = Train(
+      new CarTerms(4f, RideTrainCarRole.Front),
+      new CarTerms(0.25f, RideTrainCarRole.Link),
+      new CarTerms(5f, RideTrainCarRole.Rear));
+    RideTrainNativeLengthInput[] inputs = [
+      new(train.Cars[0], Geometry(4f, 1f), false),
+      new(train.Cars[1], train.Cars[1].SavedLength, null, false),
+      new(train.Cars[2], Geometry(5f, 0f, -7f), true),
+    ];
+
+    var result = RideTrainNativeLengthResolver.Resolve(inputs);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Status, Is.EqualTo(RideTrainNativeLengthStatus.Resolved));
+      Assert.That(result.CarCount, Is.EqualTo(3));
+      Assert.That(result.FailedCarIndex, Is.Null);
+      Assert.That(result.Length, Is.EqualTo(12.25f));
+    }
+  }
+
+  [Test]
+  public void Resolve_FinalSpacingOnlyLinkFailsClosedWithoutEndpointGeometry() {
+    var train = Train(
+      new CarTerms(4f, RideTrainCarRole.Front),
+      new CarTerms(0.25f, RideTrainCarRole.Link));
+    RideTrainNativeLengthInput[] inputs = [
+      new(train.Cars[0], Geometry(4f, 1f), false),
+      new(train.Cars[1], train.Cars[1].SavedLength, null, false),
+    ];
+
+    var result = RideTrainNativeLengthResolver.Resolve(inputs);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(
+        result.Status,
+        Is.EqualTo(RideTrainNativeLengthStatus.RuntimeGeometryUnavailable));
+      Assert.That(result.FailedCarIndex, Is.EqualTo(1));
+      Assert.That(result.Length, Is.Null);
+    }
+  }
+
+  [Test]
   public void Resolve_WithRuntimeGeometrySingleCarAddsBothEndExtensions() {
     var train = Train(new CarTerms(100f));
     var inputs = Inputs(
@@ -447,18 +490,20 @@ public class RideTrainNativeLengthResolverTests {
     var roles = new RideTrainConsistRoleEntry[terms.Length];
     var consistCars = new RideInstanceTrainConsistCarRuntimeEntry[terms.Length];
     foreach (var index in Enumerable.Range(0, terms.Length)) {
-      var role = Role(index, terms.Length);
+      var role = terms[index].Role ?? Role(index, terms.Length);
       var resourceName = $"car-{index}:ric";
       var resource = CarResource($"car-{index}");
       var source = new RideCarResourceSource(null!, resource, []);
       var link = new RideCarLink(role, resourceName, source, []);
-      var roleEntry = new RideTrainConsistRoleEntry(index, index, role, resourceName, 1);
+      var roleEntry = role == RideTrainCarRole.Link
+        ? new RideTrainConsistRoleEntry(index, null, role, resourceName, 0, false)
+        : new RideTrainConsistRoleEntry(index, index, role, resourceName, 1);
       resourceLinks[index] = link;
       roles[index] = roleEntry;
       consistCars[index] = new(
         roleEntry,
         link,
-        new RideCarPeepSlotEvidence(link, null!, 1, []));
+        new RideCarPeepSlotEvidence(link, null!, roleEntry.PeepSlotCount, []));
     }
 
     var roleResolution = new RideTrainConsistRoleResolution(terms.Length, roles);
@@ -550,7 +595,10 @@ public class RideTrainNativeLengthResolverTests {
 
   private sealed record BuiltTrain(RideCarInstanceRuntimeEntry[] Cars);
 
-  private readonly record struct CarTerms(float SavedLength);
+  private readonly record struct CarTerms(
+    float SavedLength,
+    RideTrainCarRole? Role = null
+  );
 
   private readonly record struct GeometryTerms(
     float CarLength,

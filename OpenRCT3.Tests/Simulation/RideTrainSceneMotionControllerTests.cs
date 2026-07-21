@@ -16,6 +16,166 @@ namespace OpenRCT3.Tests.Simulation;
 [TestFixture]
 public class RideTrainSceneMotionControllerTests {
   [Test]
+  public void Build_ExplicitRuntimeCarsRejectsNull() {
+    using var fixture = SceneFixture.Create();
+
+    Assert.Throws<ArgumentNullException>(new Action(() =>
+      RideTrainSceneMotionController.Build(
+        [fixture.Train],
+        (IReadOnlyList<RideCarInstanceRuntimeEntry>)null!,
+        fixture.Scene)));
+  }
+
+  [Test]
+  public void Build_SuppliesFullRuntimeConsistAndRenderedSubsetForCircuitAuthorization() {
+    using var fixture = SceneFixture.Create();
+    var originalTrain = fixture.Train.TrainResource.TrainInstance;
+    var savedTrain = new DatRideTrainInstanceData(
+      originalTrain.EntryId,
+      originalTrain.RideTrainOverlayName,
+      originalTrain.RideTrainSymbolName,
+      originalTrain.TrackedRideInstance,
+      originalTrain.WhichTrain,
+      originalTrain.Length,
+      originalTrain.Mass,
+      distance: originalTrain.Distance,
+      reversed: originalTrain.Reversed,
+      speed: originalTrain.Speed,
+      cars: [40UL, 41UL, 42UL],
+      whichRideCarSivVariant: originalTrain.WhichRideCarSivVariant,
+      state: originalTrain.State,
+      stateTime: originalTrain.StateTime);
+    var trainResource = new RideTrainInstanceResourceLink(
+      fixture.Train.TrainResource.RideInstance,
+      savedTrain,
+      fixture.Train.TrainResource.Ordinal,
+      fixture.Train.TrainResource.Source);
+    var train = new RideInstanceTrainRuntimeEntry(
+      fixture.Train.SavedTrainIndex,
+      fixture.Train.TrackRuntime,
+      trainResource);
+
+    RideCarInstanceRuntimeEntry RuntimeCar(
+      int index,
+      ulong entryId,
+      RideTrainCarRole role
+    ) {
+      var savedCar = new DatRideCarInstanceData(
+        entryId,
+        savedTrain.EntryId,
+        whichCar: index,
+        whichRideTrainCar: Convert.ToInt32(role),
+        frontWheelDistance: 0f,
+        rearWheelDistance: 0f,
+        trackPiece: 0,
+        rearTrackPiece: 0,
+        distance: 0f,
+        reversed: false,
+        speed: 0f,
+        length: 4f,
+        mass: 100f,
+        positionValid: true);
+      return fixture.Car.CarRuntime with {
+        SavedCarIndex = index,
+        RegistryIndex = index,
+        TrainRuntime = train,
+        CarInstance = savedCar,
+        SavedRole = role,
+      };
+    }
+
+    RideCarStaticInstanceEntry RenderedCar(RideCarInstanceRuntimeEntry runtime) {
+      var cursor = fixture.Car.SavedCursor with {
+        RegistryIndex = runtime.RegistryIndex,
+        CarRuntime = runtime,
+      };
+      return fixture.Car with {
+        RegistryIndex = runtime.RegistryIndex,
+        CarRuntime = runtime,
+        SavedCursor = cursor,
+      };
+    }
+
+    var runtimeCars = new[] {
+      RuntimeCar(0, 40, RideTrainCarRole.Front),
+      RuntimeCar(1, 41, RideTrainCarRole.Link),
+      RuntimeCar(2, 42, RideTrainCarRole.Rear),
+    };
+    var renderedCars = new[] {
+      RenderedCar(runtimeCars[0]),
+      RenderedCar(runtimeCars[2]),
+    };
+    using var rearModel = new Model(new Mesh(new List<Vertex>(), new List<uint>())) {
+      Material = new Flat(),
+    };
+    var scene = new RideCarStaticSceneBuildResult(
+      [fixture.Model, rearModel],
+      [
+        new RideCarStaticSceneModelBinding(fixture.Model, renderedCars[0], 0, 0),
+        new RideCarStaticSceneModelBinding(rearModel, renderedCars[1], 2, 0),
+      ],
+      SourceCarCount: 3,
+      BuiltCarCount: 2,
+      SkippedCarCount: 1,
+      ModelCount: 2,
+      MissingMaterialBatchCount: 0,
+      ClonedVertexCount: 0,
+      ClonedIndexCount: 0,
+      UnresolvedCarResourceCount: 0,
+      UnresolvedSavedCursorCount: 0,
+      MissingBodyTemplateCount: 0,
+      UnavailableModelGeometryCount: 0,
+      UnavailableStaticPoseCount: 0);
+    IReadOnlyList<RideCarInstanceRuntimeEntry>? suppliedRuntimeCars = null;
+    IReadOnlyList<RideCarStaticInstanceEntry>? suppliedRenderedCars = null;
+    var operations = new RideTrainSceneMotionControllerOperations(
+      authorizedTrain => new(
+        RideTrainMotionAdvanceAuthorizationStatus.AuthorizedByNativeOperationalState,
+        authorizedTrain,
+        13,
+        1f),
+      (_, _, exactRuntimeCars, exactRenderedCars) => {
+        suppliedRuntimeCars = exactRuntimeCars;
+        suppliedRenderedCars = exactRenderedCars;
+        return new(
+          RideTrainCircuitMotionAuthorizationStatus.UnresolvedCircuitTraversal,
+          null);
+      },
+      RideTrainCircuitMotionStepper.Advance,
+      (_, _, _) => throw new AssertionException("Circuit rejection must stop planning."),
+      (_, _, _) => throw new AssertionException("Circuit rejection must stop scene updates."));
+
+    var controller = RideTrainSceneMotionController.Build(
+      [train],
+      runtimeCars,
+      scene,
+      hierarchyScene: null,
+      RideTrainSceneMotionControllerLimits.Default,
+      operations);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(controller.Entries.Single().Status,
+        Is.EqualTo(RideTrainSceneMotionStatus.CircuitNotAuthorized));
+      Assert.That(suppliedRuntimeCars, Has.Count.EqualTo(3));
+      Assert.That(suppliedRuntimeCars!.Select(car => car.SavedRole),
+        Is.EqualTo(new[] {
+          RideTrainCarRole.Front,
+          RideTrainCarRole.Link,
+          RideTrainCarRole.Rear,
+        }));
+      Assert.That(
+        suppliedRuntimeCars.Select((car, index) => ReferenceEquals(car, runtimeCars[index])),
+        Is.All.True);
+      Assert.That(suppliedRenderedCars, Has.Count.EqualTo(2));
+      Assert.That(suppliedRenderedCars!.Select(car => car.RegistryIndex),
+        Is.EqualTo(new[] { 0, 2 }));
+      Assert.That(
+        suppliedRenderedCars.Select((car, index) => ReferenceEquals(car, renderedCars[index])),
+        Is.All.True);
+    }
+  }
+
+  [Test]
   public void Build_AppliesTheExactInitialPlanBeforeTheFirstTick() {
     using var fixture = SceneFixture.Create();
 
@@ -33,6 +193,8 @@ public class RideTrainSceneMotionControllerTests {
   public void Update_AdvancesAuthorizedStateAndAppliesItsExactCarTarget() {
     using var fixture = SceneFixture.Create();
     var controller = fixture.BuildController();
+    var initialState = controller.Entries.Single().MotionState!.Value;
+    var initialTransform = fixture.Model.Transform.Matrix;
 
     var result = controller.Update(TimeSpan.FromSeconds(0.5d));
 
@@ -41,12 +203,16 @@ public class RideTrainSceneMotionControllerTests {
         Is.EqualTo(RideTrainSceneMotionStatus.Animated));
       Assert.That(controller.Entries.Single().MotionState,
         Is.EqualTo(new RideTrainMotionState(11f, 2f, Reversed: false)));
+      Assert.That(initialState.Speed, Is.Not.Zero);
+      Assert.That(controller.Entries.Single().MotionState!.Value.Distance,
+        Is.Not.EqualTo(initialState.Distance));
       Assert.That(result.AnimatedTrainCount, Is.EqualTo(1));
       Assert.That(result.AnimatedCarCount, Is.EqualTo(1));
       Assert.That(result.UpdatedBodyModelCount, Is.EqualTo(1));
       Assert.That(result.UpdatedHierarchyModelCount, Is.Zero);
       Assert.That(fixture.Model.Transform.Matrix,
         Is.EqualTo(Matrix4x4.CreateTranslation(11f, 0f, 0f)));
+      Assert.That(fixture.Model.Transform.Matrix, Is.Not.EqualTo(initialTransform));
     }
   }
 
@@ -218,6 +384,7 @@ public class RideTrainSceneMotionControllerTests {
     public RideInstanceTrainRuntimeEntry Train { get; }
     public RideCarStaticSceneBuildResult Scene { get; }
     public Model Model { get; }
+    public RideCarStaticInstanceEntry Car => car;
     public TrackCircuitTraversal Traversal => traversal;
 
     private readonly RideCarStaticInstanceEntry car;
@@ -403,7 +570,7 @@ public class RideTrainSceneMotionControllerTests {
           train,
           13,
           1f),
-        (train, track, renderedCars) =>
+        (train, track, runtimeCars, renderedCars) =>
           (track.CircuitTraversal ??
            track.SegmentCircuitTraversals.SingleOrDefault()?.Traversal) == null
           ? new(

@@ -2,6 +2,7 @@
 //
 // Copyright © 2026 OpenRCT3 Contributors. All rights reserved.
 
+using OpenCobra.GDK.Materials;
 using OpenCobra.OVL.Files;
 using OpenRCT3.Serialization;
 using OpenRCT3.Simulation;
@@ -45,6 +46,9 @@ public class RideTrackWildInstalledPipelineTests {
     var targetTrains = data.RideTrainInstances
       .Where(train => targetTrainIds.Contains(train.EntryId))
       .ToArray();
+    var targetCars = data.RideCarInstances
+      .Where(car => targetTrainIds.Contains(car.RideTrainInstance))
+      .ToArray();
     var targetSegments = data.TrackSegments
       .Where(segment => targetTrackIds.Contains(segment.Track))
       .ToArray();
@@ -86,6 +90,61 @@ public class RideTrackWildInstalledPipelineTests {
       var trainRuntime = RideInstanceTrainRuntimeRegistry.Build(
         trackRuntime,
         loaded.RideResources.TrainInstances);
+      var consistRuntime = RideInstanceTrainConsistRuntimeRegistry.Build(
+        trainRuntime,
+        loaded.RideResources,
+        targetCars);
+      var carRuntime = RideCarInstanceRuntimeRegistry.Build(
+        trainRuntime,
+        targetCars,
+        consistRuntime);
+      var wheelCursors = RideCarSavedWheelCursorRegistry.Build(carRuntime, targetPieces);
+      var visualVariants = RideCarVisualVariantSelector.Build(
+        carRuntime,
+        loaded.RideResources.CarVisuals);
+      using var variantTemplates = RideCarVariantVisualTemplateRegistry.Build(visualVariants);
+      var variantCars = RideCarVariantStaticInstanceRegistry.Build(
+        carRuntime,
+        wheelCursors,
+        visualVariants,
+        variantTemplates);
+      var carScene = RideCarStaticSceneBuilder.Build(
+        variantCars,
+        (_, _) => new Flat());
+      RideTrainSceneMotionUpdateResult motionUpdate;
+      RideTrainMotionState[] initialMotionStates;
+      RideTrainMotionState[] updatedMotionStates;
+      var changedBodyModelCount = 0;
+      var maximumBodyPositionDelta = 0f;
+      try {
+        var motion = RideTrainSceneMotionController.Build(
+          trainRuntime.Entries,
+          carRuntime.Entries,
+          carScene);
+        initialMotionStates = motion.Entries
+          .Select(entry => entry.MotionState!.Value)
+          .ToArray();
+        var initialBodyTransforms = carScene.Models
+          .Select(model => model.Transform.Matrix)
+          .ToArray();
+
+        motionUpdate = motion.Update(TimeSpan.FromSeconds(0.5d));
+
+        updatedMotionStates = motion.Entries
+          .Select(entry => entry.MotionState!.Value)
+          .ToArray();
+        changedBodyModelCount = carScene.Models
+          .Select((model, index) => model.Transform.Matrix != initialBodyTransforms[index])
+          .Count(changed => changed);
+        maximumBodyPositionDelta = carScene.Models
+          .Select((model, index) => Vector3.Distance(
+            model.Transform.Matrix.Translation,
+            initialBodyTransforms[index].Translation))
+          .Max();
+      }
+      finally {
+        foreach (var model in carScene.Models.Reverse()) model.Dispose();
+      }
       var authorizations = trainRuntime.Entries.Select(train =>
         RideTrainCircuitMotionAuthorization.Authorize(train, train.TrackRuntime)).ToArray();
 
@@ -96,6 +155,9 @@ public class RideTrackWildInstalledPipelineTests {
         $"Raiders track visuals: archives={loaded.Context.LoadedCommonPaths.Count}, " +
         $"visuals={trackVisuals.Visuals.Count}, staticLods={trackVisuals.StaticLodCount}, " +
         $"boneLods={trackVisuals.BoneLodCount}, meshes={trackVisuals.MeshCount}");
+      TestContext.Progress.WriteLine(
+        $"Raiders motion update: changedBodyModels={changedBodyModelCount}, " +
+        $"maximumBodyPositionDelta={maximumBodyPositionDelta:R}");
 
       using (Assert.EnterMultipleScope()) {
         Assert.That(targetTracks.Select(track => track.EntryId),
@@ -106,6 +168,16 @@ public class RideTrackWildInstalledPipelineTests {
           Is.EqualTo(new[] { 13, 13 }));
         Assert.That(targetTrains.OrderBy(train => train.EntryId).Select(train => train.Speed),
           Is.EqualTo(new[] { 17.4024944f, 11.6078625f }));
+        Assert.That(consistRuntime.ResolvedCount, Is.EqualTo(2));
+        Assert.That(carRuntime.Entries, Has.Count.EqualTo(18));
+        Assert.That(variantCars.ResolvedCount, Is.EqualTo(10));
+        Assert.That(motionUpdate.AnimatedTrainCount, Is.EqualTo(2));
+        Assert.That(motionUpdate.AnimatedCarCount, Is.EqualTo(10));
+        Assert.That(initialMotionStates.Select(state => state.Speed), Is.All.Not.Zero);
+        Assert.That(updatedMotionStates.Select((state, index) =>
+          state.Distance != initialMotionStates[index].Distance), Is.All.True);
+        Assert.That(changedBodyModelCount, Is.GreaterThan(0));
+        Assert.That(maximumBodyPositionDelta, Is.GreaterThan(0.01f));
         Assert.That(targetSegments, Has.Length.EqualTo(2));
         Assert.That(targetPieces, Has.Length.EqualTo(399));
         Assert.That(geometry.Tracks.Select(link => link.Status),

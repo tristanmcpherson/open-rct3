@@ -36,12 +36,19 @@ internal sealed record RideTrainNativeLengthResult(
   public bool IsResolved => Status == RideTrainNativeLengthStatus.Resolved;
 }
 
-/// <summary>One aligned runtime car and its authoritative longitudinal geometry.</summary>
+/// <summary>One aligned runtime car and its authoritative current scalar length.</summary>
 internal sealed record RideTrainNativeLengthInput(
   RideCarInstanceRuntimeEntry RuntimeEntry,
-  RideCarLongitudinalGeometry Geometry,
+  float Length,
+  RideCarLongitudinalGeometry? Geometry,
   bool HasRearGeometry
-);
+) {
+  public RideTrainNativeLengthInput(
+    RideCarInstanceRuntimeEntry runtimeEntry,
+    RideCarLongitudinalGeometry? geometry,
+    bool HasRearGeometry
+  ) : this(runtimeEntry, geometry?.CarLength ?? 0f, geometry, HasRearGeometry) { }
+}
 
 /// <summary>Validates and reproduces the native ride-train length accumulator.</summary>
 /// <remarks>
@@ -54,7 +61,9 @@ internal sealed record RideTrainNativeLengthInput(
 /// allocates the RideCar-owned 28-byte <c>+0xD4</c> record at <c>0x00F3F990</c> through
 /// <c>0x00F3F99C</c>, then copies all fields at <c>0x00F3F9A6</c> through <c>0x00F3F9B9</c>.
 /// The safe operational names for <c>+0x0C</c> and <c>+0x10</c> are first-end and last-end
-/// extensions; the exact model-marker business names remain unknown. The overload without
+/// extensions; the exact model-marker business names remain unknown. Exact saved Link-role
+/// entries may supply their retained <c>+0x190</c> scalar without body geometry because the native
+/// accumulator still visits them. Other missing geometry remains fail-closed. The overload without
 /// geometry retains fail-closed saved-state validation and never exposes its subtotal as native.
 /// </remarks>
 /// <seealso href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/include/car.h#L155-L161">
@@ -129,12 +138,23 @@ internal static class RideTrainNativeLengthResolver {
 
     foreach (var index in Enumerable.Range(0, carCount)) {
       var input = inputs[index];
-      if (input.Geometry == null)
+      if (!float.IsFinite(input.Length) || input.Length < 0f)
         return Failed(
-          RideTrainNativeLengthStatus.RuntimeGeometryUnavailable,
+          RideTrainNativeLengthStatus.NonFiniteRuntimeGeometry,
           carCount,
           index);
-      if (!float.IsFinite(input.Geometry.CarLength) ||
+      if (input.Geometry == null) {
+        if (!RideTrainSpacingOnlyLinkEvidence.IsExact(input.RuntimeEntry) ||
+            !input.RuntimeEntry.HasSavedPhysicalState || input.HasRearGeometry ||
+            !SameFloat(input.Length, input.RuntimeEntry.SavedLength) || index == 0 ||
+            index == carCount - 1)
+          return Failed(
+            RideTrainNativeLengthStatus.RuntimeGeometryUnavailable,
+            carCount,
+            index);
+        continue;
+      }
+      if (!SameFloat(input.Length, input.Geometry.CarLength) ||
           (index == 0 &&
            !float.IsFinite(input.Geometry.FrontWheelCenterOffsetFromCarFront)) ||
           (index == carCount - 1 && input.HasRearGeometry &&
@@ -148,12 +168,12 @@ internal static class RideTrainNativeLengthResolver {
     var length = 0f;
     foreach (var index in Enumerable.Range(0, carCount)) {
       var input = inputs[index];
-      length += input.Geometry.CarLength;
+      length += input.Length;
       if (!float.IsFinite(length))
         return Failed(RideTrainNativeLengthStatus.NonFiniteAccumulation, carCount, index);
 
       if (index == 0) {
-        length += FirstEndExtension(input.Geometry);
+        length += FirstEndExtension(input.Geometry!);
         if (!float.IsFinite(length))
           return Failed(RideTrainNativeLengthStatus.NonFiniteAccumulation, carCount, index);
       }
@@ -250,10 +270,13 @@ internal static class RideTrainNativeLengthResolver {
   private static float LastEndExtension(RideTrainNativeLengthInput input) {
     if (!input.HasRearGeometry) return 0f;
 
-    var rearExtent = -input.Geometry.RearWheelCenterOffsetFromFrontWheelCenter;
-    if (rearExtent <= input.Geometry.CarLength) return 0f;
-    return rearExtent - input.Geometry.CarLength;
+    var rearExtent = -input.Geometry!.RearWheelCenterOffsetFromFrontWheelCenter;
+    if (rearExtent <= input.Length) return 0f;
+    return rearExtent - input.Length;
   }
+
+  private static bool SameFloat(float left, float right) =>
+    BitConverter.SingleToInt32Bits(left) == BitConverter.SingleToInt32Bits(right);
 
   private static void ValidateLimits(RideTrainNativeLengthResolverLimits limits) {
     if (limits.MaximumCarCount <= 0)

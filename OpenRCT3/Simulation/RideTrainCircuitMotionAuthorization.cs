@@ -50,11 +50,22 @@ internal static class RideTrainCircuitMotionAuthorization {
   public static RideTrainCircuitMotionAuthorizationResult Authorize(
     RideInstanceTrainRuntimeEntry? trainRuntime,
     RideInstanceTrackRuntimeEntry? trackRuntime
-  ) => Authorize(trainRuntime, trackRuntime, renderedCars: null);
+  ) => Authorize(trainRuntime, trackRuntime, runtimeCars: null, renderedCars: null);
 
   public static RideTrainCircuitMotionAuthorizationResult Authorize(
     RideInstanceTrainRuntimeEntry? trainRuntime,
     RideInstanceTrackRuntimeEntry? trackRuntime,
+    IReadOnlyList<RideCarStaticInstanceEntry>? renderedCars
+  ) => Authorize(
+    trainRuntime,
+    trackRuntime,
+    renderedCars?.Select(car => car is null ? null! : car.CarRuntime).ToArray(),
+    renderedCars);
+
+  public static RideTrainCircuitMotionAuthorizationResult Authorize(
+    RideInstanceTrainRuntimeEntry? trainRuntime,
+    RideInstanceTrackRuntimeEntry? trackRuntime,
+    IReadOnlyList<RideCarInstanceRuntimeEntry>? runtimeCars,
     IReadOnlyList<RideCarStaticInstanceEntry>? renderedCars
   ) {
     if (!HasCompleteRuntime(trainRuntime, trackRuntime))
@@ -74,9 +85,9 @@ internal static class RideTrainCircuitMotionAuthorization {
 
     return trackRuntime.Status switch {
       RideTrackGeometryStatus.Circuit => AuthorizeSingularCircuit(trackRuntime),
-      RideTrackGeometryStatus.MultiCircuit => renderedCars is null
+      RideTrackGeometryStatus.MultiCircuit => runtimeCars is null || renderedCars is null
         ? Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedCircuitTraversal)
-        : AuthorizeSegmentCircuit(trainRuntime, trackRuntime, renderedCars),
+        : AuthorizeSegmentCircuit(trainRuntime, trackRuntime, runtimeCars, renderedCars),
       _ => Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedCircuitTraversal),
     };
   }
@@ -98,6 +109,7 @@ internal static class RideTrainCircuitMotionAuthorization {
   private static RideTrainCircuitMotionAuthorizationResult AuthorizeSegmentCircuit(
     RideInstanceTrainRuntimeEntry trainRuntime,
     RideInstanceTrackRuntimeEntry trackRuntime,
+    IReadOnlyList<RideCarInstanceRuntimeEntry> runtimeCars,
     IReadOnlyList<RideCarStaticInstanceEntry> renderedCars
   ) {
     if (trackRuntime.Circuit is not null || trackRuntime.CircuitTraversal is not null ||
@@ -110,27 +122,56 @@ internal static class RideTrainCircuitMotionAuthorization {
       return Result(RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity);
 
     var savedCars = trainRuntime.TrainResource.TrainInstance.Cars;
-    if (renderedCars.Count == 0 || renderedCars.Count != savedCars.Count)
+    if (runtimeCars.Count == 0 || runtimeCars.Count != savedCars.Count)
       return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
 
+    var orderedRuntime = new RideCarInstanceRuntimeEntry[savedCars.Count];
     var occupiedOrdinals = new bool[savedCars.Count];
-    int? selectedCircuitIndex = null;
-    foreach (var entry in renderedCars) {
-      if (entry is null || entry.CarRuntime is null || entry.SavedCursor is null ||
-          !entry.IsResolved || entry.RegistryIndex != entry.CarRuntime.RegistryIndex ||
-          entry.SavedCursor.RegistryIndex != entry.CarRuntime.RegistryIndex ||
-          !ReferenceEquals(entry.SavedCursor.CarRuntime, entry.CarRuntime) ||
-          !ReferenceEquals(entry.CarRuntime.TrainRuntime, trainRuntime))
+    foreach (var runtime in runtimeCars) {
+      if (runtime is null || runtime.CarInstance is null ||
+          !ReferenceEquals(runtime.TrainRuntime, trainRuntime))
         return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
 
-      var ordinal = entry.CarRuntime.WhichCar;
+      var ordinal = runtime.WhichCar;
       if (ordinal < 0 || ordinal >= savedCars.Count || occupiedOrdinals[ordinal] ||
-          savedCars[ordinal] != entry.CarInstanceEntryId)
+          savedCars[ordinal] != runtime.CarInstanceEntryId ||
+          runtime.CarInstance.RideTrainInstance != trainRuntime.TrainInstanceEntryId)
         return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
       occupiedOrdinals[ordinal] = true;
+      orderedRuntime[ordinal] = runtime;
+    }
+    if (occupiedOrdinals.Any(occupied => !occupied))
+      return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
 
-      var front = entry.CarRuntime.TrackPiece;
-      var rear = entry.CarRuntime.RearTrackPiece;
+    var renderedByOrdinal = new RideCarStaticInstanceEntry?[savedCars.Count];
+    foreach (var entry in renderedCars) {
+      if (entry is null || entry.CarRuntime is null)
+        return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
+      var ordinal = entry.CarRuntime.WhichCar;
+      if (ordinal < 0 || ordinal >= savedCars.Count || renderedByOrdinal[ordinal] != null ||
+          !ReferenceEquals(orderedRuntime[ordinal], entry.CarRuntime))
+        return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
+      renderedByOrdinal[ordinal] = entry;
+    }
+
+    int? selectedCircuitIndex = null;
+    foreach (var ordinal in Enumerable.Range(0, savedCars.Count)) {
+      var runtime = orderedRuntime[ordinal];
+      var entry = renderedByOrdinal[ordinal];
+      var isLink = runtime.SavedRole == OpenCobra.OVL.Files.RideTrainCarRole.Link;
+      if (isLink) {
+        if (ordinal == 0 || ordinal == savedCars.Count - 1 || entry != null ||
+            !RideTrainSpacingOnlyLinkEvidence.IsExact(runtime))
+          return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
+      } else if (entry is null || entry.SavedCursor is null || !entry.IsResolved ||
+          entry.RegistryIndex != runtime.RegistryIndex ||
+          entry.SavedCursor.RegistryIndex != runtime.RegistryIndex ||
+          !ReferenceEquals(entry.SavedCursor.CarRuntime, runtime)) {
+        return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
+      }
+
+      var front = runtime.TrackPiece;
+      var rear = runtime.RearTrackPiece;
       if (!HasCompleteCircuitIdentity(front) || !HasCompleteCircuitIdentity(rear))
         return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
       if (front.CircuitIndex != rear.CircuitIndex)
@@ -147,15 +188,15 @@ internal static class RideTrainCircuitMotionAuthorization {
       if (front.SegmentSourceEntryId != segment.SegmentSourceEntryId ||
           rear.SegmentSourceEntryId != segment.SegmentSourceEntryId)
         return Result(RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity);
-      if (!ContactMatchesTraversal(entry.SavedCursor.Front, front, segment.Traversal) ||
-          !ContactMatchesTraversal(entry.SavedCursor.Rear, rear, segment.Traversal))
+      if (!isLink &&
+          (!ContactMatchesTraversal(entry!.SavedCursor.Front, front, segment.Traversal) ||
+           !ContactMatchesTraversal(entry.SavedCursor.Rear, rear, segment.Traversal)))
         return Result(RideTrainCircuitMotionAuthorizationStatus.ChangedCircuitTraversalIdentity);
 
       selectedCircuitIndex = circuitIndex;
     }
 
-    if (selectedCircuitIndex is not { } selected ||
-        occupiedOrdinals.Any(occupied => !occupied))
+    if (selectedCircuitIndex is not { } selected)
       return Result(RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity);
     return Authorized(trackRuntime.SegmentCircuitTraversals[selected].Traversal);
   }

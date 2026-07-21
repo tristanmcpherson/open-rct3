@@ -592,6 +592,7 @@ public class Game : IGame {
             try {
               var trainSceneMotion = RideTrainSceneMotionController.Build(
                 trainRuntime.Entries,
+                carRuntime.Entries,
                 carScene,
                 hierarchyScene);
               World.Park.RideTrainSceneMotion = trainSceneMotion;

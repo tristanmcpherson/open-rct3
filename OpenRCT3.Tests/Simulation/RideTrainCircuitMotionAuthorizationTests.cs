@@ -152,6 +152,47 @@ public class RideTrainCircuitMotionAuthorizationTests {
   }
 
   [Test]
+  public void Authorize_MultiCircuitRetainsInteriorLinkWithoutRenderedBody() {
+    var fixture = MultiCircuitFixtureWithInteriorLink(1, 1, 1);
+
+    var result = RideTrainCircuitMotionAuthorization.Authorize(
+      fixture.Train,
+      fixture.Track,
+      fixture.RuntimeCars,
+      fixture.RenderedCars);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(fixture.RuntimeCars, Has.Count.EqualTo(3));
+      Assert.That(fixture.RenderedCars, Has.Count.EqualTo(2));
+      Assert.That(result.Status, Is.EqualTo(
+        RideTrainCircuitMotionAuthorizationStatus.AuthorizedByReciprocalCircuit));
+      Assert.That(result.Traversal,
+        Is.SameAs(fixture.Track.SegmentCircuitTraversals[1].Traversal));
+    }
+  }
+
+  [Test]
+  public void Authorize_LegacyRenderedCarsNullElementFailsWithTypedOutcome() {
+    var fixture = MultiCircuitFixture(1);
+    var renderedCars = fixture.RenderedCars.ToArray();
+    renderedCars[0] = null!;
+
+    var result = RideTrainCircuitMotionAuthorization.Authorize(
+      fixture.Train,
+      fixture.Track,
+      renderedCars);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(
+        result.Status,
+        Is.EqualTo(
+          RideTrainCircuitMotionAuthorizationStatus.UnresolvedSavedCursorIdentity));
+      Assert.That(result.IsAuthorized, Is.False);
+      Assert.That(result.Traversal, Is.Null);
+    }
+  }
+
+  [Test]
   public void Authorize_RejectsSavedConsistAcrossSeparateCircuits() {
     var fixture = MultiCircuitFixture(0, 1);
 
@@ -212,9 +253,18 @@ public class RideTrainCircuitMotionAuthorizationTests {
 
   private static MultiCircuitAuthorizationFixture MultiCircuitFixture(
     params int[] carCircuitIndices
+  ) => MultiCircuitFixture(carCircuitIndices, linkOrdinal: null);
+
+  private static MultiCircuitAuthorizationFixture MultiCircuitFixtureWithInteriorLink(
+    params int[] carCircuitIndices
+  ) => MultiCircuitFixture(carCircuitIndices, linkOrdinal: 1);
+
+  private static MultiCircuitAuthorizationFixture MultiCircuitFixture(
+    IReadOnlyList<int> carCircuitIndices,
+    int? linkOrdinal
   ) {
     var pieceIds = new ulong[] { 9_001, 9_002, 9_003, 9_004 };
-    var carIds = Enumerable.Range(0, carCircuitIndices.Length)
+    var carIds = Enumerable.Range(0, carCircuitIndices.Count)
       .Select(index => 3_000ul + Convert.ToUInt64(index))
       .ToArray();
     var ride = new DatTrackedRideInstanceData(
@@ -224,7 +274,7 @@ public class RideTrainCircuitMotionAuthorizationTests {
       "Tracks\\Synthetic",
       "Synthetic:trr",
       nTrains: 1,
-      nCarsPerTrain: carIds.Length,
+      nCarsPerTrain: carIds.Length - (linkOrdinal.HasValue ? 1 : 0),
       trainSelection: 0,
       trains: [1_000]);
     var savedTrain = new DatRideTrainInstanceData(
@@ -278,11 +328,14 @@ public class RideTrainCircuitMotionAuthorizationTests {
     var train = trainRegistry.Entries.Single();
     var savedCars = carCircuitIndices.Select((circuitIndex, ordinal) => {
       var pieceId = circuitIndex == 0 ? pieceIds[0] : pieceIds[2];
+      var role = ordinal == linkOrdinal
+        ? RideTrainCarRole.Link
+        : RideTrainCarRole.Front;
       return new DatRideCarInstanceData(
         carIds[ordinal],
         savedTrain.EntryId,
         whichCar: ordinal,
-        whichRideTrainCar: Convert.ToInt32(RideTrainCarRole.Front),
+        whichRideTrainCar: Convert.ToInt32(role),
         frontWheelDistance: 0f,
         rearWheelDistance: 0f,
         trackPiece: pieceId,
@@ -302,9 +355,58 @@ public class RideTrainCircuitMotionAuthorizationTests {
       TrackPieceData(pieceIds[3], 801, pieceIds[2], pieceIds[2], 100f),
     };
     var cursors = RideCarSavedWheelCursorRegistry.Build(carRegistry, rawPieces);
-    var renderedCars = cursors.Entries.Select((cursor, index) =>
+    var runtimeCars = carRegistry.Entries.ToArray();
+    var alignedCursors = cursors.Entries.ToArray();
+    if (linkOrdinal.HasValue) {
+      var links = runtimeCars.Select((runtime, index) => new RideCarLink(
+        runtime.SavedRole,
+        $"car-{index}:ric",
+        Source: null,
+        Visuals: Array.Empty<RideVisualLink>())).ToArray();
+      var roles = runtimeCars.Select((runtime, index) =>
+        runtime.SavedRole == RideTrainCarRole.Link
+          ? new RideTrainConsistRoleEntry(
+            index,
+            null,
+            runtime.SavedRole,
+            links[index].Reference,
+            0,
+            false)
+          : new RideTrainConsistRoleEntry(
+            index,
+            index,
+            runtime.SavedRole,
+            links[index].Reference,
+            1)).ToArray();
+      var consistCars = roles.Select((role, index) =>
+        new RideInstanceTrainConsistCarRuntimeEntry(
+          role,
+          links[index],
+          new RideCarPeepSlotEvidence(
+            links[index],
+            null!,
+            role.PeepSlotCount,
+            Array.Empty<RideVisualShapeLodLink>()))).ToArray();
+      var consist = new RideInstanceTrainConsistRuntimeEntry(
+        train,
+        null,
+        new RideTrainLink("synthetic-train", null, links),
+        new RideTrainConsistRoleResolution(carIds.Length - 1, roles),
+        Array.AsReadOnly(consistCars),
+        RideInstanceTrainConsistRuntimeStatus.Resolved);
+      runtimeCars = runtimeCars.Select((runtime, index) => runtime with {
+        CarResource = links[index],
+        TrainConsist = consist,
+        ConsistCar = consistCars[index],
+      }).ToArray();
+      alignedCursors = alignedCursors.Select((cursor, index) =>
+        cursor with { CarRuntime = runtimeCars[index] }).ToArray();
+    }
+    var renderedCars = alignedCursors
+      .Where(cursor => cursor.CarRuntime.SavedRole != RideTrainCarRole.Link)
+      .Select(cursor =>
       new RideCarStaticInstanceEntry(
-        index,
+        cursor.RegistryIndex,
         cursor.CarRuntime,
         cursor,
         RideCarStaticInstanceIssue.None,
@@ -313,7 +415,7 @@ public class RideTrainCircuitMotionAuthorizationTests {
         Pose: null,
         GeometryUnavailableDetail: null,
         StaticPoseUnavailableDetail: null)).ToArray();
-    return new(train, trackRegistry.Entries.Single(), renderedCars);
+    return new(train, trackRegistry.Entries.Single(), runtimeCars, renderedCars);
   }
 
   private static RideCarSavedWheelContactCursor ForeignContact(
@@ -474,6 +576,7 @@ public class RideTrainCircuitMotionAuthorizationTests {
   private sealed record MultiCircuitAuthorizationFixture(
     RideInstanceTrainRuntimeEntry Train,
     RideInstanceTrackRuntimeEntry Track,
+    IReadOnlyList<RideCarInstanceRuntimeEntry> RuntimeCars,
     IReadOnlyList<RideCarStaticInstanceEntry> RenderedCars
   );
 }

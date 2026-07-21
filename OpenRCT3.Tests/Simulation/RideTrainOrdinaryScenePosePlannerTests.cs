@@ -49,6 +49,32 @@ public class RideTrainOrdinaryScenePosePlannerTests {
   }
 
   [Test]
+  public void Resolve_SpacingOnlyLinkMovesBodiesWithoutProducingSceneTarget() {
+    var traversal = new TrackCircuitTraversal(LongStadium());
+    var train = Train(
+      traversal,
+      new(100f, Geometry(4f, 1f, -2f), RideTrainCarRole.Front),
+      new(0.25f, null, RideTrainCarRole.Link),
+      new(200f, Geometry(5f, -1f, -2f), RideTrainCarRole.Rear));
+
+    var result = RideTrainOrdinaryScenePosePlanner.Resolve(
+      traversal,
+      new RideTrainMotionState(20f, 3f, Reversed: false),
+      train.Inputs);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.NativeLength.CarCount, Is.EqualTo(3));
+      Assert.That(result.NativeLength.Length, Is.EqualTo(10.25f));
+      Assert.That(result.CarDistances.BaseDistances, Is.EqualTo(new[] { 19f, 15f, 14.75f }));
+      Assert.That(result.CarPoses, Has.Count.EqualTo(2));
+      Assert.That(result.Targets, Has.Count.EqualTo(2));
+      Assert.That(result.Targets.Select(target => target.RegistryIndex),
+        Is.EqualTo(new[] { train.Cars[0].RegistryIndex, train.Cars[2].RegistryIndex }));
+      Assert.That(train.Inputs[1].IsRendered, Is.False);
+    }
+  }
+
+  [Test]
   public void Resolve_FailsClosedOnMissingRearGeometry() {
     var traversal = new TrackCircuitTraversal(LongStadium());
     var train = Train(
@@ -108,18 +134,20 @@ public class RideTrainOrdinaryScenePosePlannerTests {
     var roles = new RideTrainConsistRoleEntry[terms.Length];
     var consistCars = new RideInstanceTrainConsistCarRuntimeEntry[terms.Length];
     foreach (var index in Enumerable.Range(0, terms.Length)) {
-      var role = Role(index, terms.Length);
+      var role = terms[index].Role ?? Role(index, terms.Length);
       var resourceName = $"car-{index}:ric";
       var resource = CarResource($"car-{index}");
       var source = new RideCarResourceSource(null!, resource, []);
       var link = new RideCarLink(role, resourceName, source, []);
-      var roleEntry = new RideTrainConsistRoleEntry(index, index, role, resourceName, 1);
+      var roleEntry = role == RideTrainCarRole.Link
+        ? new RideTrainConsistRoleEntry(index, null, role, resourceName, 0, false)
+        : new RideTrainConsistRoleEntry(index, index, role, resourceName, 1);
       resourceLinks[index] = link;
       roles[index] = roleEntry;
       consistCars[index] = new(
         roleEntry,
         link,
-        new RideCarPeepSlotEvidence(link, null!, 1, []));
+        new RideCarPeepSlotEvidence(link, null!, roleEntry.PeepSlotCount, []));
     }
 
     var roleResolution = new RideTrainConsistRoleResolution(terms.Length, roles);
@@ -166,18 +194,29 @@ public class RideTrainOrdinaryScenePosePlannerTests {
         resourceLinks[index],
         consist,
         consistCars[index]);
+      cars[index] = runtime;
+      if (role == RideTrainCarRole.Link) {
+        inputs[index] = new(
+          runtime,
+          StaticEntry: null,
+          Geometry: null,
+          Length: runtime.SavedLength,
+          HasRearGeometry: false);
+        continue;
+      }
+
+      var geometry = terms[index].Geometry!;
       var staticEntry = new RideCarStaticInstanceEntry(
         index,
         runtime,
         SavedCursor: null!,
         RideCarStaticInstanceIssue.None,
         BodyTemplate: null,
-        terms[index].Geometry,
+        geometry,
         Pose: null,
         GeometryUnavailableDetail: null,
         StaticPoseUnavailableDetail: null);
-      cars[index] = runtime;
-      inputs[index] = new(runtime, staticEntry, terms[index].Geometry, true);
+      inputs[index] = new(runtime, staticEntry, geometry, true);
     }
     return new(cars, inputs);
   }
@@ -301,6 +340,7 @@ public class RideTrainOrdinaryScenePosePlannerTests {
 
   private readonly record struct CarTerms(
     float SavedLength,
-    RideCarLongitudinalGeometry Geometry
+    RideCarLongitudinalGeometry? Geometry,
+    RideTrainCarRole? Role = null
   );
 }

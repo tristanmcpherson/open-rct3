@@ -585,6 +585,13 @@ internal static class DatTerrainReader {
     new("Type", FieldKind.Int32, 4),
     new("Visual", FieldKind.ManagedObjectPtr, 8),
   ];
+  private static readonly ExpectedField[] GameTimeSchema = [
+    new("DayNightMode", FieldKind.Int32, 4),
+    new("DayNightTime", FieldKind.Float32, 4),
+    new("DayNightTimeAsRendered", FieldKind.Float32, 4),
+    new("Time", FieldKind.Float32, 4),
+    new("ZeroTime", FieldKind.Float32, 4),
+  ];
 
   public static DatTerrainData Read(string path) {
     if (string.IsNullOrWhiteSpace(path))
@@ -623,6 +630,8 @@ internal static class DatTerrainReader {
         state.CaptureWildAnimalVisual(ReadWildAnimalVisual(reader, entryId, state));
       else if (structure.Name == "WildAnimal")
         state.CaptureWildAnimal(ReadWildAnimal(reader, structure, entryId, state));
+      else if (structure.Name == "GameTime")
+        state.CaptureGameTime(ReadGameTime(reader, entryId, state));
       else if (structure.Name == "RideCarInstance")
         state.CaptureRideCarInstance(
           ReadRideCarInstance(reader, structure, entryId, state));
@@ -679,11 +688,13 @@ internal static class DatTerrainReader {
       state.WildAnimalVisuals,
       state.WildAnimals,
       state.WildAnimalPlacements,
-      state.GenericStructureInventory);
+      state.GenericStructureInventory,
+      state.GameTime);
   }
 
   private static bool IsGenericallyConsumed(string structureName) {
-    if (structureName is "WASDatabaseEntry" or "WildAnimalVisual" or "WildAnimal"
+    if (structureName is
+      "WASDatabaseEntry" or "WildAnimalVisual" or "WildAnimal" or "GameTime"
       or "RideCarInstance" or "RideTrainInstance" or "TrackedRideInstance"
       or "Track" or "TrackSegment" or "TrackPiece") return false;
     if (TryGetPathSurfaceStructureKind(structureName, out _)) return false;
@@ -733,6 +744,8 @@ internal static class DatTerrainReader {
       ValidateExactStructureSchema(structure, WildAnimalVisualSchema);
     else if (name == "WildAnimal")
       ValidateWildAnimalStructureSchema(structure);
+    else if (name == "GameTime")
+      ValidateExactStructureSchema(structure, GameTimeSchema);
     else if (name == "RideCarInstance")
       ValidateRideCarInstanceStructureSchema(structure);
     else if (name == "RideTrainInstance")
@@ -1363,6 +1376,21 @@ internal static class DatTerrainReader {
       isAdult ?? throw MissingWildAnimalValue("IsAdult"),
       isMale ?? throw MissingWildAnimalValue("IsMale"),
       type ?? throw MissingWildAnimalValue("Type"));
+  }
+
+  private static DatGameTimeData ReadGameTime(
+    DatBinaryReader reader,
+    ulong entryId,
+    ValueReadState state
+  ) {
+    state.AddValues(GameTimeSchema.Length);
+    return new DatGameTimeData(
+      entryId,
+      reader.ReadInt32(),
+      ReadFiniteSingle(reader, "GameTime DayNightTime"),
+      ReadFiniteSingle(reader, "GameTime DayNightTimeAsRendered"),
+      ReadFiniteSingle(reader, "GameTime Time"),
+      ReadFiniteSingle(reader, "GameTime ZeroTime"));
   }
 
   private static Matrix4x4 ReadFiniteMatrix44(
@@ -2638,7 +2666,8 @@ internal static class DatTerrainReader {
     IReadOnlyList<DatWildAnimalVisualData> wildAnimalVisuals,
     IReadOnlyList<DatWildAnimalData> wildAnimals,
     IReadOnlyList<DatWildAnimalPlacementData> wildAnimalPlacements,
-    IReadOnlyList<DatGenericStructureInventoryData> genericStructureInventory
+    IReadOnlyList<DatGenericStructureInventoryData> genericStructureInventory,
+    DatGameTimeData? gameTime
   ) {
     if (waterManager != null
       && (waterManager.Width != terrain.Width || waterManager.Height != terrain.Height))
@@ -2657,7 +2686,7 @@ internal static class DatTerrainReader {
          rideTrainInstances.Count == 0 && rideCarInstances.Count == 0 &&
          wildAnimalSpeciesDatabaseEntries.Count == 0 && wildAnimalVisuals.Count == 0 &&
          wildAnimals.Count == 0 && wildAnimalPlacements.Count == 0 &&
-         genericStructureInventory.Count == 0)
+         genericStructureInventory.Count == 0 && gameTime == null)
       return terrain;
 
     var cells = new DatTerrainCell[terrain.Cells.Count];
@@ -2685,7 +2714,8 @@ internal static class DatTerrainReader {
       [.. wildAnimalVisuals],
       [.. wildAnimals],
       [.. wildAnimalPlacements],
-      [.. genericStructureInventory]);
+      [.. genericStructureInventory],
+      gameTime);
   }
 
   private static DatTerrainData ReadTerrain(DatBinaryReader reader, int payloadSize) {
@@ -2954,6 +2984,7 @@ internal static class DatTerrainReader {
 
     public DatTerrainData? Terrain { get; private set; }
     public DatWaterManagerData? WaterManager { get; private set; }
+    public DatGameTimeData? GameTime { get; private set; }
     public IReadOnlyList<DatPathData> Paths => _paths;
     public IReadOnlyList<DatPathSurfaceEntryData> PathSurfaceEntries => _pathSurfaceEntries;
     public IReadOnlyList<DatSceneryEntryData> SceneryEntries => _sceneryEntries;
@@ -3018,6 +3049,12 @@ internal static class DatTerrainReader {
 
     public void CaptureWaterManager(DatWaterManagerData waterManager) {
       WaterManager ??= waterManager;
+    }
+
+    public void CaptureGameTime(DatGameTimeData gameTime) {
+      if (GameTime != null)
+        throw new InvalidDataException("DAT contains more than one GameTime entry.");
+      GameTime = gameTime;
     }
 
     public void CapturePath(DatPathData path) => _paths.Add(path);

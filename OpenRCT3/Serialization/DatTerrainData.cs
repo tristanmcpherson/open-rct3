@@ -38,6 +38,7 @@ internal sealed class DatTerrainData {
   public IReadOnlyList<DatWildAnimalVisualData> WildAnimalVisuals { get; }
   public IReadOnlyList<DatWildAnimalData> WildAnimals { get; }
   public IReadOnlyList<DatWildAnimalPlacementData> WildAnimalPlacements { get; }
+  public DatGameTimeData? GameTime { get; }
   public IReadOnlyList<DatGenericStructureInventoryData> GenericStructureInventory { get; }
 
   public DatTerrainData(
@@ -62,7 +63,8 @@ internal sealed class DatTerrainData {
     DatWildAnimalVisualData[]? wildAnimalVisuals = null,
     DatWildAnimalData[]? wildAnimals = null,
     DatWildAnimalPlacementData[]? wildAnimalPlacements = null,
-    DatGenericStructureInventoryData[]? genericStructureInventory = null) {
+    DatGenericStructureInventoryData[]? genericStructureInventory = null,
+    DatGameTimeData? gameTime = null) {
     if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
     if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
     ArgumentNullException.ThrowIfNull(cells);
@@ -158,6 +160,7 @@ internal sealed class DatTerrainData {
     var rawWildAnimalPlacements = (DatWildAnimalPlacementData[])(
       wildAnimalPlacements?.Clone() ?? Array.Empty<DatWildAnimalPlacementData>());
     WildAnimalPlacements = Array.AsReadOnly(rawWildAnimalPlacements);
+    GameTime = gameTime;
     var rawGenericStructureInventory = (DatGenericStructureInventoryData[])(
       genericStructureInventory?.Clone() ?? Array.Empty<DatGenericStructureInventoryData>());
     GenericStructureInventory = Array.AsReadOnly(rawGenericStructureInventory);

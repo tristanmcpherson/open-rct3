@@ -20,7 +20,7 @@ public sealed record TrackedRideTrackSection(string Resource, string InternalNam
 public sealed record TrackedRideStation(
   string? Name,
   uint PlatformHeightOverTrack,
-  uint StartPreset,
+  TrackedRideStartPreset StartPreset,
   uint StartPossibilities,
   float RollSpeed,
   int ModusFlags
@@ -258,6 +258,10 @@ public static class TrackedRides {
       ReadFiniteSingle(baseHeader, commonOffset + offset, name, description);
 
     ValidateCommonFloats(name, baseHeader, commonOffset);
+    var rawStartPreset = CommonUInt32(72);
+    var startPreset = (TrackedRideStartPreset)rawStartPreset;
+    if (!Enum.IsDefined(startPreset))
+      throw Invalid(name, $"start preset {rawStartPreset} is unsupported");
     var trackSectionCount = version == TrackedRideVersion.Vanilla
       ? CommonUInt32(0)
       : ReadUInt32(baseHeader, 304);
@@ -368,7 +372,7 @@ public static class TrackedRides {
         "station/platform name",
         context),
       CommonUInt32(60),
-      CommonUInt32(72),
+      startPreset,
       CommonUInt32(76),
       CommonSingle(84, "station roll speed"),
       CommonInt32(236));

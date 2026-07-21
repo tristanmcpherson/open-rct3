@@ -26,6 +26,7 @@ public class TrackedRidesTests {
       Assert.That(ride.VanillaTrackPath, Is.EqualTo("WoodenTrack"));
       Assert.That(ride.Station.Name, Is.EqualTo("WoodenPlatform"));
       Assert.That(ride.Station.PlatformHeightOverTrack, Is.EqualTo(7));
+      Assert.That(ride.Station.StartPreset, Is.EqualTo(TrackedRideStartPreset.Launched));
       Assert.That(ride.Station.RollSpeed, Is.EqualTo(8f));
       Assert.That(ride.Motion.LaunchedMaximum, Is.EqualTo(50f));
       Assert.That(ride.Options.BlocksPossible, Is.EqualTo(257));
@@ -123,6 +124,7 @@ public class TrackedRidesTests {
   [TestCase(MalformedTrackedRide.UnexpectedCoreReference)]
   [TestCase(MalformedTrackedRide.SectionMetadataCountMismatch)]
   [TestCase(MalformedTrackedRide.WildShortWaterLayout)]
+  [TestCase(MalformedTrackedRide.UnsupportedStartPreset)]
   public void Decode_RejectsMalformedOrUnprovenCore(MalformedTrackedRide malformed) {
     var version = malformed switch {
       MalformedTrackedRide.RelocatedVersionMarker or
@@ -332,6 +334,9 @@ public class TrackedRidesTests {
         case MalformedTrackedRide.WildShortWaterLayout:
           WriteUInt32(header, 388, 1);
           break;
+        case MalformedTrackedRide.UnsupportedStartPreset:
+          WriteUInt32(header, commonOffset + 72, 16);
+          break;
         default:
           throw new ArgumentOutOfRangeException(nameof(malformed));
       }
@@ -518,4 +523,5 @@ public enum MalformedTrackedRide {
   UnexpectedCoreReference,
   SectionMetadataCountMismatch,
   WildShortWaterLayout,
+  UnsupportedStartPreset,
 }

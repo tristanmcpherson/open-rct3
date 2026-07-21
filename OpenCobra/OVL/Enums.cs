@@ -242,7 +242,29 @@ public enum SidType {
   #endregion
 }
 
-/// <remarks>TODO: Tracked rides. See <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/include/rct3constants.h#L505"/>.</remarks>
+/// <summary>The station dispatch mode selected by a tracked ride.</summary>
+/// <remarks>
+/// Matches <c>Constants::TRR::Start_Preset</c>. TODO: Port the remaining tracked-ride flag groups
+/// from <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/include/rct3constants.h#L505"/>.
+/// </remarks>
+public enum TrackedRideStartPreset : uint {
+  Circle = 0,
+  Launched = 1,
+  ReverseTilted = 2,
+  Boat = 3,
+  Race = 4,
+  Shuttle = 5,
+  Upwards = 6,
+  Freefall = 7,
+  UpAndDown = 8,
+  MiniGolf = 9,
+  Slide = 10,
+  ReverseCableLiftHill = 11,
+  WaterTransport = 12,
+  Aquarium = 13,
+  MultiplePowerLaunch = 14,
+  LazyRiver = 15
+}
 
 public enum TextureType : uint {
   /// <summary>Regular uncompressed texture.</summary>

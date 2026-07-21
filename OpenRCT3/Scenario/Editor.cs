@@ -24,28 +24,29 @@ public class Editor : IWindow {
     ImGui.SetNextWindowSize(new Vector2(ButtonWidth + ImGui.GetStyle().WindowPadding.X * 2, 0), ImGuiCond.Once);
     ImGui.Begin("Scenario Editor", ref open, ImGuiWindowFlags.NoResize);
 
-    // Row of icon buttons
-    if (ImGui.Button("Save")) {
-      // TODO: Save scenario
-    }
+    ImGui.TextDisabled("Read-only preview");
+    ImGui.TextWrapped("Scenario editing is not available yet.");
+
+    // Row of available panel actions
+    // TODO: Save scenario
+    ImGui.BeginDisabled(true);
+    ImGui.Button("Save");
+    ImGui.EndDisabled();
     ImGui.SameLine();
-    if (ImGui.Button("Quit")) {
-      open = false;
-      // TODO: Quit the game
-    }
+    if (ImGui.Button("Close panel")) open = false;
+    // TODO: Quit the game through a platform-owned window shutdown request.
 
     ImGui.Separator();
 
     // Column of labeled buttons
-    if (ImGui.Button("Setup Park", new Vector2(ButtonWidth, 0))) {
-      // TODO: Open park dialog
-    }
-    if (ImGui.Button("Choose Finances", new Vector2(ButtonWidth, 0))) {
-      // TODO: Open finances dialog
-    }
-    if (ImGui.Button("Choose Objectives & Challenges", new Vector2(ButtonWidth, 0))) {
-      // TODO: Open objectives dialog
-    }
+    ImGui.BeginDisabled(true);
+    // TODO: Open park dialog
+    ImGui.Button("Setup Park", new Vector2(ButtonWidth, 0));
+    // TODO: Open finances dialog
+    ImGui.Button("Choose Finances", new Vector2(ButtonWidth, 0));
+    // TODO: Open objectives dialog
+    ImGui.Button("Choose Objectives & Challenges", new Vector2(ButtonWidth, 0));
+    ImGui.EndDisabled();
 
     ImGui.Separator();
     ImGui.TextDisabled("Camera controls");

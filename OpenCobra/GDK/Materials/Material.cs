@@ -38,7 +38,7 @@ public readonly record struct MaterialRenderState(
     MaterialDepthMode.Equal);
 
   [Browsable(false)]
-  public bool IsTransparent => BlendMode == MaterialBlendMode.Alpha;
+  public bool IsTransparent => BlendMode == MaterialBlendMode.Alpha && !DepthWrite;
 
   [Browsable(false)]
   public bool IsAdditiveContribution => BlendMode == MaterialBlendMode.Additive;
@@ -186,6 +186,11 @@ public class Textured : Material {
 
   public Textured(MaterialBlendMode blendMode, byte alphaReference)
     : this(blendMode, (byte?)alphaReference) { }
+
+  public Textured(MaterialBlendMode blendMode, bool depthWrite)
+    : this(blendMode, null) {
+    RenderState = RenderState with { DepthWrite = depthWrite };
+  }
 
   private Textured(MaterialBlendMode blendMode, byte? alphaReference) {
     RenderState = blendMode switch {

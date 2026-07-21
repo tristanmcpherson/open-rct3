@@ -239,24 +239,26 @@ public class Game : IGame {
     if (World.Park.WildAnimalPlacements.Count > 0) {
       try {
         var animals = WildAnimalFrameZeroSceneLoader.Load(World.Park, installPath);
+        var animatedAnimals = WildAnimalAnimatedScene.Adopt(animals);
         var publishedAnimals = false;
         try {
+          var animalAnimation = WildAnimalAnimatedSceneController.Build(animatedAnimals);
           var animalFraming = GamePresentationOptions.ShowWildAnimalDiagnostics
             ? WildAnimalCameraFraming.Calculate(animals.Scene)
             : null;
-          Scene.Models.AddRange(animals.Scene.Models);
+          Scene.Models.AddRange(animatedAnimals.Models);
+          animatedAnimals.RelinquishModelOwnership();
           publishedAnimals = true;
           wildAnimalDiagnosticFraming = animalFraming;
+          World.Park.WildAnimalAnimation = animalAnimation;
         }
         finally {
-          if (!publishedAnimals)
-            ResourceReleaser.Run(animals.Scene.Models.Reverse()
-              .Select(model => new Action(model.Dispose)));
+          if (!publishedAnimals) animatedAnimals.Dispose();
         }
         World.Park.WildAnimalResources = animals.Resources;
         World.Park.WildAnimalScene = animals.Scene;
         logger.Debug(
-          "Added {ModelCount} frame-zero Wild-animal models for {BuiltCount} of " +
+          "Added {ModelCount} animated Wild-animal models for {BuiltCount} of " +
           "{PlacementCount} saved animals across {SpeciesCount} species, " +
           "{AnimationDataCount} WAD resources, {PoseCount} poses, and " +
           "{MaterialCount} exact TEX materials; skipped {HiddenCount} hidden animals, " +
@@ -279,7 +281,7 @@ public class Game : IGame {
         // Wild animals are additive while the decoded terrain and scenery remain authoritative.
         // Unsupported custom WAS/MDL/WAD/ModelAnim/TXS data must not make an otherwise valid park
         // unloadable.
-        logger.Warn(error, "Frame-zero Wild-animal scene could not be built");
+        logger.Warn(error, "Animated Wild-animal scene could not be built");
       }
     }
 
@@ -727,7 +729,7 @@ public class Game : IGame {
           wildAnimalDiagnosticFraming!.Value.Target,
           wildAnimalDiagnosticFraming.Value.Distance,
           wildAnimalDiagnosticFraming.Value.MinimumDistance);
-        logger.Trace("Framed diagnostic camera on frame-zero Wild animals");
+        logger.Trace("Framed diagnostic camera on animated Wild animals");
         break;
       case GameDiagnosticCameraTarget.Terrain:
         break;
@@ -1005,6 +1007,14 @@ public class Game : IGame {
       logger.Warn(
         motionError,
         "Ride-train scene motion stopped after a later pose could not be proven");
+    }
+    var wildAnimalAnimation = park?.WildAnimalAnimation;
+    if (wildAnimalAnimation != null &&
+        !wildAnimalAnimation.TryUpdate(delta, out _, out var animationError)) {
+      park!.WildAnimalAnimation = null;
+      logger.Warn(
+        animationError,
+        "Wild-animal animation stopped after a later pose could not be proven");
     }
     // TODO: Advance the simulation logic by a fixed time step
     // TODO: Scheduler.Execute(delta);

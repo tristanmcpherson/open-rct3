@@ -229,6 +229,9 @@ public class Park {
   /// <summary>Borrowed exact bindings for the scene-owned frame-zero Wild-animal models.</summary>
   internal WildAnimalFrameZeroSceneBuildResult? WildAnimalScene { get; set; }
 
+  /// <summary>Exact saved-time animation controller for the scene-owned Wild-animal models.</summary>
+  internal WildAnimalAnimatedSceneController? WildAnimalAnimation { get; set; }
+
   public Park(int buildableWidth = DefaultMapSize, int buildableHeight = DefaultMapSize) {
     float halfWidth = (buildableWidth * TileSize) / 2.0f;
     float borderOffset = OutOfBoundsBorder * TileSize;

@@ -117,6 +117,7 @@ public class InputAdapter : InputContext {
       control.KeyDown += OnKeyDown;
       control.KeyUp += OnKeyUp;
       control.KeyPress += OnKeyPress;
+      control.LostFocus += OnLostFocus;
     }
 
     public IReadOnlyList<Key> SupportedKeys => KeysExtensions.SupportedKeys;
@@ -142,6 +143,8 @@ public class InputAdapter : InputContext {
 
     private void OnKeyPress(object? _, KeyPressEventArgs e) => KeyChar?.Invoke(this, e.KeyChar);
 
+    private void OnLostFocus(object? _, EventArgs e) => pressedKeys = [];
+
     public void BeginInput() {}
     public void EndInput() {}
     public bool IsKeyPressed(Key key) => pressedKeys.Select(k => k.Key).Contains(key);
@@ -153,6 +156,7 @@ public class InputAdapter : InputContext {
       control.KeyDown -= OnKeyDown;
       control.KeyUp -= OnKeyUp;
       control.KeyPress -= OnKeyPress;
+      control.LostFocus -= OnLostFocus;
       pressedKeys = [];
       GC.SuppressFinalize(this);
     }
@@ -180,6 +184,8 @@ public class InputAdapter : InputContext {
       control.DoubleClick += OnDoubleClick;
       control.MouseMove += OnMouseMove;
       control.MouseWheel += OnMouseWheel;
+      control.LostFocus += OnLostFocus;
+      control.MouseCaptureChanged += OnMouseCaptureChanged;
     }
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor.
 
@@ -220,6 +226,18 @@ public class InputAdapter : InputContext {
         0,
         (float)e.Delta / SystemInformation.MouseWheelScrollDelta));
 
+    private void OnLostFocus(object? _, EventArgs e) => ResetPressedState(true);
+
+    private void OnMouseCaptureChanged(object? _, EventArgs e) {
+      if (control.Capture) return;
+      ResetPressedState(mouse.PressedButtons.Length > 0);
+    }
+
+    private void ResetPressedState(bool clearPendingClick) {
+      mouse = new([], mouse.Position, mouse.Cursor);
+      if (clearPendingClick) lastClickedButton = null;
+    }
+
     // FIXME: Get the supported buttons via the Win32 API
     public IReadOnlyList<MouseButton> SupportedButtons => [
       MouseButton.Left,
@@ -258,7 +276,9 @@ public class InputAdapter : InputContext {
       control.DoubleClick -= OnDoubleClick;
       control.MouseMove -= OnMouseMove;
       control.MouseWheel -= OnMouseWheel;
-      lastClickedButton = null;
+      control.LostFocus -= OnLostFocus;
+      control.MouseCaptureChanged -= OnMouseCaptureChanged;
+      ResetPressedState(true);
       GC.SuppressFinalize(this);
     }
   }

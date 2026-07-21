@@ -63,7 +63,9 @@ internal sealed class WildAnimalAnimatedSceneEntry {
 /// this layer does not synthesize a clip or blend.
 /// </remarks>
 internal sealed class WildAnimalAnimatedScene : IDisposable {
+  private readonly object ownershipGate = new();
   private bool disposed;
+  private bool ownsModels = true;
 
   private WildAnimalAnimatedScene(
     WildAnimalFrameZeroSceneLoadResult source,
@@ -84,7 +86,16 @@ internal sealed class WildAnimalAnimatedScene : IDisposable {
   public int AnimatedPlacementCount => Entries.Count;
   public int AnimatedModelCount => Entries.Sum(entry => entry.Bindings.Count);
   public int SkippedPlacementCount => SkippedPlacements.Count;
-  public bool IsDisposed => disposed;
+  public bool IsDisposed {
+    get {
+      lock (ownershipGate) return disposed;
+    }
+  }
+  public bool OwnsModels {
+    get {
+      lock (ownershipGate) return ownsModels;
+    }
+  }
 
   public static WildAnimalAnimatedScene Adopt(WildAnimalFrameZeroSceneLoadResult source) {
     ArgumentNullException.ThrowIfNull(source);
@@ -113,10 +124,34 @@ internal sealed class WildAnimalAnimatedScene : IDisposable {
     }
   }
 
+  /// <summary>
+  /// Relinquishes model ownership after successful publication while retaining borrowed references.
+  /// </summary>
+  /// <remarks>
+  /// Call only after <see cref="Models"/> were published to their next owner. That owner must keep
+  /// every model alive while this scene's animation controller is in use and becomes solely
+  /// responsible for disposal. This scene remains usable after transfer.
+  /// </remarks>
+  public void RelinquishModelOwnership() {
+    lock (ownershipGate) {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      if (!ownsModels)
+        throw new InvalidOperationException(
+          "Animated Wild-animal scene model ownership was already transferred.");
+      ownsModels = false;
+    }
+  }
+
   public void Dispose() {
-    if (disposed) return;
-    disposed = true;
-    var errors = DisposeModels(Models);
+    IReadOnlyList<Model>? models = null;
+    lock (ownershipGate) {
+      if (disposed) return;
+      disposed = true;
+      if (ownsModels) models = Models;
+      ownsModels = false;
+    }
+    if (models == null) return;
+    var errors = DisposeModels(models);
     if (errors.Count != 0)
       throw new AggregateException(
         "Animated Wild-animal scene model cleanup reported errors.",

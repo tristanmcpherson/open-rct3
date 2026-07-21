@@ -75,6 +75,80 @@ public class WildAnimalAnimatedSceneControllerTests {
   }
 
   [Test]
+  public void RelinquishModelOwnership_KeepsAnimationUsableAndDoesNotDisposePublishedModels() {
+    var fixture = new AnimatedFixture([
+      new PlacementSpec(0, [new DatWildAnimalAnimationData(1f, 0, 1f)]),
+    ]);
+    var scene = WildAnimalAnimatedScene.Adopt(fixture.Load());
+    var published = new List<Model>();
+    published.AddRange(scene.Models);
+    var model = published.Single();
+    var mesh = model.Mesh;
+    var material = model.Material!;
+
+    try {
+      scene.RelinquishModelOwnership();
+      var controller = WildAnimalAnimatedSceneController.Build(scene);
+      var initialTime = scene.Entries.Single().CurrentSavedTime;
+      var update = controller.Update(TimeSpan.FromSeconds(0.5));
+
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(published, Is.EqualTo(scene.Models));
+        Assert.That(((IList<Model>)scene.Models).IsReadOnly, Is.True);
+        Assert.That(scene.OwnsModels, Is.False);
+        Assert.That(scene.IsDisposed, Is.False);
+        Assert.That(update.UpdatedPlacementCount, Is.EqualTo(1));
+        Assert.That(scene.Entries.Single().CurrentSavedTime,
+          Is.EqualTo(initialTime + 0.5f).Within(Epsilon));
+        Assert.That(mesh.State, Is.Not.EqualTo(State.Disposed));
+        Assert.That(material.State, Is.Not.EqualTo(State.Disposed));
+      }
+      Assert.Throws<InvalidOperationException>(new Action(() =>
+        scene.RelinquishModelOwnership()));
+
+      scene.Dispose();
+
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(scene.IsDisposed, Is.True);
+        Assert.That(scene.OwnsModels, Is.False);
+        Assert.That(mesh.State, Is.Not.EqualTo(State.Disposed));
+        Assert.That(material.State, Is.Not.EqualTo(State.Disposed));
+        Assert.That(model.Material, Is.SameAs(material));
+      }
+    } finally {
+      scene.Dispose();
+      foreach (var owned in published.AsEnumerable().Reverse()) owned.Dispose();
+    }
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(mesh.State, Is.EqualTo(State.Disposed));
+      Assert.That(material.State, Is.EqualTo(State.Disposed));
+    }
+  }
+
+  [Test]
+  public void Dispose_WithoutTransferReleasesModelsAndBlocksLaterTransfer() {
+    var fixture = new AnimatedFixture([
+      new PlacementSpec(0, [new DatWildAnimalAnimationData(1f, 0, 1f)]),
+    ]);
+    var scene = WildAnimalAnimatedScene.Adopt(fixture.Load());
+    var model = scene.Models.Single();
+    var mesh = model.Mesh;
+    var material = model.Material!;
+
+    scene.Dispose();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(scene.IsDisposed, Is.True);
+      Assert.That(scene.OwnsModels, Is.False);
+      Assert.That(mesh.State, Is.EqualTo(State.Disposed));
+      Assert.That(material.State, Is.EqualTo(State.Disposed));
+    }
+    Assert.Throws<ObjectDisposedException>(new Action(() =>
+      scene.RelinquishModelOwnership()));
+  }
+
+  [Test]
   public void TryUpdate_DoesNotPublishEarlierPoseWhenLaterEvaluationFails() {
     var fixture = new AnimatedFixture([
       new PlacementSpec(0, [new DatWildAnimalAnimationData(1f, 0, 1f)]),

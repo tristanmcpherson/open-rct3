@@ -488,7 +488,13 @@ public class RideCarVisualHierarchyStaticInstanceRegistryTests {
 
   private static RideCarVisualHierarchyRegistry Hierarchies(
     RideCarVisualHierarchyResolution hierarchy
-  ) => new([hierarchy], 2, 0, true, 0);
+  ) => new(
+    [hierarchy],
+    hierarchy.Parts.Count(part => part.IsResolved),
+    hierarchy.Parts.Count(part =>
+      part.Status == RideCarVisualHierarchyPartStatus.AnchorAmbiguous),
+    true,
+    0);
 
   private sealed record VisualData(
     RideVisualLink Visual,

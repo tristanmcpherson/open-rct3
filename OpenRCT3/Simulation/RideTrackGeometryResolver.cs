@@ -54,6 +54,8 @@ internal sealed record RideTrackGeometryResolution(
 internal static class RideTrackGeometryResolver {
   private const int MaximumTrackCount = 100_000;
   private const int MaximumPlacementCount = 1_000_000;
+  private const int MaximumSplineLinkCount = 1_000_000;
+  private const int MaximumExpandedCyclicSplineNodeCount = 1_000_000;
 
   public static RideTrackGeometryResolution Resolve(
     Terrain terrain,
@@ -96,7 +98,7 @@ internal static class RideTrackGeometryResolver {
       }
 
       try {
-        var geometry = TrackSectionGeometryAdapter.CreateCarGeometry(
+        var geometry = CreateCarGeometry(
           resource.Section,
           placement.Reversed);
         var sceneryItem = resource.Section.Scenery.Source!.Resource;
@@ -291,7 +293,9 @@ internal static class RideTrackGeometryResolver {
 
   private static bool HasUnresolvedGeometryResource(TrackSectionResourceLink section) {
     if (section.Scenery?.Source is null) return true;
-    if (section.Splines is null) return false;
+    if (section.Splines is null ||
+        section.Splines.Count is < 0 or > MaximumSplineLinkCount)
+      return false;
     foreach (var role in new[] {
       TrackSectionSplineRole.CarLeft,
       TrackSectionSplineRole.CarRight,
@@ -300,6 +304,88 @@ internal static class RideTrackGeometryResolver {
       if (matches.Length == 1 && matches[0].Source is null) return true;
     }
     return false;
+  }
+
+  /// <summary>
+  /// Adapts the exact final-to-first segment serialized by a matched cyclic car-spline pair.
+  /// </summary>
+  /// <remarks>
+  /// A cyclic SPL stores one segment per node. Appending the first node once turns the native
+  /// last-to-first segment into the final interval of the existing open paired-rail adapter without
+  /// resampling or changing any control offsets, lengths, or travel bytes. Both rails must prove the
+  /// same cyclic form; every asymmetric or malformed case remains unsupported.
+  /// </remarks>
+  /// <seealso href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/include/spline.h">
+  /// rct3-importer cyclic SPL layout
+  /// </seealso>
+  /// <seealso href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/libOVLng/ManagerSPL.cpp">
+  /// rct3-importer final-to-first cyclic segment construction
+  /// </seealso>
+  private static TrackPieceGeometry CreateCarGeometry(
+    TrackSectionResourceLink section,
+    bool reversed
+  ) => TrackSectionGeometryAdapter.CreateCarGeometry(
+    ExpandCyclicCarSplines(section),
+    reversed);
+
+  private static TrackSectionResourceLink ExpandCyclicCarSplines(
+    TrackSectionResourceLink section
+  ) {
+    if (section.Splines is null ||
+        section.Splines.Count is < 0 or > MaximumSplineLinkCount)
+      return section;
+
+    TrackSectionSplineLink? left = null;
+    TrackSectionSplineLink? right = null;
+    foreach (var link in section.Splines) {
+      if (link is null) return section;
+      if (link.Role == TrackSectionSplineRole.CarLeft) {
+        if (left != null) return section;
+        left = link;
+      } else if (link.Role == TrackSectionSplineRole.CarRight) {
+        if (right != null) return section;
+        right = link;
+      }
+    }
+
+    var leftSpline = left?.Source?.Resource;
+    var rightSpline = right?.Source?.Resource;
+    if (leftSpline?.Cyclic != true || rightSpline?.Cyclic != true)
+      return section;
+    if (!CanExpandCyclicSpline(leftSpline) || !CanExpandCyclicSpline(rightSpline))
+      return section;
+
+    var links = new TrackSectionSplineLink[section.Splines.Count];
+    foreach (var index in Enumerable.Range(0, links.Length)) {
+      var link = section.Splines[index];
+      if (ReferenceEquals(link, left)) {
+        links[index] = link with {
+          Source = link.Source! with { Resource = ExpandCyclicSpline(leftSpline) },
+        };
+      } else if (ReferenceEquals(link, right)) {
+        links[index] = link with {
+          Source = link.Source! with { Resource = ExpandCyclicSpline(rightSpline) },
+        };
+      } else {
+        links[index] = link;
+      }
+    }
+    return section with { Splines = Array.AsReadOnly(links) };
+  }
+
+  private static bool CanExpandCyclicSpline(Spline spline) =>
+    spline.Nodes is not null &&
+    spline.Nodes.Count is >= 2 and < MaximumExpandedCyclicSplineNodeCount;
+
+  private static Spline ExpandCyclicSpline(Spline spline) {
+    var nodes = new SplineNode[spline.Nodes.Count + 1];
+    foreach (var index in Enumerable.Range(0, spline.Nodes.Count))
+      nodes[index] = spline.Nodes[index];
+    nodes[^1] = nodes[0];
+    return spline with {
+      Cyclic = false,
+      Nodes = Array.AsReadOnly(nodes),
+    };
   }
 
   private static RideTrackPlacement[] ResolveTrackPlacements(

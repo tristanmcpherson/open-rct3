@@ -6,6 +6,7 @@ using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
 using OpenRCT3.Simulation;
 using OpenRCT3.Simulation.Tracks;
+using System.Collections;
 using System.Numerics;
 
 namespace OpenRCT3.Tests.Simulation;
@@ -225,6 +226,100 @@ public class RideTrackGeometryResolverTests {
   }
 
   [Test]
+  public void Resolve_UnrollsMatchedCyclicTksCarRailsIntoSinglePieceCircuit() {
+    var placement = Placement(500, previous: 500, next: 500);
+    var resources = ResourceResolution(
+      placement,
+      resolveScenery: true,
+      resolveCarLeft: true,
+      resolveCarRight: true,
+      cyclicCarLeft: true,
+      cyclicCarRight: true);
+
+    var result = RideTrackGeometryResolver.Resolve(
+      new Terrain(1, 1, 0),
+      [Track(700, [500], isCircuit: true)],
+      resources);
+
+    var link = result.Tracks.Single();
+    var piece = link.Circuit!.Pieces.Single().Piece;
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(link.Status, Is.EqualTo(RideTrackGeometryStatus.Circuit));
+      Assert.That(piece.Geometry.ControlPoints, Has.Count.EqualTo(3));
+      Assert.That(Vector3.Distance(piece.Entry.Left.Position, piece.Exit.Left.Position),
+        Is.LessThan(0.000001f));
+      Assert.That(Vector3.Distance(piece.Entry.Right.Position, piece.Exit.Right.Position),
+        Is.LessThan(0.000001f));
+      Assert.That(Vector3.Distance(piece.Entry.Left.Tangent, piece.Exit.Left.Tangent),
+        Is.LessThan(0.000001f));
+      Assert.That(Vector3.Distance(piece.Entry.Right.Tangent, piece.Exit.Right.Tangent),
+        Is.LessThan(0.000001f));
+      Assert.That(result.UnresolvedResourceTrackCount, Is.Zero);
+      Assert.That(result.UnsupportedGeometryTrackCount, Is.Zero);
+      Assert.That(result.UnsupportedTopologyTrackCount, Is.Zero);
+    }
+  }
+
+  [Test]
+  public void Resolve_KeepsAsymmetricCyclicTksCarRailsUnsupported() {
+    var placement = Placement(500, previous: 500, next: 500);
+    var resources = ResourceResolution(
+      placement,
+      resolveScenery: true,
+      resolveCarLeft: true,
+      resolveCarRight: true,
+      cyclicCarLeft: true,
+      cyclicCarRight: false);
+
+    var result = RideTrackGeometryResolver.Resolve(
+      new Terrain(1, 1, 0),
+      [Track(700, [500], isCircuit: true)],
+      resources);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Tracks.Single().Status,
+        Is.EqualTo(RideTrackGeometryStatus.UnsupportedGeometry));
+      Assert.That(result.Tracks.Single().IsResolved, Is.False);
+      Assert.That(result.UnresolvedResourceTrackCount, Is.Zero);
+      Assert.That(result.UnsupportedGeometryTrackCount, Is.EqualTo(1));
+      Assert.That(result.UnsupportedTopologyTrackCount, Is.Zero);
+    }
+  }
+
+  [Test]
+  public void Resolve_ClassifiesOversizedCyclicSplineLinksWithoutEnumerating() {
+    var placement = Placement(500, previous: 500, next: 500);
+    var resources = ResourceResolution(
+      placement,
+      resolveScenery: true,
+      resolveCarLeft: true,
+      resolveCarRight: true,
+      cyclicCarLeft: true,
+      cyclicCarRight: true);
+    var resource = resources.Placements.Single();
+    resources = resources with {
+      Placements = [resource with {
+        Section = resource.Section! with {
+          Splines = new CountOnlyReadOnlyList<TrackSectionSplineLink>(1_000_001),
+        },
+      }],
+    };
+
+    var result = RideTrackGeometryResolver.Resolve(
+      new Terrain(1, 1, 0),
+      [Track(700, [500], isCircuit: true)],
+      resources);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Tracks.Single().Status,
+        Is.EqualTo(RideTrackGeometryStatus.UnsupportedGeometry));
+      Assert.That(result.UnresolvedResourceTrackCount, Is.Zero);
+      Assert.That(result.UnsupportedGeometryTrackCount, Is.EqualTo(1));
+      Assert.That(result.UnsupportedTopologyTrackCount, Is.Zero);
+    }
+  }
+
+  [Test]
   public void Resolve_RejectsUnsupportedGeometryThatIsUnknownOrResolved() {
     var placement = Placement(500, previous: 1697, next: 1697);
 
@@ -395,7 +490,9 @@ public class RideTrackGeometryResolverTests {
     RideTrackPlacement placement,
     bool resolveScenery,
     bool resolveCarLeft,
-    bool resolveCarRight
+    bool resolveCarRight,
+    bool cyclicCarLeft = false,
+    bool cyclicCarRight = false
   ) {
     var section = Section();
     var file = new OvlFile(section.Name, FileType.TrackSection, "fixture.unique.ovl");
@@ -404,8 +501,12 @@ public class RideTrackGeometryResolverTests {
     var scenerySource = new SceneryItemResourceSource(
       new OvlFile(scenery.Name, FileType.SceneryItem, "fixture.unique.ovl"),
       scenery);
-    var left = Spline("left", -0.5f);
-    var right = Spline("right", 0.5f);
+    var left = cyclicCarLeft
+      ? CyclicSpline("left", -0.5f)
+      : Spline("left", -0.5f);
+    var right = cyclicCarRight
+      ? CyclicSpline("right", 0.5f)
+      : Spline("right", 0.5f);
     var leftSource = new SplineResourceSource(
       new OvlFile(left.Name, FileType.Spline, "fixture.common.ovl"),
       left);
@@ -467,6 +568,27 @@ public class RideTrackGeometryResolverTests {
     ],
     Segments: [new(1f, new byte[14])]);
 
+  private static Spline CyclicSpline(string name, float lateral) => new(
+    name,
+    Cyclic: true,
+    TotalLength: 4f,
+    InverseTotalLength: 0.25f,
+    MaximumY: lateral,
+    Nodes: [
+      new(
+        new Vector3(0f, lateral, 0f),
+        new Vector3(0f, 0f, -1f),
+        new Vector3(0f, 0f, 1f)),
+      new(
+        new Vector3(2f, lateral, 0f),
+        new Vector3(0f, 0f, 1f),
+        new Vector3(0f, 0f, -1f)),
+    ],
+    Segments: [
+      new(2f, new byte[14]),
+      new(2f, new byte[14]),
+    ]);
+
   private static TrackPiece StraightPiece(float offset) {
     var geometry = TrackPieceGeometry.FromHandAuthored([
       Pair(0f, new(offset, 0f, 0f), Vector3.UnitX),
@@ -506,5 +628,14 @@ public class RideTrackGeometryResolverTests {
       center + halfGauge,
       tangent,
       0f);
+  }
+
+  private sealed class CountOnlyReadOnlyList<T>(int count) : IReadOnlyList<T> {
+    public int Count => count;
+    public T this[int index] => throw new InvalidOperationException(
+      $"Indexer must not be read for oversized fixture at {index}.");
+    public IEnumerator<T> GetEnumerator() => throw new InvalidOperationException(
+      "Enumerator must not be read for oversized fixture.");
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
   }
 }

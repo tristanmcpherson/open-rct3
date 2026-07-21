@@ -106,6 +106,78 @@ public class RideCarVisualMaterialResolverTests {
   }
 
   [Test]
+  public void Resolve_UsesOnlyRegisteredEngineGlobalNullBitmapOwner() {
+    var ownerPath = FixturePath("nullbmp.common.ovl");
+    var allowedPath = FixturePath("allowed.unique.ovl");
+    using var archive = Archive(ownerPath, "nullbmp");
+    archive.Add(
+      new OvlFile("Body", FileType.FlexibleTexture, ownerPath),
+      new OvlEntry(0, 1));
+    using var context = Context(archive, ownerPath, ownerPath);
+    var decodedFiles = new List<OvlFile>();
+    using var resolver = new RideCarVisualMaterialResolver(context, (_, file) => {
+      decodedFiles.Add(file);
+      return new FlexiTextureList(0, [
+        new FlexiTexture(
+          Recolorable.None,
+          new Image<Rgba32>(1, 1, new Rgba32(10, 20, 30, 255)))
+      ]);
+    });
+    var nullBitmapMesh = Mesh();
+    var bodyMesh = Mesh();
+
+    var nullBitmap = resolver.Resolve(
+      Batch(nullBitmapMesh, "NULLBMP:FTX", 0),
+      [allowedPath],
+      new SceneryFlexiColours(1, 2, 3));
+    var body = resolver.Resolve(
+      Batch(bodyMesh, "Body:ftx", 0),
+      [allowedPath],
+      new SceneryFlexiColours(1, 2, 3));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(nullBitmap.IsResolved, Is.True);
+      Assert.That(nullBitmap.Material, Is.TypeOf<Textured>());
+      Assert.That(decodedFiles, Has.Count.EqualTo(1));
+      Assert.That(decodedFiles[0].Name, Is.EqualTo("nullbmp"));
+      Assert.That(decodedFiles[0].Path, Is.EqualTo(ownerPath));
+      Assert.That(body.Status,
+        Is.EqualTo(RideCarVisualMaterialResolutionStatus.MissingFlexibleTexture));
+      Assert.That(body.Material, Is.Null);
+    }
+    nullBitmap.Material!.Dispose();
+    nullBitmapMesh.Dispose();
+    bodyMesh.Dispose();
+  }
+
+  [Test]
+  public void Resolve_UnregisteredEngineGlobalNullBitmapRemainsTypedMissing() {
+    var ownerPath = FixturePath("nullbmp.common.ovl");
+    var allowedPath = FixturePath("allowed.unique.ovl");
+    using var archive = Archive(ownerPath, "nullbmp");
+    using var context = Context(archive, ownerPath);
+    var decodeCount = 0;
+    using var resolver = new RideCarVisualMaterialResolver(context, (_, _) => {
+      decodeCount++;
+      throw new AssertionException("An unregistered engine-global FTX must not be decoded.");
+    });
+    var mesh = Mesh();
+
+    var result = resolver.Resolve(
+      Batch(mesh, "nullbmp:ftx", 0),
+      [allowedPath],
+      new SceneryFlexiColours(1, 2, 3));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Status,
+        Is.EqualTo(RideCarVisualMaterialResolutionStatus.MissingFlexibleTexture));
+      Assert.That(result.Material, Is.Null);
+      Assert.That(decodeCount, Is.Zero);
+    }
+    mesh.Dispose();
+  }
+
+  [Test]
   public void Resolve_PreservesSceneryMaterialPolicies() {
     var path = FixturePath("materials.unique.ovl");
     using var archive = Archive(path, "Body");
@@ -326,10 +398,15 @@ public class RideCarVisualMaterialResolverTests {
     return archive;
   }
 
-  private static RideTrackResourceCatalogLoadContext Context(Ovl archive) => new(
-    ["fixture.common.ovl"],
+  private static RideTrackResourceCatalogLoadContext Context(
+    Ovl archive,
+    string loadedCommonPath = "fixture.common.ovl",
+    string? engineGlobalNullBitmapOwnerPath = null
+  ) => new(
+    [loadedCommonPath],
     [archive],
-    _ => { });
+    _ => { },
+    engineGlobalNullBitmapOwnerPath);
 
   private static string FixturePath(string fileName) => Path.Combine(
     Path.GetTempPath(),

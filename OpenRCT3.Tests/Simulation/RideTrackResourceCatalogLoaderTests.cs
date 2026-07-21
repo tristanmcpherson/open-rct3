@@ -73,6 +73,119 @@ public class RideTrackResourceCatalogLoaderTests {
   }
 
   [Test]
+  public void Load_RetainsExactInstallRootNullBitmapOnlyWhenReferencedByShape() {
+    var source = new FakeLoaderSource();
+    var root = PairPath("Tracks", "Exact", "Synthetic");
+    var nullBitmap = PairPath("nullbmp");
+    source.AddPair(
+      root,
+      sections: [Section("Straight")],
+      staticShapes: [Shape("TrackShape", "nullbmp:ftx")]);
+    source.AddPair(nullBitmap, flexibleTextures: ["nullbmp", "Body"]);
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [Placement()],
+      source);
+    var resource = result.Context.FindExactEngineGlobalNullBitmap("NULLBMP:FTX");
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.IsComplete, Is.True);
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { root, nullBitmap }));
+      Assert.That(result.Context.LoadedCommonPaths, Is.EqualTo(source.LoadedPaths));
+      Assert.That(resource, Is.Not.Null);
+      Assert.That(resource!.File.Name, Is.EqualTo("nullbmp"));
+      Assert.That(resource.File.Path, Is.EqualTo(nullBitmap));
+    }
+  }
+
+  [Test]
+  public void Load_UnrelatedShapeFtxDoesNotProbeEngineGlobalNullBitmapPair() {
+    var source = new FakeLoaderSource();
+    var root = PairPath("Tracks", "Exact", "Synthetic");
+    var nullBitmap = PairPath("nullbmp");
+    source.AddPair(
+      root,
+      sections: [Section("Straight")],
+      staticShapes: [Shape("TrackShape", "Body:ftx")]);
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [Placement()],
+      source);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.IsComplete, Is.True);
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { root }));
+      Assert.That(source.ProbedPaths, Does.Not.Contain(nullBitmap));
+      Assert.That(source.ProbedPaths, Does.Not.Contain(UniquePath(nullBitmap)));
+      Assert.That(
+        result.Context.FindExactEngineGlobalNullBitmap("nullbmp:ftx"),
+        Is.Null);
+    }
+  }
+
+  [Test]
+  public void Load_MissingReferencedNullBitmapPairIsOneTypedExactRootIssue() {
+    var source = new FakeLoaderSource();
+    var root = PairPath("Tracks", "Exact", "Synthetic");
+    var nullBitmap = PairPath("nullbmp");
+    source.AddPair(
+      root,
+      sections: [Section("Straight")],
+      staticShapes: [Shape("TrackShape", "nullbmp:ftx")]);
+
+    using var result = RideTrackResourceCatalogLoader.Load(
+      installRoot,
+      [Placement()],
+      source);
+    var issue = result.Issues.Single();
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.IsComplete, Is.False);
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { root }));
+      Assert.That(issue.Kind,
+        Is.EqualTo(RideTrackResourceCatalogLoadIssueKind.MissingRootPair));
+      Assert.That(issue.Reference, Is.EqualTo("nullbmp:ftx"));
+      Assert.That(issue.CommonPath, Is.EqualTo(nullBitmap));
+      Assert.That(issue.UniquePath, Is.EqualTo(UniquePath(nullBitmap)));
+      Assert.That(issue.CommonExists, Is.False);
+      Assert.That(issue.UniqueExists, Is.False);
+      Assert.That(
+        result.Context.FindExactEngineGlobalNullBitmap("nullbmp:ftx"),
+        Is.Null);
+    }
+  }
+
+  [Test]
+  public void Load_ReferencedNullBitmapPairWithoutExactFtxFailsClosed() {
+    var source = new FakeLoaderSource();
+    var root = PairPath("Tracks", "Exact", "Synthetic");
+    var nullBitmap = PairPath("nullbmp");
+    source.AddPair(
+      root,
+      sections: [Section("Straight")],
+      staticShapes: [Shape("TrackShape", "nullbmp:ftx")]);
+    source.AddPair(nullBitmap, flexibleTextures: ["Body"]);
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      RideTrackResourceCatalogLoader.Load(
+        installRoot,
+        [Placement()],
+        source)));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error!.Message, Does.Contain("nullbmp:ftx"));
+      Assert.That(error.Message, Does.Contain("no exact symbol"));
+      Assert.That(source.LoadedPaths, Is.EqualTo(new[] { root, nullBitmap }));
+      Assert.That(source.DisposedArchives, Is.EqualTo(new[] {
+        source.GetArchive(nullBitmap),
+        source.GetArchive(root),
+      }));
+    }
+  }
+
+  [Test]
   public void Load_AttachesInferredTrackVisualPairToCrossPairSidOwner() {
     var source = new FakeLoaderSource();
     var root = PairPath("Tracks", "Exact", "Synthetic");
@@ -1003,6 +1116,13 @@ public class RideTrackResourceCatalogLoaderTests {
   private static SceneryItemVisual Visual(string name) =>
     new(name, default, 0, 0, 0, 1, [], null);
 
+  private static StaticShape Shape(string name, string? ftx) => new(
+    name,
+    Vector3.Zero,
+    Vector3.One,
+    [new StaticShapeMesh(name, 0, ftx, null, 0, 0, 3, [], [])],
+    []);
+
   private sealed class FakeLoaderSource : IRideTrackResourceCatalogLoaderSource {
     private readonly HashSet<string> existing = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Ovl> archives = new(StringComparer.OrdinalIgnoreCase);
@@ -1027,7 +1147,10 @@ public class RideTrackResourceCatalogLoaderTests {
       IReadOnlyList<TrackedRide>? rides = null,
       IReadOnlyList<RideTrain>? rideTrains = null,
       IReadOnlyList<RideCar>? rideCars = null,
-      IReadOnlyList<SceneryItemVisual>? visuals = null
+      IReadOnlyList<SceneryItemVisual>? visuals = null,
+      IReadOnlyList<StaticShape>? staticShapes = null,
+      IReadOnlyList<BoneShape>? boneShapes = null,
+      IReadOnlyList<string>? flexibleTextures = null
     ) {
       var uniquePath = UniquePath(commonPath);
       var archive = new Ovl(Path.GetFileName(commonPath));
@@ -1038,7 +1161,10 @@ public class RideTrackResourceCatalogLoaderTests {
         rides ?? [],
         rideTrains ?? [],
         rideCars ?? [],
-        visuals ?? []);
+        visuals ?? [],
+        staticShapes ?? [],
+        boneShapes ?? [],
+        flexibleTextures ?? []);
       AddFiles(archive, pairResources.TrackSections, FileType.TrackSection, uniquePath,
         item => item.Name);
       AddFiles(archive, pairResources.SceneryItems, FileType.SceneryItem, uniquePath,
@@ -1053,6 +1179,16 @@ public class RideTrackResourceCatalogLoaderTests {
         item => item.Name);
       AddFiles(archive, pairResources.Visuals, FileType.SceneryItemVisual, uniquePath,
         item => item.Name);
+      AddFiles(archive, pairResources.StaticShapes, FileType.StaticShape, uniquePath,
+        item => item.Name);
+      AddFiles(archive, pairResources.BoneShapes, FileType.BoneShape, uniquePath,
+        item => item.Name);
+      AddFiles(
+        archive,
+        pairResources.FlexibleTextures,
+        FileType.FlexibleTexture,
+        commonPath,
+        item => item);
       archives.Add(commonPath, archive);
       resources.Add(archive, pairResources);
       this.references.Add(archive, references ?? []);
@@ -1100,8 +1236,10 @@ public class RideTrackResourceCatalogLoaderTests {
       resources[archive].RideCars;
     public IReadOnlyList<SceneryItemVisual> ExtractSceneryItemVisuals(Ovl archive) =>
       resources[archive].Visuals;
-    public IReadOnlyList<StaticShape> ExtractStaticShapes(Ovl archive) => [];
-    public IReadOnlyList<BoneShape> ExtractBoneShapes(Ovl archive) => [];
+    public IReadOnlyList<StaticShape> ExtractStaticShapes(Ovl archive) =>
+      resources[archive].StaticShapes;
+    public IReadOnlyList<BoneShape> ExtractBoneShapes(Ovl archive) =>
+      resources[archive].BoneShapes;
 
     public void DisposePair(Ovl archive) {
       DisposedArchives.Add(archive);
@@ -1128,7 +1266,10 @@ public class RideTrackResourceCatalogLoaderTests {
     IReadOnlyList<TrackedRide> TrackedRides,
     IReadOnlyList<RideTrain> RideTrains,
     IReadOnlyList<RideCar> RideCars,
-    IReadOnlyList<SceneryItemVisual> Visuals
+    IReadOnlyList<SceneryItemVisual> Visuals,
+    IReadOnlyList<StaticShape> StaticShapes,
+    IReadOnlyList<BoneShape> BoneShapes,
+    IReadOnlyList<string> FlexibleTextures
   );
 
   private sealed class ThrowingList<T>(int count) : IReadOnlyList<T> {

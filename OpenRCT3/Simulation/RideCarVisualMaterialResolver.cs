@@ -149,10 +149,15 @@ internal sealed class RideCarVisualMaterialResolver : IDisposable {
       if (string.IsNullOrWhiteSpace(batch.FtxRef))
         return Resolved(SetCullBackFaces(new Flat(), cullBackFaces));
 
-      var resource = resources.FindExactResource(
-        allowedArchivePaths,
+      var resource = string.Equals(
         batch.FtxRef,
-        FileType.FlexibleTexture);
+        RideTrackResourceCatalogLoadContext.EngineGlobalNullBitmapReference,
+        StringComparison.OrdinalIgnoreCase)
+        ? resources.FindExactEngineGlobalNullBitmap(batch.FtxRef)
+        : resources.FindExactResource(
+          allowedArchivePaths,
+          batch.FtxRef,
+          FileType.FlexibleTexture);
       if (resource == null)
         return new RideCarVisualMaterialResolution(
           RideCarVisualMaterialResolutionStatus.MissingFlexibleTexture,

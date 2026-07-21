@@ -15,6 +15,144 @@ namespace OpenRCT3.Tests.Simulation;
 public class RideTrackWildInstalledPipelineTests {
   [Test]
   [Explicit("Requires installed RCT3 assets and the RaidersOfTheLostCoaster DAT.")]
+  public void RaidersOfTheLostCoaster_ResolvesExactEngineGlobalNullBitmapMaterials() {
+    var installRoot = Environment.GetEnvironmentVariable("RCT3_PATH");
+    Assert.That(
+      string.IsNullOrWhiteSpace(installRoot),
+      Is.False,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    Assert.That(Directory.Exists(installRoot), Is.True, installRoot);
+    var mapPath = Path.Combine(
+      installRoot!,
+      "Campaigns",
+      "Base",
+      "Wild",
+      "RaidersOfTheLostCoaster.dat");
+    Assert.That(File.Exists(mapPath), Is.True, mapPath);
+
+    var data = DatTerrainReader.Read(mapPath);
+    var targetRideIds = new ulong[] { 4_021, 4_120 };
+    var targetRides = targetRideIds
+      .Select(id => data.TrackedRideInstances.Single(ride => ride.EntryId == id))
+      .ToArray();
+    var targetTrackIds = targetRides.Select(ride => ride.Track).ToHashSet();
+    var targetTracks = data.RideTracks
+      .Where(track => targetTrackIds.Contains(track.EntryId))
+      .ToArray();
+    var targetTrainIds = targetRides.SelectMany(ride => ride.Trains).ToHashSet();
+    var targetTrains = data.RideTrainInstances
+      .Where(train => targetTrainIds.Contains(train.EntryId))
+      .ToArray();
+    var targetSegments = data.TrackSegments
+      .Where(segment => targetTrackIds.Contains(segment.Track))
+      .ToArray();
+    var targetSegmentIds = targetSegments.Select(segment => segment.EntryId).ToHashSet();
+    var targetPieces = data.TrackPieces
+      .Where(piece => targetSegmentIds.Contains(piece.Segment))
+      .ToArray();
+    var targetSceneryIds = targetPieces.Select(piece => piece.SceneryItem).ToHashSet();
+
+    var terrain = Terrain.FromData(data);
+    RideTrackVisualSceneBuildResult? scene = null;
+    try {
+      var park = new Park(terrain);
+      SceneryManagerLoader.Load(
+        park,
+        terrain,
+        data.SceneryItems.Where(item => targetSceneryIds.Contains(item.EntryId)).ToArray(),
+        data.SceneryItemPlacements.Where(placement =>
+          targetSceneryIds.Contains(placement.SceneryItem)).ToArray());
+      RideTrackManagerLoader.Load(park, terrain, targetPieces);
+      RideTrackTopologyLoader.Load(park, targetTracks, targetSegments);
+
+      using var loaded = RideTrackResourceCatalogLoader.Load(
+        installRoot!,
+        park.RideTrackPlacements,
+        targetRides,
+        targetTrains);
+      var placements = loaded.Catalog.ResolveAll(park.RideTrackPlacements);
+      var visuals = RideTrackVisualResourceBridge.Resolve(loaded.TrackVisualResources);
+      var missing = new List<string>();
+      var nullBitmapBatches = new List<string>();
+      using (var materials = new RideCarVisualMaterialResolver(loaded.Context)) {
+        scene = RideTrackVisualSceneBuilder.Build(
+          placements,
+          visuals,
+          terrain,
+          (link, placement, batch) => {
+            var resolution = materials.Resolve(
+              batch,
+              link.AllowedArchivePaths,
+              SceneryFlexiColours.FromSerialized(
+                placement.FlexiColour0,
+                placement.FlexiColour1,
+                placement.FlexiColour2));
+            var isNullBitmap = string.Equals(
+              batch.FtxRef,
+              RideTrackResourceCatalogLoadContext.EngineGlobalNullBitmapReference,
+              StringComparison.OrdinalIgnoreCase);
+            if (isNullBitmap || !resolution.IsResolved) {
+              var lod = link.Lods[0];
+              var shapeName = lod.StaticShapeSource?.Resource.Name ??
+                lod.BoneShapeSource?.Resource.Name ?? "<none>";
+              var shapePath = lod.StaticShapeSource?.File.Path ??
+                lod.BoneShapeSource?.File.Path ?? "<none>";
+              var identity =
+                $"placement={placement.SourceEntryId} " +
+                $"section={link.Section.Source.Resource.Name} " +
+                $"visual={link.VisualSource.Resource.Name} " +
+                $"visualPath={link.VisualSource.File.Path} " +
+                $"lod={lod.Lod.Name} shape={shapeName} shapePath={shapePath} " +
+                $"meshIndex={batch.SourceMeshIndex} mesh={batch.SourceMeshName} " +
+                $"ftx={batch.FtxRef} txs={batch.TxsRef} " +
+                $"closurePaths={link.AllowedArchivePaths.Count}";
+              if (isNullBitmap)
+                nullBitmapBatches.Add(
+                  $"placement={placement.SourceEntryId} " +
+                  $"section={link.Section.Source.Resource.Name} " +
+                  $"shape={shapeName} meshIndex={batch.SourceMeshIndex} " +
+                  $"resolved={resolution.IsResolved}");
+              if (!resolution.IsResolved) missing.Add(identity);
+            }
+            return resolution.Material;
+          },
+          RideTrackVisualSceneBuilderLimits.Default,
+          RideTrackVisualSceneBuilderOperations.Default);
+      }
+
+      foreach (var identity in missing)
+        TestContext.Progress.WriteLine($"Missing Raiders track material: {identity}");
+
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(scene.PlacementCount, Is.EqualTo(399));
+        Assert.That(scene.RenderedPlacementCount, Is.EqualTo(399));
+        Assert.That(scene.SkippedPlacementCount, Is.Zero);
+        Assert.That(scene.ModelCount, Is.EqualTo(1_248));
+        Assert.That(scene.MissingMaterialBatchCount, Is.Zero);
+        Assert.That(missing, Is.Empty);
+        Assert.That(loaded.Context.LoadedCommonPaths, Has.Count.EqualTo(109));
+        Assert.That(nullBitmapBatches, Is.EqualTo(new[] {
+          "placement=4718 section=tiltright2medslope " +
+            "shape=tiltright2medslope_HI meshIndex=1 resolved=True",
+          "placement=4732 section=tiltleft2medslope " +
+            "shape=tiltleft2medslope_HI meshIndex=1 resolved=True",
+          "placement=4736 section=tiltright2medslope " +
+            "shape=tiltright2medslope_HI meshIndex=1 resolved=True",
+          "placement=4798 section=tiltleft2medslope " +
+            "shape=tiltleft2medslope_HI meshIndex=1 resolved=True",
+          "placement=4802 section=tiltright2medslope " +
+            "shape=tiltright2medslope_HI meshIndex=1 resolved=True",
+        }));
+      }
+    } finally {
+      if (scene != null)
+        foreach (var model in scene.Models.Reverse()) model.Dispose();
+      terrain.TextureCatalog?.Dispose();
+    }
+  }
+
+  [Test]
+  [Explicit("Requires installed RCT3 assets and the RaidersOfTheLostCoaster DAT.")]
   public void RaidersOfTheLostCoaster_ResolvesReciprocalPiecewiseCircuitsForMotion() {
     var installRoot = Environment.GetEnvironmentVariable("RCT3_PATH");
     Assert.That(

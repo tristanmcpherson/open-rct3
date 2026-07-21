@@ -81,6 +81,75 @@ public class RideTrackResourceCatalogLoadContextTests {
       context.FindExactResource([path], "Body:ftx", FileType.FlexibleTexture)));
   }
 
+  [Test]
+  public void FindExactEngineGlobalNullBitmap_UsesOnlyRegisteredExactOwner() {
+    var root = Path.Combine(Path.GetTempPath(), $"openrct3-nullbmp-{Guid.NewGuid():N}");
+    var ownerPath = Path.Combine(root, "nullbmp.common.ovl");
+    var outsidePath = Path.Combine(root, "outside.common.ovl");
+    using var ownerArchive = new Ovl("nullbmp");
+    using var outsideArchive = new Ovl("outside");
+    var expected = Add(ownerArchive, "nullbmp", ownerPath);
+    _ = Add(ownerArchive, "Body", ownerPath);
+    _ = Add(outsideArchive, "nullbmp", outsidePath);
+    using var context = new RideTrackResourceCatalogLoadContext(
+      [ownerPath, outsidePath],
+      [ownerArchive, outsideArchive],
+      _ => { },
+      ownerPath);
+
+    var exact = context.FindExactEngineGlobalNullBitmap("NULLBMP:FTX");
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(exact, Is.Not.Null);
+      Assert.That(exact!.Archive, Is.SameAs(ownerArchive));
+      Assert.That(exact.File, Is.SameAs(expected));
+    }
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      context.FindExactEngineGlobalNullBitmap("Body:ftx")));
+  }
+
+  [Test]
+  public void FindExactEngineGlobalNullBitmap_UnregisteredOwnerReturnsTypedAbsence() {
+    var ownerPath = Path.Combine(Path.GetTempPath(), "nullbmp.common.ovl");
+    using var archive = new Ovl("nullbmp");
+    _ = Add(archive, "nullbmp", ownerPath);
+    using var context = Context(archive);
+
+    var result = context.FindExactEngineGlobalNullBitmap("nullbmp:ftx");
+
+    Assert.That(result, Is.Null);
+  }
+
+  [Test]
+  public void Constructor_RejectsMissingAmbiguousOrWrongNullBitmapOwner() {
+    var root = Path.Combine(Path.GetTempPath(), $"openrct3-nullbmp-{Guid.NewGuid():N}");
+    var ownerPath = Path.Combine(root, "nullbmp.common.ovl");
+    var wrongPath = Path.Combine(root, "other.common.ovl");
+    using var missingArchive = new Ovl("missing");
+    using var ambiguousArchive = new Ovl("ambiguous");
+    _ = Add(ambiguousArchive, "nullbmp", ownerPath);
+    _ = Add(ambiguousArchive, "NULLBMP", ownerPath);
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      _ = new RideTrackResourceCatalogLoadContext(
+        [ownerPath],
+        [missingArchive],
+        _ => { },
+        ownerPath)));
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      _ = new RideTrackResourceCatalogLoadContext(
+        [ownerPath],
+        [ambiguousArchive],
+        _ => { },
+        ownerPath)));
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      _ = new RideTrackResourceCatalogLoadContext(
+        [wrongPath],
+        [missingArchive],
+        _ => { },
+        wrongPath)));
+  }
+
   private static OvlFile Add(Ovl archive, string name, string path) {
     var file = new OvlFile(name, FileType.FlexibleTexture, path);
     archive.Add(file, new OvlEntry(0, 1));

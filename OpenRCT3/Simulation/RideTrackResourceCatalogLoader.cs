@@ -35,12 +35,14 @@ internal sealed record RideTrackResourceCatalogEntry(Ovl Archive, OvlFile File);
 
 /// <summary>Owns every paired OVL retained by a loaded ride-track resource catalog.</summary>
 internal sealed class RideTrackResourceCatalogLoadContext : IDisposable {
+  internal const string EngineGlobalNullBitmapReference = "nullbmp:ftx";
   private const int MaximumAllowedArchivePaths = 4_096;
   private const int MaximumIdentifierLength = 4_096;
   private const int MaximumScannedResources = 1_000_000;
   private readonly object syncRoot = new();
   private readonly IReadOnlyList<Ovl> archives;
   private readonly Action<Ovl> disposeArchive;
+  private readonly RideTrackResourceCatalogEntry? engineGlobalNullBitmap;
   private bool disposed;
 
   public IReadOnlyList<string> LoadedCommonPaths { get; }
@@ -49,7 +51,8 @@ internal sealed class RideTrackResourceCatalogLoadContext : IDisposable {
   internal RideTrackResourceCatalogLoadContext(
     IReadOnlyList<string> loadedCommonPaths,
     IReadOnlyList<Ovl> archives,
-    Action<Ovl> disposeArchive
+    Action<Ovl> disposeArchive,
+    string? engineGlobalNullBitmapOwnerPath = null
   ) {
     ArgumentNullException.ThrowIfNull(loadedCommonPaths);
     ArgumentNullException.ThrowIfNull(archives);
@@ -62,6 +65,11 @@ internal sealed class RideTrackResourceCatalogLoadContext : IDisposable {
     LoadedCommonPaths = Array.AsReadOnly(loadedCommonPaths.ToArray());
     this.archives = Array.AsReadOnly(archives.ToArray());
     this.disposeArchive = disposeArchive;
+    if (engineGlobalNullBitmapOwnerPath != null)
+      engineGlobalNullBitmap = ValidateEngineGlobalNullBitmapOwner(
+        LoadedCommonPaths,
+        this.archives,
+        engineGlobalNullBitmapOwnerPath);
   }
 
   /// <summary>
@@ -110,6 +118,33 @@ internal sealed class RideTrackResourceCatalogLoadContext : IDisposable {
     }
   }
 
+  /// <summary>Finds the retained engine-global <c>nullbmp:ftx</c> symbol, if loaded.</summary>
+  /// <remarks>
+  /// libOVLng reserves <c>nullbmp</c> as an engine texture name and writes FTX resources to the
+  /// common half. The owner is registered from the exact installation-root pair; this lookup does
+  /// not search any other retained archive.
+  /// See
+  /// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/libOVLng/ManagerFTX.cpp"/>
+  /// and
+  /// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/lib3DHelp/RCT3Structs.cpp"/>.
+  /// </remarks>
+  internal RideTrackResourceCatalogEntry? FindExactEngineGlobalNullBitmap(
+    string taggedReference
+  ) {
+    var resourceName = ParseExactTaggedReference(
+      taggedReference,
+      FileType.FlexibleTexture);
+    if (!resourceName.Equals("nullbmp", StringComparison.OrdinalIgnoreCase))
+      throw InvalidLookup(
+        $"engine-global lookup '{taggedReference}' is not exact " +
+        $"'{EngineGlobalNullBitmapReference}'");
+
+    lock (syncRoot) {
+      ObjectDisposedException.ThrowIf(disposed, this);
+      return engineGlobalNullBitmap;
+    }
+  }
+
   public void Dispose() {
     lock (syncRoot) {
       if (disposed) return;
@@ -153,6 +188,59 @@ internal sealed class RideTrackResourceCatalogLoadContext : IDisposable {
         throw InvalidLookup($"archive whitelist repeats path '{path}'");
     }
     return result;
+  }
+
+  private static RideTrackResourceCatalogEntry ValidateEngineGlobalNullBitmapOwner(
+    IReadOnlyList<string> loadedCommonPaths,
+    IReadOnlyList<Ovl> archives,
+    string ownerPath
+  ) {
+    _ = ValidateAllowedPaths([ownerPath]);
+    if (!Path.GetFileName(ownerPath).Equals(
+      "nullbmp.common.ovl",
+      StringComparison.OrdinalIgnoreCase))
+      throw InvalidLookup(
+        $"engine-global '{EngineGlobalNullBitmapReference}' owner '{ownerPath}' is not the " +
+        "exact installation-root nullbmp common half");
+
+    var ownerIndex = -1;
+    foreach (var index in Enumerable.Range(0, loadedCommonPaths.Count)) {
+      if (!loadedCommonPaths[index].Equals(ownerPath, StringComparison.OrdinalIgnoreCase))
+        continue;
+      if (ownerIndex >= 0)
+        throw InvalidLookup(
+          $"engine-global owner path '{ownerPath}' is retained more than once");
+      ownerIndex = index;
+    }
+    if (ownerIndex < 0)
+      throw InvalidLookup(
+        $"engine-global owner path '{ownerPath}' is not a retained pair");
+
+    var archive = archives[ownerIndex]
+      ?? throw InvalidLookup(
+        $"engine-global owner path '{ownerPath}' has a null retained archive");
+    OvlFile? match = null;
+    var scannedResources = 0;
+    foreach (var file in archive.Keys) {
+      scannedResources = checked(scannedResources + 1);
+      if (scannedResources > MaximumScannedResources)
+        throw InvalidLookup(
+          $"resource scan exceeds the limit {MaximumScannedResources}");
+      if (file.Type != FileType.FlexibleTexture ||
+          !file.Name.Equals("nullbmp", StringComparison.OrdinalIgnoreCase) ||
+          !file.Path.Equals(ownerPath, StringComparison.OrdinalIgnoreCase))
+        continue;
+      if (match != null)
+        throw InvalidLookup(
+          $"engine-global '{EngineGlobalNullBitmapReference}' has multiple exact symbols in " +
+          $"owner '{ownerPath}'");
+      match = file;
+    }
+    if (match == null)
+      throw InvalidLookup(
+        $"engine-global '{EngineGlobalNullBitmapReference}' has no exact symbol in owner " +
+        $"'{ownerPath}'");
+    return new RideTrackResourceCatalogEntry(archive, match);
   }
 
   private static string ParseExactTaggedReference(
@@ -468,6 +556,13 @@ internal static class RideTrackResourceCatalogLoader {
         source.ExtractStaticShapes,
         source.ExtractBoneShapes,
         RideCarVisualResourceBridgeLimits.Default);
+      var engineGlobalNullBitmapOwnerPath = LoadEngineGlobalNullBitmap(
+        root,
+        shapeResources,
+        source,
+        limits,
+        loaded,
+        issues);
       var trackVisualResources = new RideTrackVisualResourceSet(
         sectionGraph,
         closures,
@@ -492,7 +587,8 @@ internal static class RideTrackResourceCatalogLoader {
       var context = new RideTrackResourceCatalogLoadContext(
         loaded.Select(pair => pair.CommonPath).ToArray(),
         loaded.Select(pair => pair.Archive).ToArray(),
-        source.DisposePair);
+        source.DisposePair,
+        engineGlobalNullBitmapOwnerPath);
       return new RideTrackResourceCatalogLoadResult(
         catalog,
         rideResources,
@@ -915,6 +1011,26 @@ internal static class RideTrackResourceCatalogLoader {
     RideTrackResourceCatalogLoaderLimits limits,
     ICollection<LoadedPair> loaded,
     ICollection<RideTrackResourceCatalogLoadIssue> issues
+  ) => LoadClosure(
+    installRoot,
+    roots.Select(root => new LoadNode(
+      root.CommonPath,
+      0,
+      null,
+      root.FirstOverlayPath,
+      true)).ToArray(),
+    source,
+    limits,
+    loaded,
+    issues);
+
+  private static void LoadClosure(
+    string installRoot,
+    IReadOnlyList<LoadNode> roots,
+    IRideTrackResourceCatalogLoaderSource source,
+    RideTrackResourceCatalogLoaderLimits limits,
+    ICollection<LoadedPair> loaded,
+    ICollection<RideTrackResourceCatalogLoadIssue> issues
   ) {
     var queue = new Queue<LoadNode>();
     var loadedByPath = loaded.ToDictionary(
@@ -927,7 +1043,7 @@ internal static class RideTrackResourceCatalogLoader {
       if (!scheduled.Add(root.CommonPath)) continue;
       if (scheduled.Count > limits.MaximumPairs)
         throw Invalid($"reachable pair count exceeds {limits.MaximumPairs}");
-      queue.Enqueue(new LoadNode(root.CommonPath, 0, null, root.FirstOverlayPath, true));
+      queue.Enqueue(root);
     }
 
     var dependencyEdgeCount = loaded.Sum(pair => pair.DependencyCommonPaths.Count);
@@ -994,6 +1110,56 @@ internal static class RideTrackResourceCatalogLoader {
     foreach (var pair in loadedByPath.Values) {
       pair.DependencyCommonPaths.RemoveAll(path => !loadedByPath.ContainsKey(path));
     }
+  }
+
+  private static string? LoadEngineGlobalNullBitmap(
+    string installRoot,
+    RideVisualShapeResourceSet shapeResources,
+    IRideTrackResourceCatalogLoaderSource source,
+    RideTrackResourceCatalogLoaderLimits limits,
+    ICollection<LoadedPair> loaded,
+    ICollection<RideTrackResourceCatalogLoadIssue> issues
+  ) {
+    if (!ReferencesEngineGlobalNullBitmap(shapeResources)) return null;
+
+    var commonPath = ResolveExactCommonPath(installRoot, "nullbmp");
+    LoadClosure(
+      installRoot,
+      [new LoadNode(
+        commonPath,
+        0,
+        null,
+        RideTrackResourceCatalogLoadContext.EngineGlobalNullBitmapReference,
+        true)],
+      source,
+      limits,
+      loaded,
+      issues);
+    return loaded.Any(pair => pair.CommonPath.Equals(
+      commonPath,
+      StringComparison.OrdinalIgnoreCase))
+      ? commonPath
+      : null;
+  }
+
+  private static bool ReferencesEngineGlobalNullBitmap(
+    RideVisualShapeResourceSet shapeResources
+  ) {
+    foreach (var source in shapeResources.StaticShapes)
+      foreach (var mesh in source.Resource.Meshes)
+        if (string.Equals(
+          mesh.FtxRef,
+          RideTrackResourceCatalogLoadContext.EngineGlobalNullBitmapReference,
+          StringComparison.OrdinalIgnoreCase))
+          return true;
+    foreach (var source in shapeResources.BoneShapes)
+      foreach (var mesh in source.Resource.Meshes)
+        if (string.Equals(
+          mesh.FtxRef,
+          RideTrackResourceCatalogLoadContext.EngineGlobalNullBitmapReference,
+          StringComparison.OrdinalIgnoreCase))
+          return true;
+    return false;
   }
 
   private static IReadOnlyList<DecodedPair> DecodePairs(

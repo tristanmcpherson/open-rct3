@@ -43,6 +43,7 @@ $approvedInstalledAssetSkips = @(
   'OpenCobra.Tests.OVL.WildAnimalAnimationDataTests.Extract_FromInstalledElephantProvesExactLayout',
   'OpenCobra.Tests.OVL.WildAnimalAnimationDataTests.Extract_FromInstalledOstrichProvesExactLayout',
   'OpenCobra.Tests.OVL.WildAnimalSpeciesTests.Extract_FromInstalledElephantReadsExactFourVariantLayout',
+  'OpenCobra.Tests.OVL.WildAnimalSpeciesTests.Extract_FromInstalledPantherReadsExactFinalLoaderLayout',
   'OpenCobra.Tests.OVL.WildAnimalSpeciesTests.Extract_FromInstalledOstrichReadsExactCompactFourVariantLayout',
   'OpenRCT3.Tests.Serialization.DatRideCarInstanceReaderTests.Read_BoxOfficeCapturesExactStreamlinedMonoConsistAndResumeState',
   'OpenRCT3.Tests.Serialization.DatRideCarInstanceReaderTests.Read_ScrubGardensCapturesWildTrainVisualVariantSelections',

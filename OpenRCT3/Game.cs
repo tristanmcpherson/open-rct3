@@ -238,7 +238,7 @@ public class Game : IGame {
     WildAnimalCameraFramingResult? wildAnimalDiagnosticFraming = null;
     if (World.Park.WildAnimalPlacements.Count > 0) {
       try {
-        var animals = WildAnimalSceneLoader.Load(World.Park, installPath);
+        var animals = WildAnimalFrameZeroSceneLoader.Load(World.Park, installPath);
         var publishedAnimals = false;
         try {
           var animalFraming = GamePresentationOptions.ShowWildAnimalDiagnostics
@@ -256,25 +256,30 @@ public class Game : IGame {
         World.Park.WildAnimalResources = animals.Resources;
         World.Park.WildAnimalScene = animals.Scene;
         logger.Debug(
-          "Added {ModelCount} static Wild-animal models for {BuiltCount} of " +
-          "{PlacementCount} saved animals across {SpeciesCount} species and " +
-          "{MaterialCount} exact TEX materials; skipped {HiddenCount} hidden animals and " +
-          "{MissingMaterialCount} missing-material batches",
+          "Added {ModelCount} frame-zero Wild-animal models for {BuiltCount} of " +
+          "{PlacementCount} saved animals across {SpeciesCount} species, " +
+          "{AnimationDataCount} WAD resources, {PoseCount} poses, and " +
+          "{MaterialCount} exact TEX materials; skipped {HiddenCount} hidden animals, " +
+          "{NoClipCount} no-active-clip states, and {WeightedCount} weighted states",
           animals.Scene.ModelCount,
           animals.Scene.BuiltPlacementCount,
           animals.Scene.SourcePlacementCount,
           animals.SpeciesCount,
+          animals.DistinctAnimationDataCount,
+          animals.PoseCount,
           animals.MaterialCount,
           animals.Scene.HiddenPlacementCount,
-          animals.Scene.MissingMaterialBatchCount);
+          animals.Scene.NoActiveClipPlacementCount,
+          animals.Scene.WeightedStatePlacementCount);
       }
       catch (Exception error) when (
         error is InvalidDataException or IOException or UnauthorizedAccessException or
           ArgumentException or InvalidOperationException or AggregateException or
           OverflowException) {
         // Wild animals are additive while the decoded terrain and scenery remain authoritative.
-        // Unsupported custom WAS/MDL/TXS data must not make an otherwise valid park unloadable.
-        logger.Warn(error, "Wild-animal scene could not be built");
+        // Unsupported custom WAS/MDL/WAD/ModelAnim/TXS data must not make an otherwise valid park
+        // unloadable.
+        logger.Warn(error, "Frame-zero Wild-animal scene could not be built");
       }
     }
 
@@ -696,7 +701,7 @@ public class Game : IGame {
           wildAnimalDiagnosticFraming!.Value.Target,
           wildAnimalDiagnosticFraming.Value.Distance,
           wildAnimalDiagnosticFraming.Value.MinimumDistance);
-        logger.Trace("Framed diagnostic camera on static Wild animals");
+        logger.Trace("Framed diagnostic camera on frame-zero Wild animals");
         break;
       case GameDiagnosticCameraTarget.Terrain:
         break;

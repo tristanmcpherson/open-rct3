@@ -226,8 +226,8 @@ public class Park {
   /// <summary>Exact installed WAS and MDL resources used by the saved Wild-animal scene.</summary>
   internal WildAnimalParkResourceRegistry? WildAnimalResources { get; set; }
 
-  /// <summary>Borrowed exact bindings for the scene-owned static Wild-animal models.</summary>
-  internal WildAnimalStaticSceneBuildResult? WildAnimalScene { get; set; }
+  /// <summary>Borrowed exact bindings for the scene-owned frame-zero Wild-animal models.</summary>
+  internal WildAnimalFrameZeroSceneBuildResult? WildAnimalScene { get; set; }
 
   public Park(int buildableWidth = DefaultMapSize, int buildableHeight = DefaultMapSize) {
     float halfWidth = (buildableWidth * TileSize) / 2.0f;

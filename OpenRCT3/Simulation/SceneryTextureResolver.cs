@@ -26,22 +26,30 @@ public sealed class SceneryTextureResolver : IDisposable {
   private readonly object syncRoot = new();
   private readonly SceneryResourceCatalog resources;
   private readonly Func<Ovl, OvlFile, FlexiTextureList> decoder;
+  private readonly TextureSamplingMode samplingMode;
   private readonly Dictionary<ResourceKey, TextureFamily> textureFamilies =
     new(ResourceKeyComparer.Instance);
   private bool disposed;
 
   /// <summary>Creates a resolver over an existing scenery resource catalog.</summary>
   public SceneryTextureResolver(SceneryResourceCatalog resources)
-    : this(resources, FlexiTextureList.Load) { }
+    : this(resources, FlexiTextureList.Load, TextureSamplingMode.GeneratedMipmaps) { }
 
   internal SceneryTextureResolver(
     SceneryResourceCatalog resources,
-    Func<Ovl, OvlFile, FlexiTextureList> decoder
+    TextureSamplingMode samplingMode
+  ) : this(resources, FlexiTextureList.Load, samplingMode) { }
+
+  internal SceneryTextureResolver(
+    SceneryResourceCatalog resources,
+    Func<Ovl, OvlFile, FlexiTextureList> decoder,
+    TextureSamplingMode samplingMode = TextureSamplingMode.GeneratedMipmaps
   ) {
     ArgumentNullException.ThrowIfNull(resources);
     ArgumentNullException.ThrowIfNull(decoder);
     this.resources = resources;
     this.decoder = decoder;
+    this.samplingMode = samplingMode;
   }
 
   /// <summary>Resolves a required exact <c>name:ftx</c> reference.</summary>
@@ -196,7 +204,8 @@ public sealed class SceneryTextureResolver : IDisposable {
         firstImage.Width,
         firstImage.Height,
         firstImage,
-        decoded.Frames[0].Recolorable);
+        decoded.Frames[0].Recolorable,
+        samplingMode);
       DisposeFrames(decoded.Frames[1..], firstImage);
       return new TextureFamily(decoded.Frames[0], texture);
     } catch {
@@ -251,7 +260,8 @@ public sealed class SceneryTextureResolver : IDisposable {
           image.Width,
           image.Height,
           image,
-          frame.Recolorable);
+          frame.Recolorable,
+          Original.SamplingMode);
         variants.Add(key, texture);
         return texture;
       } catch {

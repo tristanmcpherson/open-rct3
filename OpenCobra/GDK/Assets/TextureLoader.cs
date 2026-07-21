@@ -22,10 +22,14 @@ public static class TextureLoader {
     return LoadTexture(ovl, ovl.Find(name, FileType.Texture) ?? throw new AssetException($"Texture '{name}' not found in OVL."));
   }
 
-  public static Texture LoadTexture(Ovl ovl, OvlFile file) {
+  public static Texture LoadTexture(
+    Ovl ovl,
+    OvlFile file,
+    TextureSamplingMode samplingMode = TextureSamplingMode.AuthoredMipmaps
+  ) {
     try {
       using var textures = Textures.Extract(ovl);
-      return CreateTexture(file, textures[file.ToString()]);
+      return CreateTexture(file, textures[file.ToString()], samplingMode);
     }
     catch (Exception ex) {
       throw new AssetException(file.Name, ex);
@@ -46,7 +50,13 @@ public static class TextureLoader {
 
     var textures = FlexiTextureList.Load(ovl, ovl.Find(name, FileType.FlexibleTexture) ??
       throw new AssetException($"Flexi-texture '{name}' not found in OVL."));
-    return new Texture(name, textures.Width, textures.Height, textures[0].Texture, textures.Recolorable);
+    return new Texture(
+      name,
+      textures.Width,
+      textures.Height,
+      textures[0].Texture,
+      textures.Recolorable,
+      TextureSamplingMode.GeneratedMipmaps);
   }
 
   public static AnimatedTexture LoadAnimatedTexture(string ovlPath, string name) {
@@ -198,11 +208,9 @@ public static class TextureLoader {
     return Path.Combine(directory, fileName[..^pairMarker.Length] + suffix);
   }
 
-  private static Texture CreateTexture(OvlFile file, OpenCobra.OVL.Files.Texture decoded) {
-    if (decoded.MipLevels.Length == 0 || decoded.MipLevels[0] == null)
-      throw new InvalidDataException($"Texture '{file}' has no decoded base mip.");
-
-    var pixels = decoded.MipLevels[0].Clone();
-    return new Texture(file.Name, pixels.Width, pixels.Height, pixels);
-  }
+  private static Texture CreateTexture(
+    OvlFile file,
+    OpenCobra.OVL.Files.Texture decoded,
+    TextureSamplingMode samplingMode = TextureSamplingMode.AuthoredMipmaps
+  ) => Texture.FromDecoded(file.Name, decoded, samplingMode: samplingMode);
 }

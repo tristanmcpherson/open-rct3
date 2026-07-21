@@ -340,14 +340,15 @@ public class MaterialResourceTests {
 
     public void UploadTexture(
       uint handle,
-      int width,
-      int height,
-      ReadOnlySpan<Rgba32> pixels
+      IReadOnlyList<TextureMipUpload> mipLevels,
+      TextureSamplingMode samplingMode
     ) {
       if (FailUpload) throw new InvalidOperationException("Injected texture upload failure.");
-      if (pixels.Length != checked(width * height))
-        throw new InvalidOperationException("Pixel span does not match texture dimensions.");
-      Uploads.Add((width, height, pixels.Length));
+      foreach (var mipLevel in mipLevels) {
+        if (mipLevel.Pixels.Length != checked(mipLevel.Width * mipLevel.Height))
+          throw new InvalidOperationException("Pixel span does not match texture dimensions.");
+        Uploads.Add((mipLevel.Width, mipLevel.Height, mipLevel.Pixels.Length));
+      }
     }
 
     public void DeleteTexture(uint handle) => Deleted.Add(handle);

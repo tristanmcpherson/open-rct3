@@ -104,6 +104,17 @@ internal sealed class GameAutomationPipeServer : IDisposable {
         return window.ApplyAutomationCamera(camera);
       }),
       "frame_terrain" => await InvokeAsync(window.FrameAutomationTerrain),
+      "pick_terrain" => await InvokeAsync(() => {
+        var pick = request.Parameters.Deserialize<GameAutomationTerrainPickRequest>()
+          ?? throw new InvalidDataException("Terrain-pick parameters are required.");
+        return window.PickAutomationTerrain(pick);
+      }),
+      "select_terrain" => await InvokeAsync(() => {
+        var pick = request.Parameters.Deserialize<GameAutomationTerrainPickRequest>()
+          ?? throw new InvalidDataException("Terrain-selection parameters are required.");
+        return window.SelectAutomationTerrain(pick);
+      }),
+      "clear_terrain_selection" => await InvokeAsync(window.ClearAutomationTerrainSelection),
       "screenshot" => await InvokeAsync(() => new GameAutomationScreenshot(
         Convert.ToBase64String(window.CaptureAutomationFrame()))),
       "pause" => await InvokeAsync(() => {
@@ -186,6 +197,17 @@ internal sealed record GameAutomationViewportRequest(
     if (Height < MinimumDimension || Height > MaximumDimension)
       throw new ArgumentOutOfRangeException(
         nameof(Height), $"Viewport height must be from {MinimumDimension} to {MaximumDimension}.");
+  }
+}
+
+internal sealed record GameAutomationTerrainPickRequest(
+  [property: JsonPropertyName("x")] float X,
+  [property: JsonPropertyName("y")] float Y) {
+  internal void Validate(int width, int height) {
+    if (!float.IsFinite(X) || X < 0f || X >= width)
+      throw new ArgumentOutOfRangeException(nameof(X), "Terrain-pick X is outside the framebuffer.");
+    if (!float.IsFinite(Y) || Y < 0f || Y >= height)
+      throw new ArgumentOutOfRangeException(nameof(Y), "Terrain-pick Y is outside the framebuffer.");
   }
 }
 

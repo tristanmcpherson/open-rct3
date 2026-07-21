@@ -35,6 +35,8 @@ internal partial class GameWindow : Form, IWindow {
   private readonly ManualResetEvent rendererCreated = new(false);
   private readonly Stopwatch stopwatch = new();
   private IRenderer? renderer;
+  private Terrain? automationSelectionTerrain;
+  private TerrainSelectionController? automationTerrainSelection;
   private CancellationTokenSource closing = new();
   private bool isClosing = false;
 
@@ -270,6 +272,7 @@ internal partial class GameWindow : Form, IWindow {
     var mapPath = Environment.GetEnvironmentVariable("OPENRCT3_MAP_PATH")
       ?? game.Config.MapPath;
     var pathBounds = GetPathBounds(game);
+    var terrainSelection = automationTerrainSelection?.Current;
     return new {
       process_id = Environment.ProcessId,
       map_path = mapPath,
@@ -281,6 +284,16 @@ internal partial class GameWindow : Form, IWindow {
       scene_model_count = game.Scene.Models.Count,
       path_bounds = pathBounds,
       path_surface_groups = GetPathSurfaceGroups(game),
+      terrain_selection = terrainSelection.HasValue ? new {
+        tile_x = terrainSelection.Value.TileX,
+        tile_y = terrainSelection.Value.TileY,
+        triangle = terrainSelection.Value.Triangle.ToString(),
+        position = new[] {
+          terrainSelection.Value.Position.X,
+          terrainSelection.Value.Position.Y,
+          terrainSelection.Value.Position.Z
+        }
+      } : null,
       is_paused = game.IsPaused,
       is_closing = IsClosing
     };
@@ -326,6 +339,59 @@ internal partial class GameWindow : Form, IWindow {
     glSurface.PresentFrame();
     return GetAutomationState();
   }
+
+  internal object PickAutomationTerrain(GameAutomationTerrainPickRequest request) {
+    var hit = TryPickAutomationTerrain(request);
+    return hit.HasValue ? SerializeTerrainHit(hit.Value) : new { hit = false };
+  }
+
+  internal object SelectAutomationTerrain(GameAutomationTerrainPickRequest request) {
+    var game = Game.Instance
+      ?? throw new InvalidOperationException("The game is not running.");
+    var terrain = game.World.Terrain
+      ?? throw new InvalidOperationException("The game has no loaded terrain.");
+    var hit = TryPickAutomationTerrain(request);
+    if (!hit.HasValue) return new { selected = false, state = GetAutomationState() };
+    if (!ReferenceEquals(automationSelectionTerrain, terrain)) {
+      automationSelectionTerrain = terrain;
+      automationTerrainSelection = new TerrainSelectionController(terrain.Width, terrain.Height);
+    }
+    automationTerrainSelection!.Select(hit.Value);
+    return new { selected = true, state = GetAutomationState() };
+  }
+
+  internal object ClearAutomationTerrainSelection() {
+    var cleared = automationTerrainSelection?.Clear() ?? false;
+    return new { cleared, state = GetAutomationState() };
+  }
+
+  private TerrainRaycastHit? TryPickAutomationTerrain(GameAutomationTerrainPickRequest request) {
+    request.Validate(FramebufferSize.X, FramebufferSize.Y);
+    var game = Game.Instance
+      ?? throw new InvalidOperationException("The game is not running.");
+    var terrain = game.World.Terrain
+      ?? throw new InvalidOperationException("The game has no loaded terrain.");
+    var viewportPosition = new System.Numerics.Vector2(request.X, request.Y);
+    var viewportSize = new System.Numerics.Vector2(FramebufferSize.X, FramebufferSize.Y);
+    if (!TerrainRaycaster.TryIntersect(
+        terrain,
+        game.Scene.Camera.Value,
+        viewportPosition,
+        viewportSize,
+        out var hit))
+      return null;
+
+    return hit;
+  }
+
+  private static object SerializeTerrainHit(TerrainRaycastHit hit) => new {
+      hit = true,
+      tile_x = hit.TileX,
+      tile_y = hit.TileY,
+      triangle = hit.Triangle.ToString(),
+      position = new[] { hit.Position.X, hit.Position.Y, hit.Position.Z },
+      distance = hit.Distance
+    };
 
   internal byte[] CaptureAutomationFrame() => glSurface.CaptureFramePng();
 

@@ -150,6 +150,21 @@ internal sealed class OpenRct3AutomationSession : IAsyncDisposable {
   public Task<JsonElement> FrameTerrainAsync(CancellationToken cancellationToken) =>
     SendAsync("frame_terrain", new { }, cancellationToken);
 
+  public Task<JsonElement> PickTerrainAsync(
+    float x,
+    float y,
+    CancellationToken cancellationToken
+  ) => SendAsync("pick_terrain", new { x, y }, cancellationToken);
+
+  public Task<JsonElement> SelectTerrainAsync(
+    float x,
+    float y,
+    CancellationToken cancellationToken
+  ) => SendAsync("select_terrain", new { x, y }, cancellationToken);
+
+  public Task<JsonElement> ClearTerrainSelectionAsync(CancellationToken cancellationToken) =>
+    SendAsync("clear_terrain_selection", new { }, cancellationToken);
+
   public async Task<JsonElement> ShutdownAsync(CancellationToken cancellationToken) {
     await gate.WaitAsync(cancellationToken);
     try {

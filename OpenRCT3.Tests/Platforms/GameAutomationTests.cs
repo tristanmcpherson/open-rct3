@@ -39,6 +39,27 @@ public class GameAutomationTests {
     Assert.Throws<ArgumentOutOfRangeException>(new Action(request.Validate));
   }
 
+  [TestCase(0f, 0f)]
+  [TestCase(1279.999f, 719.999f)]
+  [TestCase(640f, 360f)]
+  public void TerrainPickRequest_Validate_AcceptsFramebufferCoordinates(float x, float y) {
+    var request = new GameAutomationTerrainPickRequest(x, y);
+
+    Assert.DoesNotThrow(new Action(() => request.Validate(1280, 720)));
+  }
+
+  [TestCase(-1f, 0f)]
+  [TestCase(0f, -1f)]
+  [TestCase(1280f, 0f)]
+  [TestCase(0f, 720f)]
+  [TestCase(float.NaN, 0f)]
+  [TestCase(0f, float.PositiveInfinity)]
+  public void TerrainPickRequest_Validate_RejectsCoordinatesOutsideFramebuffer(float x, float y) {
+    var request = new GameAutomationTerrainPickRequest(x, y);
+
+    Assert.Throws<ArgumentOutOfRangeException>(new Action(() => request.Validate(1280, 720)));
+  }
+
   [Test]
   public void EncodeBgraBottomUp_FlipsOpenGlRowsIntoPngCoordinates() {
     byte[] pixels = [

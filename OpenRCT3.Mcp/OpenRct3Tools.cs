@@ -97,6 +97,31 @@ internal sealed class OpenRct3Tools(OpenRct3AutomationSession session) {
   public Task<JsonElement> FrameTerrain(CancellationToken cancellationToken = default) =>
     session.FrameTerrainAsync(cancellationToken);
 
+  [McpServerTool(Name = "openrct3_pick_terrain", ReadOnly = true, Destructive = false,
+    Idempotent = true, OpenWorld = false)]
+  [Description("Resolve a framebuffer pixel to the nearest rendered terrain tile and world point.")]
+  public Task<JsonElement> PickTerrain(
+    [Description("Framebuffer X coordinate measured from the left edge.")] float x,
+    [Description("Framebuffer Y coordinate measured from the top edge.")] float y,
+    CancellationToken cancellationToken = default
+  ) => session.PickTerrainAsync(x, y, cancellationToken);
+
+  [McpServerTool(Name = "openrct3_select_terrain", ReadOnly = false, Destructive = false,
+    Idempotent = true, OpenWorld = false)]
+  [Description("Select the terrain tile under a framebuffer pixel without desktop input.")]
+  public Task<JsonElement> SelectTerrain(
+    [Description("Framebuffer X coordinate measured from the left edge.")] float x,
+    [Description("Framebuffer Y coordinate measured from the top edge.")] float y,
+    CancellationToken cancellationToken = default
+  ) => session.SelectTerrainAsync(x, y, cancellationToken);
+
+  [McpServerTool(Name = "openrct3_clear_terrain_selection", ReadOnly = false,
+    Destructive = false, Idempotent = true, OpenWorld = false)]
+  [Description("Clear the current terrain selection without desktop input.")]
+  public Task<JsonElement> ClearTerrainSelection(
+    CancellationToken cancellationToken = default
+  ) => session.ClearTerrainSelectionAsync(cancellationToken);
+
   [McpServerTool(Name = "openrct3_shutdown", ReadOnly = false, Destructive = false,
     Idempotent = true, OpenWorld = false)]
   [Description("Gracefully stop only the OpenRCT3 process launched by this MCP server.")]

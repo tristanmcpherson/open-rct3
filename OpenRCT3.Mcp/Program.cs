@@ -7,6 +7,8 @@ builder.Logging.AddConsole(options =>
   options.LogToStandardErrorThreshold = LogLevel.Trace);
 builder.Services.AddSingleton<OpenRct3AutomationSession>();
 builder.Services.AddSingleton<OpenRct3Tools>();
+builder.Services.AddSingleton<RetailRct3Session>();
+builder.Services.AddSingleton<RetailRct3Tools>();
 builder.Services
   .AddMcpServer()
   .WithStdioServerTransport()

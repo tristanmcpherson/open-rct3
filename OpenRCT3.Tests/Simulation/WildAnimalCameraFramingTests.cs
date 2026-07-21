@@ -76,6 +76,109 @@ public class WildAnimalCameraFramingTests {
   }
 
   [Test]
+  public void Calculate_FrameZeroMatchesStaticFraming() {
+    using var fixture = new SceneFixture(
+      new PlacementInput(0, new Vector3(10f, 20f, 30f), 2),
+      new PlacementInput(1, new Vector3(30f, 40f, 50f), 1));
+
+    var staticFraming = WildAnimalCameraFraming.Calculate(fixture.Scene);
+    var frameZeroFraming = WildAnimalCameraFraming.Calculate(fixture.FrameZeroScene);
+
+    Assert.That(frameZeroFraming, Is.EqualTo(staticFraming));
+  }
+
+  [Test]
+  public void Calculate_FrameZeroExcludesNoClipAndWeightedPlacementSkips() {
+    var first = new Vector3(10f, 20f, 30f);
+    var second = new Vector3(30f, 40f, 50f);
+    using var mixed = new SceneFixture(
+      new PlacementInput(0, first, 1),
+      new PlacementInput(
+        1,
+        new Vector3(1_000f, 2_000f, 3_000f),
+        1,
+        FrameZeroState.NoActiveClip),
+      new PlacementInput(2, second, 1),
+      new PlacementInput(
+        3,
+        new Vector3(-1_000f, -2_000f, -3_000f),
+        1,
+        FrameZeroState.Weighted));
+    using var onlySkipped = new SceneFixture(
+      new PlacementInput(
+        0,
+        Vector3.Zero,
+        1,
+        FrameZeroState.NoActiveClip),
+      new PlacementInput(
+        1,
+        Vector3.One,
+        1,
+        FrameZeroState.Weighted));
+
+    var framing = WildAnimalCameraFraming.Calculate(mixed.FrameZeroScene);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(framing!.Value.PlacementCount, Is.EqualTo(2));
+      Assert.That(framing.Value.Target, Is.EqualTo((first + second) * 0.5f));
+      Assert.That(mixed.FrameZeroScene.SkippedPlacements.Select(item => item.Reason),
+        Is.EqualTo(new[] {
+          WildAnimalFrameZeroSceneSkipReason.NoActiveClip,
+          WildAnimalFrameZeroSceneSkipReason.WeightedState,
+        }));
+      Assert.That(WildAnimalCameraFraming.Calculate(onlySkipped.FrameZeroScene), Is.Null);
+    }
+  }
+
+  [Test]
+  public void Calculate_FrameZeroCountsMultiBatchPlacementOnce() {
+    var position = new Vector3(10f, 20f, 30f);
+    using var fixture = new SceneFixture(new PlacementInput(0, position, 3));
+
+    var framing = WildAnimalCameraFraming.Calculate(fixture.FrameZeroScene);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(fixture.FrameZeroScene.ModelCount, Is.EqualTo(3));
+      Assert.That(framing!.Value.PlacementCount, Is.EqualTo(1));
+      Assert.That(framing.Value.Target, Is.EqualTo(position));
+      Assert.That(framing.Value.Radius, Is.Zero);
+      Assert.That(framing.Value.Distance,
+        Is.EqualTo(WildAnimalCameraFraming.MinimumDiagnosticDistance));
+    }
+  }
+
+  [TestCase(MalformedFrameZeroScene.SourceIdentity)]
+  [TestCase(MalformedFrameZeroScene.NonFiniteTransform)]
+  public void Calculate_FrameZeroRejectsChangedLiveTransformOrSourceIdentity(
+    MalformedFrameZeroScene malformed
+  ) {
+    using var fixture = new SceneFixture(new PlacementInput(0, Vector3.One, 2));
+    var scene = fixture.FrameZeroScene;
+    switch (malformed) {
+      case MalformedFrameZeroScene.SourceIdentity:
+        scene = scene with {
+          ModelBindings = ReplaceBinding(
+            scene,
+            0,
+            scene.ModelBindings[0] with {
+              MaterialSourceBatch = scene.ModelBindings[1].MaterialSourceBatch,
+            }),
+        };
+        break;
+      case MalformedFrameZeroScene.NonFiniteTransform:
+        var nonFinite = scene.Models[0].Transform.Matrix;
+        nonFinite.M41 = float.PositiveInfinity;
+        scene.Models[0].Transform.Matrix = nonFinite;
+        break;
+      default:
+        throw new ArgumentOutOfRangeException(nameof(malformed));
+    }
+
+    Assert.Throws<InvalidDataException>(new Action(() =>
+      WildAnimalCameraFraming.Calculate(scene)));
+  }
+
+  [Test]
   public void Calculate_ReturnsNoFrameForValidSceneWithoutBuiltPlacements() {
     var scene = new WildAnimalStaticSceneBuildResult(
       Array.AsReadOnly(Array.Empty<Model>()),
@@ -151,6 +254,16 @@ public class WildAnimalCameraFramingTests {
     return Array.AsReadOnly(bindings);
   }
 
+  private static IReadOnlyList<WildAnimalFrameZeroSceneModelBinding> ReplaceBinding(
+    WildAnimalFrameZeroSceneBuildResult scene,
+    int index,
+    WildAnimalFrameZeroSceneModelBinding replacement
+  ) {
+    var bindings = scene.ModelBindings.ToArray();
+    bindings[index] = replacement;
+    return Array.AsReadOnly(bindings);
+  }
+
   public enum MalformedCameraScene {
     SummaryCounts,
     ModelIdentity,
@@ -159,7 +272,23 @@ public class WildAnimalCameraFramingTests {
     ChangedSavedTransform,
   }
 
-  private sealed record PlacementInput(int Type, Vector3 Position, int BatchCount);
+  public enum MalformedFrameZeroScene {
+    SourceIdentity,
+    NonFiniteTransform,
+  }
+
+  private enum FrameZeroState {
+    Exact,
+    NoActiveClip,
+    Weighted,
+  }
+
+  private sealed record PlacementInput(
+    int Type,
+    Vector3 Position,
+    int BatchCount,
+    FrameZeroState FrameZeroState = FrameZeroState.Exact
+  );
 
   private sealed class SceneFixture : IDisposable {
     private readonly List<Mesh> templateMeshes = [];
@@ -222,8 +351,17 @@ public class WildAnimalCameraFramingTests {
         datSpecies,
         bridge,
         Array.AsReadOnly(Enumerable.Range(0, placements.Length).ToArray()));
+      var poseVariants = variantLinks
+        .Select((link, type) => PoseVariant(link, root, type))
+        .ToArray();
       var models = new List<Model>();
       var bindings = new List<WildAnimalStaticSceneModelBinding>();
+      var frameZeroModels = new List<Model>();
+      var frameZeroBindings = new List<WildAnimalFrameZeroSceneModelBinding>();
+      var frameZeroSkips = new List<WildAnimalFrameZeroScenePlacementSkip>();
+      var frameZeroBuiltPlacements = new HashSet<int>();
+      var skinnedVertexCount = 0ul;
+      var skinnedIndexCount = 0ul;
       foreach (var placementIndex in Enumerable.Range(0, placements.Length)) {
         var input = placements[placementIndex];
         var animal = new DatWildAnimalData(
@@ -239,7 +377,7 @@ public class WildAnimalCameraFramingTests {
           input.Position.Y);
         var visual = new DatWildAnimalVisualData(
           animal.VisualEntryId,
-          [],
+          Animations(input.FrameZeroState),
           true,
           true,
           nativeTransform);
@@ -255,6 +393,22 @@ public class WildAnimalCameraFramingTests {
           animal,
           input.Type,
           variantTemplates[input.Type]);
+        var poseVariant = poseVariants[input.Type];
+        var animation = WildAnimalSavedAnimationResolver.Resolve(
+          visual,
+          poseVariant.AnimationResources);
+        var isExact = animation.Status ==
+          WildAnimalSavedAnimationResolutionStatus.ExactSingleClip;
+        if (!isExact) {
+          var reason = animation.Status switch {
+            WildAnimalSavedAnimationResolutionStatus.NoActiveClip =>
+              WildAnimalFrameZeroSceneSkipReason.NoActiveClip,
+            WildAnimalSavedAnimationResolutionStatus.WeightedState =>
+              WildAnimalFrameZeroSceneSkipReason.WeightedState,
+            _ => throw new InvalidOperationException("Fixture animation state is not a skip."),
+          };
+          frameZeroSkips.Add(new(placement, selection, animation, reason));
+        }
         var transform = WildAnimalWorldTransform.ToPark(nativeTransform);
         foreach (var batchIndex in Enumerable.Range(
                    0,
@@ -272,6 +426,28 @@ public class WildAnimalCameraFramingTests {
             selection,
             batchIndex,
             batch));
+          if (!isExact) continue;
+          var skinnedBatch = new ModelDefinitionMeshBatch(
+            batch.SourceGroupIndex,
+            batch.SourceMeshIndex,
+            batch.SourceMeshName,
+            model.Mesh);
+          var poseSlot = poseVariant.Slots[
+            animation.ExactSingleClipEntry!.SavedEntry.Type];
+          frameZeroModels.Add(model);
+          frameZeroBindings.Add(new(
+            model,
+            placement,
+            selection,
+            animation,
+            poseVariant,
+            poseSlot,
+            batchIndex,
+            skinnedBatch,
+            batch));
+          frameZeroBuiltPlacements.Add(placementIndex);
+          skinnedVertexCount += Convert.ToUInt64(model.Mesh.Vertices.Count);
+          skinnedIndexCount += Convert.ToUInt64(model.Mesh.Indices.Count);
         }
       }
       Scene = new(
@@ -286,9 +462,26 @@ public class WildAnimalCameraFramingTests {
         0,
         Convert.ToUInt64(models.Count * 3),
         Convert.ToUInt64(models.Count * 3));
+      FrameZeroScene = new(
+        Array.AsReadOnly(frameZeroModels.ToArray()),
+        Array.AsReadOnly(frameZeroBindings.ToArray()),
+        Array.AsReadOnly(frameZeroSkips.ToArray()),
+        placements.Length,
+        placements.Length,
+        0,
+        frameZeroBuiltPlacements.Count,
+        frameZeroSkips.Count,
+        frameZeroSkips.Count(skip =>
+          skip.Reason == WildAnimalFrameZeroSceneSkipReason.NoActiveClip),
+        frameZeroSkips.Count(skip =>
+          skip.Reason == WildAnimalFrameZeroSceneSkipReason.WeightedState),
+        frameZeroModels.Count,
+        skinnedVertexCount,
+        skinnedIndexCount);
     }
 
     public WildAnimalStaticSceneBuildResult Scene { get; }
+    public WildAnimalFrameZeroSceneBuildResult FrameZeroScene { get; }
 
     public void Dispose() {
       foreach (var model in Scene.Models.Reverse()) model.Dispose();
@@ -311,11 +504,17 @@ public class WildAnimalCameraFramingTests {
       path,
       100,
       200,
-      0,
+      1,
       0,
       0,
       0) {
-      Bones = [],
+      Bones = [new ModelBone(
+        "Root",
+        new Vector4(0f, 0f, 0f, 1f),
+        new Vector4(0f, 0f, 0f, 1f),
+        Matrix4x4.Identity,
+        ushort.MaxValue,
+        1)],
       Groups = [Group(Enumerable.Range(0, batchCount).Select(Mesh).ToArray())],
     };
 
@@ -356,5 +555,110 @@ public class WildAnimalCameraFramingTests {
       Vector2.Zero,
       Vector4.One,
       new BoneShapeSkinning(255, 255, 255, 255, 0, 0, 0, 0));
+
+    private static IReadOnlyList<DatWildAnimalAnimationData> Animations(
+      FrameZeroState state
+    ) => state switch {
+      FrameZeroState.Exact => [new DatWildAnimalAnimationData(0f, 0, 1f)],
+      FrameZeroState.NoActiveClip => [],
+      FrameZeroState.Weighted => [new DatWildAnimalAnimationData(0f, 0, 0.5f)],
+      _ => throw new ArgumentOutOfRangeException(nameof(state)),
+    };
+
+    private static WildAnimalFrameZeroPoseVariantLink PoseVariant(
+      WildAnimalSpeciesModelVariantLink variant,
+      string root,
+      int type
+    ) {
+      var animationCommonPath = Path.Combine(root, $"Animal{type}Anims.common.ovl");
+      var animationName = $"Animal{type}Idle";
+      var animation = AnimationDefinition(animationName, animationCommonPath);
+      var source = new WildAnimalModelAnimationResourceSource(
+        new OvlFile(animationName, FileType.ModelAnim, animationCommonPath),
+        animation);
+      var references = Enumerable.Range(0, 31)
+        .Select(index => index == 0 ? $"{animationName}:modelanim" : ":modelanim")
+        .ToArray();
+      var slots = references.Select((reference, index) => index == 0
+        ? new WildAnimalModelAnimationSlotLink(
+          index,
+          reference,
+          WildAnimalModelAnimationSlotStatus.Resolved,
+          source)
+        : new WildAnimalModelAnimationSlotLink(
+          index,
+          reference,
+          WildAnimalModelAnimationSlotStatus.Placeholder,
+          null)).ToArray();
+      var wadName = $"Animal{type}";
+      var resources = new WildAnimalModelAnimationResourceBridgeResult(
+        $"{wadName}:wad",
+        variant.ModelSource.File.Path,
+        animationCommonPath,
+        new OvlFile(
+          wadName,
+          FileType.WildAnimalAnimData,
+          ToUniquePath(animationCommonPath)),
+        AnimationData(wadName, animationCommonPath, references),
+        Array.AsReadOnly(slots));
+      var pose = ModelAnimationFrameZeroPoseEvaluator.Evaluate(
+        variant.ModelSource.Resource,
+        animation);
+      var poseSlots = slots.Select(slot =>
+        new WildAnimalFrameZeroPoseSlotLink(slot, slot.IsResolved ? pose : null))
+        .ToArray();
+      return new(variant, resources, Array.AsReadOnly(poseSlots));
+    }
+
+    private static ModelAnimationDefinition AnimationDefinition(
+      string name,
+      string path
+    ) => new(
+      name,
+      path,
+      300,
+      0,
+      1,
+      400,
+      500,
+      1,
+      1,
+      600,
+      700,
+      new uint[] { 0 },
+      new uint[] { 0 },
+      [new ModelAnimationTriple(0f, 0f, 0f)],
+      [new ModelAnimationFourTuple(0f, 0f, 0f, 1f)],
+      ["Root"],
+      ["Root"]);
+
+    private static WildAnimalAnimationDataDefinition AnimationData(
+      string name,
+      string commonPath,
+      IReadOnlyList<string> references
+    ) => new(
+      name,
+      ToUniquePath(commonPath),
+      1_000,
+      0,
+      0,
+      31,
+      1_056,
+      2_000,
+      2_124,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      references,
+      Enumerable.Repeat(0f, 31).ToArray(),
+      Enumerable.Repeat(0f, 31).ToArray());
+
+    private static string ToUniquePath(string commonPath) =>
+      commonPath[..^".common.ovl".Length] + ".unique.ovl";
   }
 }

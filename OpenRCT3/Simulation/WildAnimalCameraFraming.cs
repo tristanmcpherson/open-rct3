@@ -38,29 +38,70 @@ internal static class WildAnimalCameraFraming {
   ) {
     ArgumentNullException.ThrowIfNull(scene);
     ValidateCounts(scene);
-    if (scene.Models == null || scene.ModelBindings == null ||
-        scene.Models.Count != scene.ModelCount ||
-        scene.ModelBindings.Count != scene.ModelCount)
-      throw Invalid("model and binding lists changed exact scene counts");
-    if (scene.BuiltPlacementCount == 0) return null;
+    return Calculate(
+      scene.Models,
+      scene.ModelBindings,
+      scene.SourcePlacementCount,
+      scene.BuiltPlacementCount,
+      scene.ModelCount,
+      ValidateBinding,
+      Invalid);
+  }
 
-    var positions = new List<Vector3>(scene.BuiltPlacementCount);
+  /// <summary>Returns no frame for a valid frame-zero scene with no built placements.</summary>
+  public static WildAnimalCameraFramingResult? Calculate(
+    WildAnimalFrameZeroSceneBuildResult scene
+  ) {
+    ArgumentNullException.ThrowIfNull(scene);
+    ValidateCounts(scene);
+    return Calculate(
+      scene.Models,
+      scene.ModelBindings,
+      scene.SourcePlacementCount,
+      scene.BuiltPlacementCount,
+      scene.ModelCount,
+      ValidateBinding,
+      InvalidFrameZero);
+  }
+
+  private static WildAnimalCameraFramingResult? Calculate<TBinding>(
+    IReadOnlyList<Model> models,
+    IReadOnlyList<TBinding> sourceBindings,
+    int sourcePlacementCount,
+    int builtPlacementCount,
+    int modelCount,
+    Func<TBinding, FramingModelBinding> resolveBinding,
+    Func<string, InvalidDataException> invalid
+  ) where TBinding : class {
+    if (models == null || sourceBindings == null || models.Count != modelCount ||
+        sourceBindings.Count != modelCount)
+      throw invalid("model and binding lists changed exact scene counts");
+    if (builtPlacementCount == 0) return null;
+
+    var positions = new List<Vector3>(builtPlacementCount);
     var placements = new Dictionary<int, BuiltPlacement>();
-    var models = new HashSet<Model>(ReferenceEqualityComparer.Instance);
+    var modelSet = new HashSet<Model>(ReferenceEqualityComparer.Instance);
     var previousPlacementIndex = -1;
     var previousBatchIndex = -1;
-    foreach (var index in Enumerable.Range(0, scene.ModelCount)) {
-      var model = scene.Models[index]
-        ?? throw Invalid($"model {index} is null");
-      var binding = scene.ModelBindings[index]
-        ?? throw Invalid($"binding {index} is null");
-      ValidateBinding(scene, binding, model, index, models);
+    foreach (var index in Enumerable.Range(0, modelCount)) {
+      var model = models[index]
+        ?? throw invalid($"model {index} is null");
+      var sourceBinding = sourceBindings[index]
+        ?? throw invalid($"binding {index} is null");
+      var binding = resolveBinding(sourceBinding);
+      ValidateBinding(
+        binding,
+        model,
+        index,
+        sourcePlacementCount,
+        modelSet,
+        invalid);
 
       var placementIndex = binding.Placement.PlacementIndex;
       if (placementIndex < previousPlacementIndex ||
           (placementIndex == previousPlacementIndex &&
            binding.MaterialBatchIndex <= previousBatchIndex))
-        throw Invalid("bindings changed exact placement or material-batch order");
+        throw invalid("bindings changed exact placement or material-batch order");
       previousBatchIndex = binding.MaterialBatchIndex;
       previousPlacementIndex = placementIndex;
 
@@ -68,30 +109,30 @@ internal static class WildAnimalCameraFraming {
       if (placements.TryGetValue(placementIndex, out var existing)) {
         if (!ReferenceEquals(existing.Placement, binding.Placement) ||
             existing.Transform != matrix)
-          throw Invalid(
+          throw invalid(
             $"placement {placementIndex} has inconsistent binding identity or transform");
         continue;
       }
 
       var position = matrix.Translation;
       if (!IsFinite(position))
-        throw Invalid($"placement {placementIndex} has a non-finite translation");
+        throw invalid($"placement {placementIndex} has a non-finite translation");
       placements.Add(placementIndex, new(binding.Placement, matrix));
       positions.Add(position);
     }
-    if (placements.Count != scene.BuiltPlacementCount)
-      throw Invalid(
-        $"built placement count {scene.BuiltPlacementCount} differs from exact binding count " +
+    if (placements.Count != builtPlacementCount)
+      throw invalid(
+        $"built placement count {builtPlacementCount} differs from exact binding count " +
         $"{placements.Count}");
 
-    var target = Mean(positions);
-    var radius = Radius(positions, target);
+    var target = Mean(positions, invalid);
+    var radius = Radius(positions, target, invalid);
     var distance = Convert.ToSingle(Math.Clamp(
       (Convert.ToDouble(radius) * RadiusDistanceScale) + DistancePadding,
       MinimumDiagnosticDistance,
       MaximumDiagnosticDistance));
     if (!IsFinite(target) || !float.IsFinite(radius) || !float.IsFinite(distance))
-      throw Invalid("calculated framing is non-finite");
+      throw invalid("calculated framing is non-finite");
     return new(
       target,
       radius,
@@ -119,24 +160,36 @@ internal static class WildAnimalCameraFraming {
       throw Invalid("scene summary counts are inconsistent or outside resource limits");
   }
 
-  private static void ValidateBinding(
-    WildAnimalStaticSceneBuildResult scene,
-    WildAnimalStaticSceneModelBinding binding,
-    Model model,
-    int index,
-    ISet<Model> models
+  private static void ValidateCounts(WildAnimalFrameZeroSceneBuildResult scene) {
+    if (scene.SourcePlacementCount < 0 ||
+        scene.SourcePlacementCount > MaximumPlacementCount ||
+        scene.VisiblePlacementCount < 0 ||
+        scene.HiddenPlacementCount < 0 ||
+        scene.BuiltPlacementCount < 0 ||
+        scene.SkippedPlacementCount < 0 ||
+        scene.NoActiveClipPlacementCount < 0 ||
+        scene.WeightedStatePlacementCount < 0 ||
+        scene.ModelCount < 0 ||
+        scene.ModelCount > MaximumModelCount ||
+        scene.VisiblePlacementCount + scene.HiddenPlacementCount !=
+          scene.SourcePlacementCount ||
+        scene.BuiltPlacementCount + scene.SkippedPlacementCount !=
+          scene.VisiblePlacementCount ||
+        scene.NoActiveClipPlacementCount + scene.WeightedStatePlacementCount !=
+          scene.SkippedPlacementCount ||
+        (scene.BuiltPlacementCount == 0) != (scene.ModelCount == 0) ||
+        scene.SkippedPlacements == null ||
+        scene.SkippedPlacements.Count != scene.SkippedPlacementCount)
+      throw InvalidFrameZero(
+        "scene summary counts are inconsistent or outside resource limits");
+  }
+
+  private static FramingModelBinding ValidateBinding(
+    WildAnimalStaticSceneModelBinding binding
   ) {
-    if (!ReferenceEquals(binding.Model, model) || !models.Add(model) ||
-        model.Mesh == null || model.Mesh.State == State.Disposed ||
-        model.Material == null || model.Material.State == State.Disposed ||
-        model.Transform == null || !IsFinite(model.Transform.Matrix))
-      throw Invalid($"binding {index} changed exact live model identity or transform");
     var placement = binding.Placement;
     if (placement == null || placement.Placement == null ||
         placement.Placement.Animal == null || placement.Placement.Visual == null ||
-        placement.PlacementIndex < 0 ||
-        placement.PlacementIndex >= scene.SourcePlacementCount ||
-        !placement.Placement.Visual.Visible ||
         binding.Selection == null ||
         !ReferenceEquals(binding.Selection.Animal, placement.Placement.Animal) ||
         binding.Selection.SerializedVariantIndex != placement.Placement.Animal.Type ||
@@ -148,14 +201,106 @@ internal static class WildAnimalCameraFraming {
         !ReferenceEquals(
           binding.Batch,
           binding.Selection.Variant.Template.Batches[binding.MaterialBatchIndex]))
-      throw Invalid($"binding {index} changed exact saved placement or batch identity");
+      throw Invalid("binding changed exact saved placement or batch identity");
+    return new(binding.Model, placement, binding.MaterialBatchIndex);
+  }
+
+  private static FramingModelBinding ValidateBinding(
+    WildAnimalFrameZeroSceneModelBinding binding
+  ) {
+    var placement = binding.Placement;
+    var selection = binding.Selection;
+    var animation = binding.Animation;
+    var poseVariant = binding.PoseVariant;
+    var poseSlot = binding.PoseSlot;
+    if (placement == null || placement.Placement == null ||
+        placement.Placement.Animal == null || placement.Placement.Visual == null ||
+        selection == null ||
+        !ReferenceEquals(selection.Animal, placement.Placement.Animal) ||
+        selection.SerializedVariantIndex != placement.Placement.Animal.Type ||
+        selection.Variant == null || selection.Variant.Template == null ||
+        selection.Variant.Template.Batches == null ||
+        binding.MaterialBatchIndex < 0 ||
+        binding.MaterialBatchIndex >= selection.Variant.Template.Batches.Count ||
+        binding.MaterialSourceBatch == null ||
+        !ReferenceEquals(
+          binding.MaterialSourceBatch,
+          selection.Variant.Template.Batches[binding.MaterialBatchIndex]) ||
+        binding.SkinnedBatch == null ||
+        !ReferenceEquals(binding.SkinnedBatch.Mesh, binding.Model.Mesh) ||
+        binding.SkinnedBatch.SourceGroupIndex !=
+          binding.MaterialSourceBatch.SourceGroupIndex ||
+        binding.SkinnedBatch.SourceMeshIndex !=
+          binding.MaterialSourceBatch.SourceMeshIndex ||
+        !string.Equals(
+          binding.SkinnedBatch.SourceMeshName,
+          binding.MaterialSourceBatch.SourceMeshName,
+          StringComparison.Ordinal))
+      throw InvalidFrameZero("binding changed exact saved placement or batch identity");
+    if (animation == null ||
+        !ReferenceEquals(animation.Visual, placement.Placement.Visual) ||
+        animation.Status != WildAnimalSavedAnimationResolutionStatus.ExactSingleClip ||
+        animation.Entries == null || animation.ExactSingleClipEntry == null ||
+        animation.ExactSingleClipEntry.SavedIndex < 0 ||
+        animation.ExactSingleClipEntry.SavedIndex >= animation.Entries.Count ||
+        !ReferenceEquals(
+          animation.ExactSingleClipEntry,
+          animation.Entries[animation.ExactSingleClipEntry.SavedIndex]) ||
+        animation.ExactSingleClipEntry.SavedEntry.Weight != 1f ||
+        poseVariant == null ||
+        !ReferenceEquals(poseVariant.VariantLink, selection.Variant.VariantLink) ||
+        !ReferenceEquals(poseVariant.AnimationResources, animation.Resources) ||
+        poseVariant.Slots == null ||
+        animation.ExactSingleClipEntry.SavedEntry.Type < 0 ||
+        animation.ExactSingleClipEntry.SavedEntry.Type >= poseVariant.Slots.Count ||
+        poseSlot == null ||
+        !ReferenceEquals(
+          poseSlot,
+          poseVariant.Slots[animation.ExactSingleClipEntry.SavedEntry.Type]) ||
+        !ReferenceEquals(
+          poseSlot.AnimationSlotLink,
+          animation.ExactSingleClipEntry.Slot) ||
+        !poseSlot.IsResolved || poseSlot.Pose == null ||
+        !ReferenceEquals(
+          poseSlot.Pose.Model,
+          selection.Variant.Template.ModelSource.Resource) ||
+        animation.ExactSingleClipEntry.Slot.Source == null ||
+        !ReferenceEquals(
+          poseSlot.Pose.Animation,
+          animation.ExactSingleClipEntry.Slot.Source.Resource))
+      throw InvalidFrameZero("binding changed exact saved animation or pose identity");
+    return new(binding.Model, placement, binding.MaterialBatchIndex);
+  }
+
+  private static void ValidateBinding(
+    FramingModelBinding binding,
+    Model model,
+    int index,
+    int sourcePlacementCount,
+    ISet<Model> models,
+    Func<string, InvalidDataException> invalid
+  ) {
+    if (!ReferenceEquals(binding.Model, model) || !models.Add(model) ||
+        model.Mesh == null || model.Mesh.State == State.Disposed ||
+        model.Material == null || model.Material.State == State.Disposed ||
+        model.Transform == null || !IsFinite(model.Transform.Matrix))
+      throw invalid($"binding {index} changed exact live model identity or transform");
+    var placement = binding.Placement;
+    if (placement == null || placement.Placement == null ||
+        placement.Placement.Animal == null || placement.Placement.Visual == null ||
+        placement.PlacementIndex < 0 || placement.PlacementIndex >= sourcePlacementCount ||
+        !placement.Placement.Visual.Visible)
+      throw invalid($"binding {index} changed exact saved placement identity");
     var expectedTransform = WildAnimalWorldTransform.ToPark(
       placement.Placement.Visual.WorldMatrix);
     if (model.Transform.Matrix != expectedTransform)
-      throw Invalid($"binding {index} changed the exact saved placement transform");
+      throw invalid($"binding {index} changed the exact saved placement transform");
   }
 
-  private static Vector3 Mean(IReadOnlyList<Vector3> positions) {
+  private static Vector3 Mean(
+    IReadOnlyList<Vector3> positions,
+    Func<string, InvalidDataException> invalid
+  ) {
     var x = 0d;
     var y = 0d;
     var z = 0d;
@@ -169,11 +314,15 @@ internal static class WildAnimalCameraFraming {
       Convert.ToSingle(x / count),
       Convert.ToSingle(y / count),
       Convert.ToSingle(z / count));
-    if (!IsFinite(target)) throw Invalid("placement mean is non-finite");
+    if (!IsFinite(target)) throw invalid("placement mean is non-finite");
     return target;
   }
 
-  private static float Radius(IReadOnlyList<Vector3> positions, Vector3 target) {
+  private static float Radius(
+    IReadOnlyList<Vector3> positions,
+    Vector3 target,
+    Func<string, InvalidDataException> invalid
+  ) {
     var radius = 0d;
     foreach (var position in positions) {
       var x = Convert.ToDouble(position.X) - target.X;
@@ -181,7 +330,7 @@ internal static class WildAnimalCameraFraming {
       var z = Convert.ToDouble(position.Z) - target.Z;
       var distance = Math.Sqrt((x * x) + (y * y) + (z * z));
       if (!double.IsFinite(distance) || distance > float.MaxValue)
-        throw Invalid("placement radius is non-finite or outside renderer range");
+        throw invalid("placement radius is non-finite or outside renderer range");
       radius = Math.Max(radius, distance);
     }
     return Convert.ToSingle(radius);
@@ -202,6 +351,15 @@ internal static class WildAnimalCameraFraming {
 
   private static InvalidDataException Invalid(string message) =>
     new($"Cannot frame static Wild-animal scene: {message}.");
+
+  private static InvalidDataException InvalidFrameZero(string message) =>
+    new($"Cannot frame frame-zero Wild-animal scene: {message}.");
+
+  private sealed record FramingModelBinding(
+    Model Model,
+    WildAnimalParkPlacementResource Placement,
+    int MaterialBatchIndex
+  );
 
   private sealed record BuiltPlacement(
     WildAnimalParkPlacementResource Placement,

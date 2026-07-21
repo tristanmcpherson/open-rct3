@@ -32,7 +32,22 @@ public sealed record SceneryMaterialKey(
   public SceneryResourceEntry? VisualSource { get; init; }
   /// <summary>The exact SHS/BSH archive entry that supplied this material batch.</summary>
   public SceneryResourceEntry? ShapeSource { get; init; }
+  /// <summary>The placement tile's exact terrain-catalog texture, when the SHS requests one.</summary>
+  public SceneryTerrainTextureSelection? TerrainTexture { get; init; }
 }
+
+/// <summary>A reserved SHS terrain or cliff texture bound to one exact catalog index.</summary>
+/// <remarks>
+/// The pinned importer maps <c>useterraintexture:ftx</c> and <c>useclifftexture:ftx</c> to the
+/// terrain and cliff texture flags respectively. See
+/// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/include/staticshape.h#L39-L50">staticshape.h</see>
+/// and
+/// <see href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/lib3DHelp/RCT3Structs.cpp#L273-L285">RCT3Structs.cpp</see>.
+/// </remarks>
+public readonly record struct SceneryTerrainTextureSelection(
+  TerrainMaterialKind Kind,
+  byte Index
+);
 
 /// <summary>The three effective DAT palette selections that tint a flexible texture.</summary>
 public readonly record struct SceneryFlexiColours(int First, int Second, int Third) {
@@ -206,6 +221,11 @@ public static class SceneryGeometryBuilder {
               placement.FlexiColour2),
             VisualSource = selected.VisualSource,
             ShapeSource = selected.ShapeSource,
+            TerrainTexture = ResolveTerrainTextureSelection(
+              terrain,
+              placement,
+              selected.ShapeName,
+              sourceBatch),
           };
           MutableBatch target;
           if (sourceBatch.Transparency == 2) {
@@ -286,6 +306,81 @@ public static class SceneryGeometryBuilder {
 
     return CalculateWorldAnchor(terrain, tileX, tileY, new PlacementAnchor(0.5d, 0.5d));
   }
+
+  internal static TerrainMaterialKind? ClassifyReservedTerrainTexture(
+    string? ftxRef,
+    string? txsRef,
+    uint transparency,
+    uint textureFlags
+  ) {
+    const string surfaceReference = "useterraintexture:ftx";
+    const string cliffReference = "useclifftexture:ftx";
+    const string opaqueStyle = "SIOpaque:txs";
+    const uint surfaceFlags = 12288;
+    const uint cliffFlags = 20480;
+
+    TerrainMaterialKind? referenceKind = null;
+    if (string.Equals(ftxRef, surfaceReference, StringComparison.OrdinalIgnoreCase))
+      referenceKind = TerrainMaterialKind.Surface;
+    else if (string.Equals(ftxRef, cliffReference, StringComparison.OrdinalIgnoreCase))
+      referenceKind = TerrainMaterialKind.Cliff;
+
+    var flagKind = textureFlags switch {
+      surfaceFlags => TerrainMaterialKind.Surface,
+      cliffFlags => TerrainMaterialKind.Cliff,
+      _ => (TerrainMaterialKind?)null,
+    };
+    if (referenceKind == null && flagKind == null) return null;
+    if (referenceKind == null || flagKind == null || referenceKind.Value != flagKind.Value)
+      throw new InvalidDataException(
+        $"Reserved terrain texture '{ftxRef}' has mismatched flags {textureFlags}.");
+    if (!string.Equals(txsRef, opaqueStyle, StringComparison.OrdinalIgnoreCase))
+      throw new InvalidDataException(
+        $"Reserved terrain texture '{ftxRef}' must use '{opaqueStyle}', got '{txsRef}'.");
+    if (transparency != 0)
+      throw new InvalidDataException(
+        $"Reserved terrain texture '{ftxRef}' must be opaque, got transparency {transparency}.");
+    return referenceKind.Value;
+  }
+
+  private static SceneryTerrainTextureSelection? ResolveTerrainTextureSelection(
+    Terrain terrain,
+    SceneryPlacement placement,
+    string shapeName,
+    StaticShapeMeshBatch sourceBatch
+  ) {
+    TerrainMaterialKind? kind;
+    try {
+      kind = ClassifyReservedTerrainTexture(
+        sourceBatch.FtxRef,
+        sourceBatch.TxsRef,
+        sourceBatch.Transparency,
+        sourceBatch.TextureFlags);
+    } catch (InvalidDataException error) {
+      throw Invalid($"shape '{shapeName}' {error.Message}");
+    }
+    if (kind == null) return null;
+
+    var corners = terrain.GetCorners(placement.TileX, placement.TileY);
+    var index = GetTerrainMaterialIndex(corners[0], kind.Value);
+    foreach (var corner in corners[1..]) {
+      if (GetTerrainMaterialIndex(corner, kind.Value) == index) continue;
+      throw Invalid(
+        $"shape '{shapeName}' uses reserved {kind.Value.ToString().ToLowerInvariant()} texture " +
+        $"on placement '{placement.ObjectKey}', but tile ({placement.TileX}, {placement.TileY}) " +
+        $"has mixed {kind.Value.ToString().ToLowerInvariant()} indices");
+    }
+    return new SceneryTerrainTextureSelection(kind.Value, index);
+  }
+
+  private static byte GetTerrainMaterialIndex(
+    TerrainCorner corner,
+    TerrainMaterialKind kind
+  ) => kind switch {
+    TerrainMaterialKind.Surface => corner.SurfaceIndex,
+    TerrainMaterialKind.Cliff => corner.CliffIndex,
+    _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+  };
 
   /// <summary>
   /// Returns the executable-backed position-type anchor for one decoded SID placement.

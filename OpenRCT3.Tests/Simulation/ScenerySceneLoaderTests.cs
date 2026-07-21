@@ -7,6 +7,7 @@ using OpenCobra.GDK.Materials;
 using OpenCobra.GDK.Meshes;
 using OpenCobra.OVL;
 using OpenCobra.OVL.Files;
+using OpenRCT3.Platforms;
 using OpenRCT3.Serialization;
 using OpenRCT3.Simulation;
 using SixLabors.ImageSharp;
@@ -195,6 +196,82 @@ public class ScenerySceneLoaderTests {
     } finally {
       foreach (var model in result.Models) model.Dispose();
       terrain.TextureCatalog?.Dispose();
+    }
+  }
+
+  [Test]
+  [Explicit("Requires installed RCT3 assets and the RaidersOfTheLostCoaster DAT.")]
+  public void Load_RaidersResolvesReservedTerrainAndCliffTextureBatches() {
+    var root = Environment.GetEnvironmentVariable("RCT3_PATH");
+    Assert.That(root, Is.Not.Null.And.Not.Empty,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    Assert.That(Directory.Exists(root), Is.True,
+      "RCT3_PATH must identify an installed RCT3 directory.");
+    var mapPath = Path.Combine(
+      root!, "Campaigns", "Base", "Wild", "RaidersOfTheLostCoaster.dat");
+    var config = AppConfig.Load();
+    var originalInstallPath = config.InstallPath;
+    OpenRCT3.Simulation.Terrain? terrain = null;
+    try {
+      config.InstallPath = root;
+      terrain = OpenRCT3.Simulation.Terrain.Load(
+        out _,
+        out _,
+        out var sceneryItems,
+        out var sceneryPlacements,
+        mapPath);
+      var park = new Park(terrain);
+      SceneryManagerLoader.Load(park, terrain, sceneryItems, sceneryPlacements);
+
+      var result = ScenerySceneLoader.Load(park, terrain, root);
+      try {
+        var reserved = result.Geometry.Batches
+          .Where(batch => batch.Key.TerrainTexture != null)
+          .ToArray();
+        foreach (var batch in reserved) {
+          TestContext.Progress.WriteLine(
+            $"Reserved scenery texture: ftx={batch.Key.FtxRef} " +
+            $"selection={batch.Key.TerrainTexture} " +
+            $"shapePath={batch.Key.ShapeSource?.File.Path}");
+        }
+
+        using (Assert.EnterMultipleScope()) {
+          Assert.That(result.MissingTextureBatchCount, Is.Zero);
+          Assert.That(reserved, Has.Length.EqualTo(4));
+          Assert.That(
+            reserved.Select(batch => batch.Key.FtxRef),
+            Is.EquivalentTo(new[] {
+              "useterraintexture:ftx",
+              "useterraintexture:ftx",
+              "useclifftexture:ftx",
+              "useclifftexture:ftx"
+            }));
+          Assert.That(
+            reserved.Select(batch => batch.Key.TerrainTexture!.Value),
+            Is.EquivalentTo(new[] {
+              new SceneryTerrainTextureSelection(TerrainMaterialKind.Surface, 8),
+              new SceneryTerrainTextureSelection(TerrainMaterialKind.Surface, 8),
+              new SceneryTerrainTextureSelection(TerrainMaterialKind.Cliff, 5),
+              new SceneryTerrainTextureSelection(TerrainMaterialKind.Cliff, 5)
+            }));
+          Assert.That(
+            reserved.Select(batch => batch.Key.ShapeSource?.File.Path),
+            Has.Exactly(2).EndsWith("Cap_1x1.unique.ovl"));
+          Assert.That(
+            reserved.Select(batch => batch.Key.ShapeSource?.File.Path),
+            Has.Exactly(2).EndsWith("Cap_1x1Block2.unique.ovl"));
+          Assert.That(reserved.Select(batch => batch.Mesh.State),
+            Has.None.EqualTo(State.Disposed));
+          Assert.That(
+            reserved.Select(batch => batch.Mesh),
+            Is.SubsetOf(result.Models.Select(model => model.Mesh)));
+        }
+      } finally {
+        foreach (var model in result.Models) model.Dispose();
+      }
+    } finally {
+      terrain?.TextureCatalog?.Dispose();
+      config.InstallPath = originalInstallPath;
     }
   }
 
@@ -448,6 +525,147 @@ public class ScenerySceneLoaderTests {
     }
   }
 
+  [TestCase(
+    "useterraintexture:ftx",
+    12288u,
+    TerrainMaterialKind.Surface,
+    7)]
+  [TestCase(
+    "useclifftexture:ftx",
+    20480u,
+    TerrainMaterialKind.Cliff,
+    3)]
+  public void Load_ReservedTerrainTextureUsesCatalogLeaseWithoutFtxResolution(
+    string ftxRef,
+    uint textureFlags,
+    TerrainMaterialKind kind,
+    byte index
+  ) {
+    var terrain = Terrain();
+    var park = new Park(terrain);
+    park.SceneryPlacements.Add(Placement("Item", "Style"));
+    var texture = Texture("terrain-catalog");
+    var context = new FakeContext(
+      resolve: _ => null,
+      resolveTexture: (_, _) => throw new AssertionException(
+        "Reserved terrain textures must not use scenery FTX resolution."));
+    var mesh = Mesh();
+    var selection = new SceneryTerrainTextureSelection(kind, index);
+    var resolvedSelections = new List<SceneryTerrainTextureSelection>();
+
+    var result = ScenerySceneLoader.Load(
+      park,
+      terrain,
+      _ => context,
+      (sourcePark, _, lookup) => {
+        lookup(sourcePark.SceneryPlacements[0]);
+        return Geometry([
+          Batch(
+            "Style",
+            ftxRef,
+            0,
+            mesh,
+            "SIOpaque:txs",
+            textureFlags: textureFlags,
+            terrainTexture: selection)
+        ]);
+      },
+      resolveTerrainTexture: requested => {
+        resolvedSelections.Add(requested);
+        return texture;
+      });
+
+    try {
+      texture.Dispose();
+      using (Assert.EnterMultipleScope()) {
+        Assert.That(result.Models, Has.Count.EqualTo(1));
+        Assert.That(result.Models[0].Material, Is.TypeOf<Textured>());
+        Assert.That(result.Models[0].Material!.RenderState,
+          Is.EqualTo(MaterialRenderState.Opaque));
+        Assert.That(result.MissingTextureBatchCount, Is.Zero);
+        Assert.That(resolvedSelections, Is.EqualTo(new[] { selection }));
+        Assert.That(context.TextureRequests, Is.Empty);
+        Assert.That(texture.State, Is.EqualTo(State.Uninitialized));
+      }
+
+      result.Models[0].Dispose();
+      Assert.That(texture.State, Is.EqualTo(State.Disposed));
+    } finally {
+      foreach (var model in result.Models) model.Dispose();
+      texture.Dispose();
+    }
+  }
+
+  [Test]
+  public void Load_ReservedTerrainTextureWithoutSelectionFailsClosed() {
+    var terrain = Terrain();
+    var park = new Park(terrain);
+    park.SceneryPlacements.Add(Placement("Item", "Style"));
+    var context = new FakeContext(resolve: _ => null);
+    var mesh = Mesh();
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      ScenerySceneLoader.Load(
+        park,
+        terrain,
+        _ => context,
+        (sourcePark, _, lookup) => {
+          lookup(sourcePark.SceneryPlacements[0]);
+          return Geometry([
+            Batch(
+              "Style",
+              "useterraintexture:ftx",
+              0,
+              mesh,
+              "SIOpaque:txs",
+              textureFlags: 12288)
+          ]);
+        })));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error!.Message, Does.Contain("has no catalog selection"));
+      Assert.That(mesh.State, Is.EqualTo(State.Disposed));
+      Assert.That(context.DisposeCount, Is.EqualTo(1));
+    }
+  }
+
+  [Test]
+  public void Load_ReservedTerrainTextureMissingCatalogEntryFailsClosed() {
+    var terrain = Terrain();
+    var park = new Park(terrain);
+    park.SceneryPlacements.Add(Placement("Item", "Style"));
+    var context = new FakeContext(resolve: _ => null);
+    var mesh = Mesh();
+
+    var error = Assert.Throws<InvalidDataException>(new Action(() =>
+      ScenerySceneLoader.Load(
+        park,
+        terrain,
+        _ => context,
+        (sourcePark, _, lookup) => {
+          lookup(sourcePark.SceneryPlacements[0]);
+          return Geometry([
+            Batch(
+              "Style",
+              "useclifftexture:ftx",
+              0,
+              mesh,
+              "SIOpaque:txs",
+              textureFlags: 20480,
+              terrainTexture: new SceneryTerrainTextureSelection(
+                TerrainMaterialKind.Cliff,
+                5))
+          ]);
+        },
+        resolveTerrainTexture: _ => null)));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(error!.Message, Does.Contain("did not resolve"));
+      Assert.That(mesh.State, Is.EqualTo(State.Disposed));
+      Assert.That(context.DisposeCount, Is.EqualTo(1));
+    }
+  }
+
   [TestCase("SIWater:txs", 0u)]
   [TestCase("SIOpaqueChrome:txs", 2u)]
   public void Load_EngineGlobalStyleTransparencyMismatchFailsClosed(
@@ -659,10 +877,20 @@ public class ScenerySceneLoaderTests {
     Mesh mesh,
     string? txsRef = null,
     SceneryFlexiColours? flexiColours = null,
-    uint sides = 1
+    uint sides = 1,
+    uint textureFlags = 0,
+    SceneryTerrainTextureSelection? terrainTexture = null
   ) => new(
-    new SceneryMaterialKey(overlayPath, ftxRef, txsRef, 0, transparency, 0, sides) {
+    new SceneryMaterialKey(
+      overlayPath,
+      ftxRef,
+      txsRef,
+      0,
+      transparency,
+      textureFlags,
+      sides) {
       FlexiColours = flexiColours ?? default,
+      TerrainTexture = terrainTexture,
     },
     mesh);
 

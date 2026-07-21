@@ -64,13 +64,15 @@ public static class ScenerySceneLoader {
       Terrain,
       Func<SceneryPlacement, ResolvedSceneryObject?>,
       SceneryGeometryBuildResult> buildGeometry,
-    Func<Mesh, Model>? createModel = null
+    Func<Mesh, Model>? createModel = null,
+    Func<SceneryTerrainTextureSelection, Texture?>? resolveTerrainTexture = null
   ) {
     ArgumentNullException.ThrowIfNull(park);
     ArgumentNullException.ThrowIfNull(terrain);
     ArgumentNullException.ThrowIfNull(createContext);
     ArgumentNullException.ThrowIfNull(buildGeometry);
     createModel ??= mesh => new Model(mesh);
+    resolveTerrainTexture ??= selection => ResolveTerrainTexture(terrain, selection);
 
     var contextsByOverlay = new Dictionary<string, IScenerySceneResourceContext>(
       StringComparer.Ordinal);
@@ -125,7 +127,9 @@ public static class ScenerySceneLoader {
         };
 
         Material material;
-        var engineGlobalMaterial = CreateEngineGlobalMaterial(batch.Key);
+        var engineGlobalMaterial = CreateEngineGlobalMaterial(
+          batch.Key,
+          resolveTerrainTexture);
         if (engineGlobalMaterial != null) {
           material = engineGlobalMaterial;
         } else if (string.IsNullOrWhiteSpace(batch.Key.FtxRef)) {
@@ -215,7 +219,41 @@ public static class ScenerySceneLoader {
     return context;
   }
 
-  private static Material? CreateEngineGlobalMaterial(SceneryMaterialKey key) {
+  private static Material? CreateEngineGlobalMaterial(
+    SceneryMaterialKey key,
+    Func<SceneryTerrainTextureSelection, Texture?> resolveTerrainTexture
+  ) {
+    var reservedKind = SceneryGeometryBuilder.ClassifyReservedTerrainTexture(
+      key.FtxRef,
+      key.TxsRef,
+      key.Transparency,
+      key.TextureFlags);
+    if (reservedKind != null) {
+      var selection = key.TerrainTexture
+        ?? throw new InvalidDataException(
+          $"Reserved terrain texture batch '{key.FtxRef}' has no catalog selection.");
+      if (selection.Kind != reservedKind)
+        throw new InvalidDataException(
+          $"Reserved terrain texture batch '{key.FtxRef}' selected {selection.Kind}, " +
+          $"but its metadata requires {reservedKind}.");
+      var texture = resolveTerrainTexture(selection)
+        ?? throw new InvalidDataException(
+          $"Reserved {selection.Kind.ToString().ToLowerInvariant()} texture index " +
+          $"{selection.Index} did not resolve from the terrain catalog.");
+      var material = new Textured(MaterialBlendMode.Opaque);
+      try {
+        material.AlbedoTexture = texture;
+      } catch {
+        material.Dispose();
+        throw;
+      }
+      return material;
+    }
+    if (key.TerrainTexture != null)
+      throw new InvalidDataException(
+        $"Scenery batch '{key.FtxRef}' has a terrain catalog selection without matching " +
+        "reserved texture metadata.");
+
     if (string.Equals(key.TxsRef, "SIWater:txs", StringComparison.OrdinalIgnoreCase)) {
       if (key.Transparency != 2)
         throw new InvalidDataException(
@@ -236,6 +274,31 @@ public static class ScenerySceneLoader {
     }
 
     return null;
+  }
+
+  private static Texture ResolveTerrainTexture(
+    Terrain terrain,
+    SceneryTerrainTextureSelection selection
+  ) {
+    var catalog = terrain.TextureCatalog
+      ?? throw new InvalidDataException(
+        $"Reserved {selection.Kind.ToString().ToLowerInvariant()} texture index " +
+        $"{selection.Index} cannot resolve because the terrain texture catalog is missing.");
+    try {
+      return selection.Kind switch {
+        TerrainMaterialKind.Surface => catalog.GetSurface(selection.Index),
+        TerrainMaterialKind.Cliff => catalog.GetCliff(selection.Index),
+        _ => throw new ArgumentOutOfRangeException(
+          nameof(selection), selection.Kind, "Unknown terrain material kind."),
+      };
+    } catch (Exception error) when (error is ArgumentOutOfRangeException or
+                                    InvalidDataException or
+                                    ObjectDisposedException) {
+      throw new InvalidDataException(
+        $"Reserved {selection.Kind.ToString().ToLowerInvariant()} texture index " +
+        $"{selection.Index} is invalid for the terrain texture catalog.",
+        error);
+    }
   }
 
   private static byte? ResolveAlphaReference(string? taggedReference) {

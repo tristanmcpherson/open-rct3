@@ -1098,6 +1098,147 @@ public class SceneryGeometryBuilderTests {
     }
   }
 
+  [TestCase(
+    "useterraintexture:ftx",
+    12288u,
+    TerrainMaterialKind.Surface)]
+  [TestCase(
+    "useclifftexture:ftx",
+    20480u,
+    TerrainMaterialKind.Cliff)]
+  public void Build_ReservedTerrainTextureIndexIsPartOfMaterialIdentity(
+    string ftxRef,
+    uint textureFlags,
+    TerrainMaterialKind kind
+  ) {
+    var terrain = new Terrain();
+    var firstIndex = kind == TerrainMaterialKind.Surface
+      ? Convert.ToByte(4)
+      : Convert.ToByte(2);
+    var secondIndex = kind == TerrainMaterialKind.Surface
+      ? Convert.ToByte(7)
+      : Convert.ToByte(4);
+    SetCornerMaterials(terrain, TileX, TileY, firstIndex, firstIndex);
+    SetCornerMaterials(terrain, TileX + 1, TileY, secondIndex, secondIndex);
+    var first = Placement("First") with { OverlayPath = "Style" };
+    var second = Placement("Second") with {
+      TileX = TileX + 1,
+      OverlayPath = "Style"
+    };
+    var shape = new StaticShape(
+      "Shared",
+      Vector3.Zero,
+      Vector3.One,
+      [SourceMesh("reserved", ftxRef, textureFlags: textureFlags)],
+      []);
+
+    var result = SceneryGeometryBuilder.Build(
+      ParkWith(first, second),
+      terrain,
+      placement => ResolvedFor(placement.ObjectKey, shape));
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(result.Batches, Has.Count.EqualTo(2));
+      Assert.That(result.Batches.Select(batch => batch.Key.TerrainTexture), Is.EqualTo(new[] {
+        new SceneryTerrainTextureSelection(kind, firstIndex),
+        new SceneryTerrainTextureSelection(kind, secondIndex)
+      }));
+      Assert.That(result.Batches.Select(batch => batch.Mesh.Vertices.Count),
+        Is.EqualTo(new[] { 3, 3 }));
+    }
+  }
+
+  [TestCase(
+    "useterraintexture:ftx",
+    12288u,
+    TerrainMaterialKind.Surface,
+    "mixed surface indices")]
+  [TestCase(
+    "useclifftexture:ftx",
+    20480u,
+    TerrainMaterialKind.Cliff,
+    "mixed cliff indices")]
+  public void Build_ReservedTerrainTextureRejectsMixedPlacementIndices(
+    string ftxRef,
+    uint textureFlags,
+    TerrainMaterialKind kind,
+    string expectedMessage
+  ) {
+    var terrain = new Terrain();
+    SetCornerMaterials(terrain, TileX, TileY, 2, 2);
+    var corner = terrain.GetCorner(TileX, TileY, TerrainCornerSlot.NorthEast);
+    if (kind == TerrainMaterialKind.Surface) corner.SurfaceIndex = 3;
+    else corner.CliffIndex = 3;
+    terrain.SetCorner(TileX, TileY, TerrainCornerSlot.NorthEast, corner);
+    var shape = new StaticShape(
+      "Mixed",
+      Vector3.Zero,
+      Vector3.One,
+      [SourceMesh("reserved", ftxRef, textureFlags: textureFlags)],
+      []);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      SceneryGeometryBuilder.Build(
+        ParkWith(Placement("Item")),
+        terrain,
+        _ => ResolvedFor("Item", shape))));
+
+    Assert.That(exception!.Message, Does.Contain(expectedMessage));
+  }
+
+  [TestCase(
+    "useterraintexture:ftx",
+    "SIOpaque:txs",
+    0u,
+    0u,
+    "mismatched flags")]
+  [TestCase(
+    "Texture:ftx",
+    "SIOpaque:txs",
+    0u,
+    12288u,
+    "mismatched flags")]
+  [TestCase(
+    "useterraintexture:ftx",
+    "SIAlpha:txs",
+    0u,
+    12288u,
+    "must use 'SIOpaque:txs'")]
+  [TestCase(
+    "useterraintexture:ftx",
+    "SIOpaque:txs",
+    1u,
+    12288u,
+    "must be opaque")]
+  public void Build_ReservedTerrainTextureMetadataMismatchFailsClosed(
+    string ftxRef,
+    string txsRef,
+    uint transparency,
+    uint textureFlags,
+    string expectedMessage
+  ) {
+    var terrain = new Terrain();
+    var shape = new StaticShape(
+      "Malformed",
+      Vector3.Zero,
+      Vector3.One,
+      [SourceMesh(
+        "reserved",
+        ftxRef,
+        txsRef,
+        transparency,
+        textureFlags)],
+      []);
+
+    var exception = Assert.Throws<InvalidDataException>(new Action(() =>
+      SceneryGeometryBuilder.Build(
+        ParkWith(Placement("Item")),
+        terrain,
+        _ => ResolvedFor("Item", shape))));
+
+    Assert.That(exception!.Message, Does.Contain(expectedMessage));
+  }
+
   [Test]
   public void Build_ComplexTransparencyKeepsPlacementsInSeparateSortableBatches() {
     var terrain = new Terrain();
@@ -1388,6 +1529,21 @@ public class SceneryGeometryBuilderTests {
     terrain.SetCornerHeight(TileX, TileY, TerrainCornerSlot.NorthEast, northEast);
   }
 
+  private static void SetCornerMaterials(
+    Terrain terrain,
+    int tileX,
+    int tileY,
+    byte surfaceIndex,
+    byte cliffIndex
+  ) {
+    foreach (var slot in Enum.GetValues<TerrainCornerSlot>()) {
+      var corner = terrain.GetCorner(tileX, tileY, slot);
+      corner.SurfaceIndex = surfaceIndex;
+      corner.CliffIndex = cliffIndex;
+      terrain.SetCorner(tileX, tileY, slot, corner);
+    }
+  }
+
   private static void AssertPosition(Vector3 actual, Vector3 expected) {
     using (Assert.EnterMultipleScope()) {
       Assert.That(actual.X, Is.EqualTo(expected.X).Within(0.0001f));
@@ -1516,6 +1672,7 @@ public class SceneryGeometryBuilderTests {
   private static StaticShapeMesh SourceMesh(
     string name,
     string ftxRef,
+    string txsRef = "SIOpaque:txs",
     uint transparency = 0,
     uint textureFlags = 0,
     uint sides = 3,
@@ -1530,7 +1687,7 @@ public class SceneryGeometryBuilderTests {
       name,
       0,
       ftxRef,
-      "SIOpaque:txs",
+      txsRef,
       transparency,
       textureFlags,
       sides,

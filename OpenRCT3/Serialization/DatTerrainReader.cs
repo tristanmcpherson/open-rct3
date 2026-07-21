@@ -603,6 +603,11 @@ internal static class DatTerrainReader {
     var structures = ReadStructureDefinitions(reader, structureCount);
     var entryCount = ReadBoundedCount(reader.ReadUInt32(), MaxEntryCount, "entry count");
     var state = new ValueReadState();
+    foreach (var (structure, structureIndex) in
+      structures.Select((value, index) => (value, index))) {
+      if (IsGenericallyConsumed(structure.Name))
+        state.RegisterGenericStructure(structureIndex, structure);
+    }
 
     for (var entryIndex = 0; entryIndex < entryCount; entryIndex++) {
       var structureIndex = reader.ReadUInt32();
@@ -645,6 +650,7 @@ internal static class DatTerrainReader {
       else if (TryGetSceneryStructureKind(structure.Name, out var sceneryKind))
         state.CaptureScenery(ReadSceneryEntry(reader, structure, entryId, sceneryKind, state));
       else {
+        state.CaptureGenericEntry(Convert.ToInt32(structureIndex), entryId);
         foreach (var field in structure.Fields)
           ReadFieldValue(reader, field, state);
       }
@@ -672,7 +678,17 @@ internal static class DatTerrainReader {
       state.WildAnimalSpeciesDatabaseEntries,
       state.WildAnimalVisuals,
       state.WildAnimals,
-      state.WildAnimalPlacements);
+      state.WildAnimalPlacements,
+      state.GenericStructureInventory);
+  }
+
+  private static bool IsGenericallyConsumed(string structureName) {
+    if (structureName is "WASDatabaseEntry" or "WildAnimalVisual" or "WildAnimal"
+      or "RideCarInstance" or "RideTrainInstance" or "TrackedRideInstance"
+      or "Track" or "TrackSegment" or "TrackPiece") return false;
+    if (TryGetPathSurfaceStructureKind(structureName, out _)) return false;
+    if (TryGetPathStructureKind(structureName, out _)) return false;
+    return !TryGetSceneryStructureKind(structureName, out _);
   }
 
   private static int ReadStructureCount(DatBinaryReader reader) {
@@ -754,7 +770,7 @@ internal static class DatTerrainReader {
     var children = new FieldDefinition[childCount];
     for (var index = 0; index < childCount; index++)
       children[index] = ReadFieldDefinition(reader, state, depth + 1);
-    return new FieldDefinition(name, kind, fixedSize, children);
+    return new FieldDefinition(name, kindName, kind, fixedSize, children);
   }
 
   private static int ReadSchemaChildCount(uint value, SchemaReadState state) {
@@ -2621,7 +2637,8 @@ internal static class DatTerrainReader {
       wildAnimalSpeciesDatabaseEntries,
     IReadOnlyList<DatWildAnimalVisualData> wildAnimalVisuals,
     IReadOnlyList<DatWildAnimalData> wildAnimals,
-    IReadOnlyList<DatWildAnimalPlacementData> wildAnimalPlacements
+    IReadOnlyList<DatWildAnimalPlacementData> wildAnimalPlacements,
+    IReadOnlyList<DatGenericStructureInventoryData> genericStructureInventory
   ) {
     if (waterManager != null
       && (waterManager.Width != terrain.Width || waterManager.Height != terrain.Height))
@@ -2639,7 +2656,8 @@ internal static class DatTerrainReader {
          pathSurfaceEntries.Count == 0 && trackedRideInstances.Count == 0 &&
          rideTrainInstances.Count == 0 && rideCarInstances.Count == 0 &&
          wildAnimalSpeciesDatabaseEntries.Count == 0 && wildAnimalVisuals.Count == 0 &&
-         wildAnimals.Count == 0 && wildAnimalPlacements.Count == 0)
+         wildAnimals.Count == 0 && wildAnimalPlacements.Count == 0 &&
+         genericStructureInventory.Count == 0)
       return terrain;
 
     var cells = new DatTerrainCell[terrain.Cells.Count];
@@ -2666,7 +2684,8 @@ internal static class DatTerrainReader {
       [.. wildAnimalSpeciesDatabaseEntries],
       [.. wildAnimalVisuals],
       [.. wildAnimals],
-      [.. wildAnimalPlacements]);
+      [.. wildAnimalPlacements],
+      [.. genericStructureInventory]);
   }
 
   private static DatTerrainData ReadTerrain(DatBinaryReader reader, int payloadSize) {
@@ -2838,20 +2857,53 @@ internal static class DatTerrainReader {
 
   private sealed class FieldDefinition {
     public string Name { get; }
+    public string KindName { get; }
     public FieldKind Kind { get; }
     public uint FixedSize { get; }
     public FieldDefinition[] Children { get; }
 
     public FieldDefinition(
       string name,
+      string kindName,
       FieldKind kind,
       uint fixedSize,
       FieldDefinition[] children) {
       Name = name;
+      KindName = kindName;
       Kind = kind;
       FixedSize = fixedSize;
       Children = children;
     }
+  }
+
+  private sealed class GenericStructureInventoryBuilder {
+    private readonly int _structureIndex;
+    private readonly DataStructure _structure;
+    private readonly List<ulong> _entryIds = [];
+
+    public GenericStructureInventoryBuilder(int structureIndex, DataStructure structure) {
+      _structureIndex = structureIndex;
+      _structure = structure;
+    }
+
+    public void Add(ulong entryId) {
+      if (_entryIds.Count >= MaxEntryCount)
+        throw new InvalidDataException(
+          "DAT generic structure inventory exceeds the supported entry limit.");
+      _entryIds.Add(entryId);
+    }
+
+    public DatGenericStructureInventoryData Build() => new(
+      _structureIndex,
+      _structure.Name,
+      _structure.Fields.Select(ToInventoryField).ToArray(),
+      [.. _entryIds]);
+
+    private static DatGenericStructureFieldData ToInventoryField(FieldDefinition field) => new(
+      field.Name,
+      field.KindName,
+      field.FixedSize,
+      field.Children.Select(ToInventoryField).ToArray());
   }
 
   private readonly record struct ExpectedField(
@@ -2897,6 +2949,8 @@ internal static class DatTerrainReader {
     private readonly List<DatWildAnimalVisualData> _wildAnimalVisuals = [];
     private readonly List<DatWildAnimalData> _wildAnimals = [];
     private readonly List<DatWildAnimalPlacementData> _wildAnimalPlacements = [];
+    private readonly Dictionary<int, GenericStructureInventoryBuilder>
+      _genericStructureInventory = [];
 
     public DatTerrainData? Terrain { get; private set; }
     public DatWaterManagerData? WaterManager { get; private set; }
@@ -2918,6 +2972,29 @@ internal static class DatTerrainReader {
     public IReadOnlyList<DatWildAnimalData> WildAnimals => _wildAnimals;
     public IReadOnlyList<DatWildAnimalPlacementData> WildAnimalPlacements =>
       _wildAnimalPlacements;
+    public IReadOnlyList<DatGenericStructureInventoryData> GenericStructureInventory =>
+      _genericStructureInventory
+        .OrderBy(pair => pair.Key)
+        .Select(pair => pair.Value.Build())
+        .ToArray();
+
+    public void RegisterGenericStructure(
+      int structureIndex,
+      DataStructure structure
+    ) {
+      if (!_genericStructureInventory.TryAdd(
+        structureIndex,
+        new GenericStructureInventoryBuilder(structureIndex, structure)))
+        throw new InvalidDataException(
+          $"DAT generic structure index {structureIndex} is duplicated.");
+    }
+
+    public void CaptureGenericEntry(int structureIndex, ulong entryId) {
+      if (!_genericStructureInventory.TryGetValue(structureIndex, out var inventory))
+        throw new InvalidDataException(
+          $"DAT generic structure index {structureIndex} was not registered.");
+      inventory.Add(entryId);
+    }
 
     public void AddCollectionElements(int count) {
       if (count > MaxTotalCollectionElements - _collectionElementCount)

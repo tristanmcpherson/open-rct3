@@ -38,6 +38,7 @@ internal sealed class DatTerrainData {
   public IReadOnlyList<DatWildAnimalVisualData> WildAnimalVisuals { get; }
   public IReadOnlyList<DatWildAnimalData> WildAnimals { get; }
   public IReadOnlyList<DatWildAnimalPlacementData> WildAnimalPlacements { get; }
+  public IReadOnlyList<DatGenericStructureInventoryData> GenericStructureInventory { get; }
 
   public DatTerrainData(
     int width,
@@ -60,7 +61,8 @@ internal sealed class DatTerrainData {
     DatWildAnimalSpeciesDatabaseEntryData[]? wildAnimalSpeciesDatabaseEntries = null,
     DatWildAnimalVisualData[]? wildAnimalVisuals = null,
     DatWildAnimalData[]? wildAnimals = null,
-    DatWildAnimalPlacementData[]? wildAnimalPlacements = null) {
+    DatWildAnimalPlacementData[]? wildAnimalPlacements = null,
+    DatGenericStructureInventoryData[]? genericStructureInventory = null) {
     if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
     if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
     ArgumentNullException.ThrowIfNull(cells);
@@ -156,5 +158,60 @@ internal sealed class DatTerrainData {
     var rawWildAnimalPlacements = (DatWildAnimalPlacementData[])(
       wildAnimalPlacements?.Clone() ?? Array.Empty<DatWildAnimalPlacementData>());
     WildAnimalPlacements = Array.AsReadOnly(rawWildAnimalPlacements);
+    var rawGenericStructureInventory = (DatGenericStructureInventoryData[])(
+      genericStructureInventory?.Clone() ?? Array.Empty<DatGenericStructureInventoryData>());
+    GenericStructureInventory = Array.AsReadOnly(rawGenericStructureInventory);
+  }
+}
+
+/// <summary>
+/// Bounded structural evidence for entries consumed by the generic DAT field walker.
+/// </summary>
+internal sealed class DatGenericStructureInventoryData {
+  public int StructureIndex { get; }
+  public string Name { get; }
+  public IReadOnlyList<DatGenericStructureFieldData> Fields { get; }
+  public IReadOnlyList<ulong> EntryIds { get; }
+  public int EntryCount => EntryIds.Count;
+
+  public DatGenericStructureInventoryData(
+    int structureIndex,
+    string name,
+    DatGenericStructureFieldData[] fields,
+    ulong[] entryIds
+  ) {
+    if (structureIndex < 0) throw new ArgumentOutOfRangeException(nameof(structureIndex));
+    ArgumentException.ThrowIfNullOrWhiteSpace(name);
+    ArgumentNullException.ThrowIfNull(fields);
+    ArgumentNullException.ThrowIfNull(entryIds);
+
+    StructureIndex = structureIndex;
+    Name = name;
+    Fields = Array.AsReadOnly((DatGenericStructureFieldData[])fields.Clone());
+    EntryIds = Array.AsReadOnly((ulong[])entryIds.Clone());
+  }
+}
+
+/// <summary>One exact field definition from a generically consumed DAT structure.</summary>
+internal sealed class DatGenericStructureFieldData {
+  public string Name { get; }
+  public string Kind { get; }
+  public uint FixedSize { get; }
+  public IReadOnlyList<DatGenericStructureFieldData> Children { get; }
+
+  public DatGenericStructureFieldData(
+    string name,
+    string kind,
+    uint fixedSize,
+    DatGenericStructureFieldData[] children
+  ) {
+    ArgumentNullException.ThrowIfNull(name);
+    ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+    ArgumentNullException.ThrowIfNull(children);
+
+    Name = name;
+    Kind = kind;
+    FixedSize = fixedSize;
+    Children = Array.AsReadOnly((DatGenericStructureFieldData[])children.Clone());
   }
 }

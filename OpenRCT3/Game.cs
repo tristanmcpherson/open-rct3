@@ -13,6 +13,7 @@ using OpenCobra.GDK.GUI;
 using OpenCobra.GDK.Materials;
 using OpenCobra.GDK.Meshes;
 using OpenCobra.GDK.Platform;
+using OpenRCT3.Audio;
 using OpenRCT3.OpenGL;
 using OpenRCT3.Platforms;
 using OpenRCT3.Scenario;
@@ -55,6 +56,7 @@ public class Game : IGame {
   private readonly object cameraControllerGate = new();
   private IInputContext? cameraInput;
   private CameraController? cameraController;
+  private RainAudioPlayback? rainAudioPlayback;
   private bool disposed;
 
   public static Container IoC => IGame.IoC;
@@ -203,6 +205,10 @@ public class Game : IGame {
     Debug.Assert(World.Park != null);
     var installPath = Config.InstallPath
       ?? throw new InvalidOperationException("RCT3 installation path is not configured.");
+    if (RainAudioPlaybackOptions.Enabled) {
+      rainAudioPlayback = RainAudioPlayback.CreateDefault(logger);
+      rainAudioPlayback.TryStart(installPath);
+    }
     if (World.Park.PathPlacements.Count > 0) {
       using var pathSurfaces = PathSurfaceResourceResolver.LoadInstalled(
         installPath,
@@ -907,16 +913,19 @@ public class Game : IGame {
     CameraController? controller;
     Scene? scene;
     Simulation.World? world;
+    RainAudioPlayback? rainAudio;
     IDisposable[] rideCarVisualTemplateOwners;
     lock (cameraControllerGate) {
       if (disposed) return;
       disposed = true;
       scene = ownedScene;
       world = ownedWorld;
+      rainAudio = rainAudioPlayback;
       rideCarVisualTemplateOwners = ownedRideCarVisualTemplateOwners?.ToArray() ?? [];
       controller = cameraController;
       ownedScene = null;
       ownedWorld = null;
+      rainAudioPlayback = null;
       ownedRideCarVisualTemplateOwners?.Clear();
       cameraInput = null;
       cameraController = null;
@@ -928,18 +937,23 @@ public class Game : IGame {
       controller?.Dispose();
     }
     finally {
-      DisposeOwnedResources(
-        scene == null ? null : scene.Dispose,
-        rideCarVisualTemplateOwners.Length == 0
-          ? null
-          : () => DisposeRideCarVisualTemplateOwners(rideCarVisualTemplateOwners),
-        world == null ? null : world.Dispose,
-        () => {
-          lifecycle.Stop();
-          resumeSignal.Set();
-          if (ReferenceEquals(Instance, this)) Instance = null;
-          GC.SuppressFinalize(this);
-        });
+      try {
+        rainAudio?.Dispose();
+      }
+      finally {
+        DisposeOwnedResources(
+          scene == null ? null : scene.Dispose,
+          rideCarVisualTemplateOwners.Length == 0
+            ? null
+            : () => DisposeRideCarVisualTemplateOwners(rideCarVisualTemplateOwners),
+          world == null ? null : world.Dispose,
+          () => {
+            lifecycle.Stop();
+            resumeSignal.Set();
+            if (ReferenceEquals(Instance, this)) Instance = null;
+            GC.SuppressFinalize(this);
+          });
+      }
     }
   }
 

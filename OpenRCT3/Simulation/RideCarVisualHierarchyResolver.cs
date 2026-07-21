@@ -88,6 +88,7 @@ internal sealed record RideCarVisualHierarchyResolution(
 /// Bounded visual-hierarchy evidence indexed by exact RIC and selected body-role identity.
 /// </summary>
 internal sealed class RideCarVisualHierarchyRegistry {
+  private const int PartSlotsPerBodyRole = 6;
   private readonly IReadOnlyDictionary<
     RideCarLink,
     IReadOnlyDictionary<RideVisualRole, RideCarVisualHierarchyResolution>> byCarAndBodyRole;
@@ -99,9 +100,56 @@ internal sealed class RideCarVisualHierarchyRegistry {
     bool coversAllDecodedCarOccurrences,
     int unresolvedCarReferenceCount
   ) {
+    ArgumentNullException.ThrowIfNull(cars);
+    var countedResolvedPartCount = 0;
+    var countedAmbiguousPartCount = 0;
+    var declaredBodyRolePartCount = 0;
+    foreach (var hierarchy in cars) {
+      if (hierarchy == null)
+        throw new InvalidDataException(
+          "Ride-car hierarchy registry contains a null body-role resolution");
+      if (hierarchy.Parts.Count != PartSlotsPerBodyRole)
+        throw new InvalidDataException(
+          $"Ride-car hierarchy has {hierarchy.Parts.Count} parts instead of " +
+          $"{PartSlotsPerBodyRole}");
+      foreach (var part in hierarchy.Parts) {
+        if (part == null)
+          throw new InvalidDataException("Ride-car hierarchy registry contains a null part");
+        if (part.SerializedVisualReference == null) {
+          if (part.Status != RideCarVisualHierarchyPartStatus.VisualNotDeclared ||
+              part.Visual != null ||
+              part.ShapeVisual != null ||
+              part.Anchor != null)
+            throw new InvalidDataException(
+              $"Undeclared ride-car {part.Role} part retains resolution evidence");
+          continue;
+        }
+        if (part.Status == RideCarVisualHierarchyPartStatus.VisualNotDeclared)
+          throw new InvalidDataException(
+            $"Declared ride-car {part.Role} part is marked undeclared");
+        declaredBodyRolePartCount = checked(declaredBodyRolePartCount + 1);
+        if (part.IsResolved)
+          countedResolvedPartCount = checked(countedResolvedPartCount + 1);
+        if (part.Status == RideCarVisualHierarchyPartStatus.AnchorAmbiguous)
+          countedAmbiguousPartCount = checked(countedAmbiguousPartCount + 1);
+      }
+    }
+    if (resolvedPartCount != countedResolvedPartCount)
+      throw new InvalidDataException(
+        "Ride-car hierarchy resolved-part count does not match its typed results");
+    if (ambiguousPartCount != countedAmbiguousPartCount)
+      throw new InvalidDataException(
+        "Ride-car hierarchy ambiguous-part count does not match its typed results");
+
     Cars = Array.AsReadOnly(cars);
     ResolvedPartCount = resolvedPartCount;
     AmbiguousPartCount = ambiguousPartCount;
+    BodyRolePartSlotCount = checked(cars.Length * PartSlotsPerBodyRole);
+    DeclaredBodyRolePartCount = declaredBodyRolePartCount;
+    UndeclaredBodyRolePartCount = checked(
+      BodyRolePartSlotCount - DeclaredBodyRolePartCount);
+    UnresolvedDeclaredBodyRolePartCount = checked(
+      DeclaredBodyRolePartCount - ResolvedPartCount);
     CoversAllDecodedCarOccurrences = coversAllDecodedCarOccurrences;
     UnresolvedCarReferenceCount = unresolvedCarReferenceCount;
     var mutableIndex = new Dictionary<
@@ -124,7 +172,24 @@ internal sealed class RideCarVisualHierarchyRegistry {
   }
 
   public IReadOnlyList<RideCarVisualHierarchyResolution> Cars { get; }
+  /// <summary>
+  /// Total optional axle and wheel slots across the exact car/body-role resolutions in
+  /// <see cref="Cars"/>. A RIC with both normal and wild-flipped bodies contributes two six-slot
+  /// sets; this is not a unique serialized-RIC count.
+  /// </summary>
+  public int BodyRolePartSlotCount { get; }
+  /// <summary>
+  /// Body-role part slots backed by an explicit serialized SVD reference. One serialized reference
+  /// is counted once for each body-role resolution that consumes it.
+  /// </summary>
+  public int DeclaredBodyRolePartCount { get; }
+  /// <summary>Declared body-role part slots resolved through their exact resource evidence.</summary>
   public int ResolvedPartCount { get; }
+  /// <summary>Declared body-role part slots that could not be resolved.</summary>
+  public int UnresolvedDeclaredBodyRolePartCount { get; }
+  /// <summary>Optional body-role part slots for which the RIC serialized no visual reference.</summary>
+  public int UndeclaredBodyRolePartCount { get; }
+  /// <summary>Body-role part slots whose exact anchor lookup was ambiguous.</summary>
   public int AmbiguousPartCount { get; }
   /// <summary>
   /// Whether a supplied ride graph proved coverage of every decoded RIC occurrence, including cars
@@ -136,7 +201,9 @@ internal sealed class RideCarVisualHierarchyRegistry {
   /// trustworthy visual references or type values to resolve.
   /// </summary>
   public int UnresolvedCarReferenceCount { get; }
-  public int UnavailablePartCount => checked((Cars.Count * 6) - ResolvedPartCount);
+  /// <summary>Unresolved declared plus optional undeclared body-role part slots.</summary>
+  public int UnavailablePartCount =>
+    checked(UnresolvedDeclaredBodyRolePartCount + UndeclaredBodyRolePartCount);
 
   public bool TryGet(
     RideCarLink car,

@@ -46,7 +46,11 @@ public class RideCarVisualHierarchyResolverTests {
       Assert.That(
         result.FrontAxle.Anchor.ShapeSource,
         Is.SameAs(fixture.ShapeSources[RideVisualRole.Body]));
+      Assert.That(registry.BodyRolePartSlotCount, Is.EqualTo(6));
+      Assert.That(registry.DeclaredBodyRolePartCount, Is.EqualTo(6));
       Assert.That(registry.ResolvedPartCount, Is.EqualTo(6));
+      Assert.That(registry.UnresolvedDeclaredBodyRolePartCount, Is.Zero);
+      Assert.That(registry.UndeclaredBodyRolePartCount, Is.Zero);
       Assert.That(registry.UnavailablePartCount, Is.Zero);
     }
   }
@@ -79,7 +83,7 @@ public class RideCarVisualHierarchyResolverTests {
   }
 
   [Test]
-  public void Resolve_KeysNormalAndWildFlippedBodiesByExactRoleIdentity() {
+  public void Resolve_KeysAndCountsNormalAndWildFlippedBodiesByExactRoleIdentity() {
     var normalFrontAxle = Bone("AxleF");
     var normalRearRight = Bone("WheelRR");
     var wildFrontAxle = Bone("AxleF");
@@ -129,6 +133,14 @@ public class RideCarVisualHierarchyResolverTests {
       Assert.That(normal.BodyShapeVisual,
         Is.Not.SameAs(wild.BodyShapeVisual));
       Assert.That(defaultBody, Is.SameAs(normal));
+      Assert.That(
+        normal.Parts.Select(part => part.SerializedVisualReference),
+        Is.EqualTo(wild.Parts.Select(part => part.SerializedVisualReference)));
+      Assert.That(registry.BodyRolePartSlotCount, Is.EqualTo(12));
+      Assert.That(registry.DeclaredBodyRolePartCount, Is.EqualTo(10));
+      Assert.That(registry.ResolvedPartCount, Is.EqualTo(10));
+      Assert.That(registry.UnresolvedDeclaredBodyRolePartCount, Is.Zero);
+      Assert.That(registry.UndeclaredBodyRolePartCount, Is.EqualTo(2));
     }
   }
 
@@ -344,7 +356,8 @@ public class RideCarVisualHierarchyResolverTests {
       },
     });
 
-    var result = RideCarVisualHierarchyResolver.Resolve(fixture.Resources).Cars.Single();
+    var registry = RideCarVisualHierarchyResolver.Resolve(fixture.Resources);
+    var result = registry.Cars.Single();
 
     using (Assert.EnterMultipleScope()) {
       Assert.That(result.FrontAxle.Status, Is.EqualTo(
@@ -360,6 +373,40 @@ public class RideCarVisualHierarchyResolverTests {
       Assert.That(result.BackLeftWheel.Status, Is.EqualTo(
         RideCarVisualHierarchyPartStatus.VisualUnresolved));
       Assert.That(result.Parts, Has.All.Property("Anchor").Null);
+      Assert.That(registry.BodyRolePartSlotCount, Is.EqualTo(6));
+      Assert.That(registry.DeclaredBodyRolePartCount, Is.EqualTo(5));
+      Assert.That(registry.ResolvedPartCount, Is.Zero);
+      Assert.That(registry.UnresolvedDeclaredBodyRolePartCount, Is.EqualTo(5));
+      Assert.That(registry.UndeclaredBodyRolePartCount, Is.EqualTo(1));
+      Assert.That(registry.UnavailablePartCount, Is.EqualTo(6));
+    }
+  }
+
+  [Test]
+  public void Resolve_UndeclaredOptionalVisualsAreNotCountedAsResolutionFailures() {
+    var fixture = Fixture(new FixtureOptions([]) {
+      UndeclaredVisuals = new HashSet<RideVisualRole> {
+        RideVisualRole.FrontAxle,
+        RideVisualRole.RearAxle,
+        RideVisualRole.FrontRightWheel,
+        RideVisualRole.FrontLeftWheel,
+        RideVisualRole.BackRightWheel,
+        RideVisualRole.BackLeftWheel,
+      },
+    });
+
+    var registry = RideCarVisualHierarchyResolver.Resolve(fixture.Resources);
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(registry.Cars, Has.Count.EqualTo(1));
+      Assert.That(registry.Cars.Single().Parts, Has.All.Property("Status").EqualTo(
+        RideCarVisualHierarchyPartStatus.VisualNotDeclared));
+      Assert.That(registry.BodyRolePartSlotCount, Is.EqualTo(6));
+      Assert.That(registry.DeclaredBodyRolePartCount, Is.Zero);
+      Assert.That(registry.ResolvedPartCount, Is.Zero);
+      Assert.That(registry.UnresolvedDeclaredBodyRolePartCount, Is.Zero);
+      Assert.That(registry.UndeclaredBodyRolePartCount, Is.EqualTo(6));
+      Assert.That(registry.UnavailablePartCount, Is.EqualTo(6));
     }
   }
 

@@ -61,6 +61,7 @@ $approvedInstalledAssetSkips = @(
   'OpenRCT3.Tests.Simulation.RideCarGeometryAdapterTests.BoxOffice_StreamlinedMonoBodiesExposeExactModelSpaceGeometry',
   'OpenRCT3.Tests.Simulation.RideCarSavedWheelCursorRegistryTests.Build_BoxOfficeResolvesAllSavedWheelContactsToExactCachedPieces',
   'OpenRCT3.Tests.Simulation.RideCarStaticInstanceRegistryTests.BoxOffice_ComposesSevenExactStaticCarsInSavedConsistOrder',
+  'OpenRCT3.Tests.Simulation.RideCarVisualHierarchyInstalledTests.RaidersOfTheLostCoaster_ReportsUndeclaredOptionalBodyRoleHierarchySlots',
   'OpenRCT3.Tests.Simulation.RideCarVisualResourceBridgeTests.BoxOffice_ExactRideClosureResolvesCarVisualShapeResources',
   'OpenRCT3.Tests.Simulation.RideCarVisualTemplateRegistryTests.BoxOffice_BodyTemplatesHaveDeterministicGeometryCounts',
   'OpenRCT3.Tests.Simulation.RideInstanceResourceResolverTests.Resolve_InstalledCampaignIdentitiesAgainstTheirExactOvlOverlays',

@@ -394,10 +394,15 @@ public class Game : IGame {
             carVisuals);
           World.Park.RideCarVisualHierarchy = carVisualHierarchy;
           logger.Debug(
-            "Resolved {ResolvedPartCount} of {PartCount} ride-car axle/wheel hierarchy parts " +
-            "with {AmbiguousPartCount} ambiguous anchors",
+            "Resolved {ResolvedPartCount} of {DeclaredBodyRolePartCount} declared axle/wheel " +
+            "parts across ride-car body-role hierarchies; " +
+            "{UndeclaredBodyRolePartCount} optional body-role part slots undeclared, " +
+            "{UnresolvedDeclaredBodyRolePartCount} declared parts unresolved, and " +
+            "{AmbiguousPartCount} anchors ambiguous",
             carVisualHierarchy.ResolvedPartCount,
-            carVisualHierarchy.Cars.Count * 6,
+            carVisualHierarchy.DeclaredBodyRolePartCount,
+            carVisualHierarchy.UndeclaredBodyRolePartCount,
+            carVisualHierarchy.UnresolvedDeclaredBodyRolePartCount,
             carVisualHierarchy.AmbiguousPartCount);
         }
         catch (Exception error) when (

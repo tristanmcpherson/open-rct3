@@ -27,9 +27,11 @@ public sealed record WildAnimalSpeciesDefinition(
 /// evidence has a 0x40-byte header followed by four variants. Each variant serializes a 0x58-byte
 /// prefix, an exact sound-slot count at +0x50, a relocated slot-array pointer at +0x54, and
 /// count * 0x2C bytes of sound slots. Elephant has 24 slots (0x478 bytes per variant); Ostrich has
-/// 10 slots (0x210 bytes per variant). The decoder requires that serialized count, pointer
-/// topology, SymbolRefs, archive version, and loader boundary all agree; record length alone never
-/// selects a layout. Unknown counts fail closed.
+/// 10 slots (0x210 bytes per variant); Panther has 18 slots (0x370 bytes per variant). The decoder
+/// requires that serialized count, pointer topology, SymbolRefs, archive version, and loader
+/// boundary all agree; record length alone never selects a layout. A final loader is accepted only
+/// when its count-selected exact record fits and the following byte is unavailable in the same
+/// archive block. Unknown counts fail closed.
 /// </remarks>
 /// <seealso href="https://github.com/chances/rct3-importer/blob/431fbf2b5b5038c07ed197d29d12facdf319bc68/RCT3%20Importer/src/libOVLng/ManagerCommon.cpp#L50">
 /// rct3-importer WAS tag declaration
@@ -42,18 +44,23 @@ public static class WildAnimalSpecies {
   private const int VariantPrefixSize = 0x58;
   private const int SoundSlotSize = 0x2C;
   private const int CompactSoundSlotCount = 10;
+  private const int IntermediateSoundSlotCount = 18;
   private const int ExpandedSoundSlotCount = 24;
   private const int VariantCount = 4;
   private const int PackagePathOffset = 0x14;
   private const int FirstVariantPointerOffset = 0x18;
   private const int SoundSlotCountOffset = 0x50;
   private const int SoundSlotsPointerOffset = 0x54;
+  private const int LayoutProbeSize = HeaderSize + SoundSlotCountOffset + sizeof(uint);
   private const int MaximumStringBytes = 4 * 1024;
   private const int MaximumResourceCount = 1_000_000;
 
   private static readonly WildAnimalSpeciesLayout CompactLayout = CreateLayout(
     "10-slot",
     CompactSoundSlotCount);
+  private static readonly WildAnimalSpeciesLayout IntermediateLayout = CreateLayout(
+    "18-slot",
+    IntermediateSoundSlotCount);
   private static readonly WildAnimalSpeciesLayout ExpandedLayout = CreateLayout(
     "24-slot",
     ExpandedSoundSlotCount);
@@ -107,26 +114,31 @@ public static class WildAnimalSpecies {
     var regionLoaders = source.GetDataRegionLoaders(owner);
     if (regionLoaders.Count(loader => SameLoader(loader, owner)) != 1)
       throw Invalid(name, "loader is not present exactly once in its proven data region");
+    if (regionLoaders.Count(loader => loader.DataAddress == address) != 1)
+      throw Invalid(name, $"data address {address} is aliased by another loader");
     var nextLoader = regionLoaders
       .Where(loader => loader.DataAddress > address)
       .OrderBy(loader => loader.DataAddress)
       .FirstOrDefault();
-    if (nextLoader == null)
-      throw Invalid(name,
-        "record is the final loader in its proven data region and its block end is unavailable");
-    var recordEnd = nextLoader.DataAddress;
-    var extent = Convert.ToUInt64(recordEnd) - Convert.ToUInt64(address);
-    if (extent < Convert.ToUInt64(CompactLayout.RecordSize) ||
-        extent > Convert.ToUInt64(ExpandedLayout.RecordSize))
-      throw Invalid(name,
-        $"record extent {extent} is outside the bounded installed WAS range " +
-        $"{CompactLayout.RecordSize}..{ExpandedLayout.RecordSize}");
-    var recordLength = Convert.ToInt32(extent);
-    if (!source.TryReadBytes(address, recordLength, out var record) ||
-        record.Length != recordLength)
+    if (!source.TryReadBytes(address, LayoutProbeSize, out var probe) ||
+        probe.Length != LayoutProbeSize)
+      throw Invalid(name, "record layout probe is outside the archive or truncated");
+    var layout = SelectLayout(name, address, probe, source);
+    _ = CheckedAdd(address, layout.RecordSize - 1, name);
+    if (nextLoader != null) {
+      var extent = Convert.ToUInt64(nextLoader.DataAddress) - Convert.ToUInt64(address);
+      if (extent != Convert.ToUInt64(layout.RecordSize))
+        throw Invalid(name,
+          $"serialized sound-slot count {layout.SoundSlotCount} selects the {layout.Name} " +
+          $"record size {layout.RecordSize}, but the loader boundary proves extent {extent}");
+    }
+    if (!source.TryReadBytes(address, layout.RecordSize, out var record) ||
+        record.Length != layout.RecordSize)
       throw Invalid(name, "record is outside the archive or truncated");
-
-    var layout = SelectLayout(name, address, extent, record, source);
+    if (nextLoader == null && source.TryReadBytes(address, layout.RecordSize + 1, out _))
+      throw Invalid(name,
+        "final loader has unowned trailing bytes instead of ending at the proven record boundary");
+    var recordEnd = Convert.ToUInt64(address) + Convert.ToUInt64(layout.RecordSize);
 
     var packagePath = ReadRequiredString(
       source,
@@ -233,7 +245,6 @@ public static class WildAnimalSpecies {
   private static WildAnimalSpeciesLayout SelectLayout(
     string name,
     uint address,
-    ulong extent,
     byte[] record,
     IWildAnimalSpeciesDataSource source
   ) {
@@ -254,14 +265,11 @@ public static class WildAnimalSpecies {
       checked(HeaderSize + SoundSlotCountOffset));
     var layout = soundSlotCount switch {
       CompactSoundSlotCount => CompactLayout,
+      IntermediateSoundSlotCount => IntermediateLayout,
       ExpandedSoundSlotCount => ExpandedLayout,
       _ => throw Invalid(name,
         $"serialized sound-slot count {soundSlotCount} has no proven installed layout"),
     };
-    if (extent != Convert.ToUInt64(layout.RecordSize))
-      throw Invalid(name,
-        $"serialized sound-slot count {soundSlotCount} selects the {layout.Name} " +
-        $"record size {layout.RecordSize}, but the loader boundary proves extent {extent}");
     return layout;
   }
 
@@ -436,7 +444,8 @@ public static class WildAnimalSpecies {
 
       // TryResolveRelocation returns the exact FileBlock.Data array. Reference identity therefore
       // proves that candidate loaders share the owner's archive block rather than merely having a
-      // nearby virtual address. Ovl exposes no block end, so a final loader remains undecodable.
+      // nearby virtual address. A final WAS is accepted only when an exact-size read succeeds and
+      // the following byte cannot resolve in that block.
       var result = new List<OvlLoaderEntry>();
       foreach (var entry in loaders.Where(entry => string.Equals(
                  entry.SourcePath, owner.SourcePath, StringComparison.OrdinalIgnoreCase))) {

@@ -56,20 +56,37 @@ public class WildAnimalSpeciesTests {
     Assert.That(species.Variants, Has.Count.EqualTo(4));
   }
 
-  [Test]
-  public void Decode_FinalLoaderInDataRegionFailsClosedWithoutBlockEndEvidence() {
-    var fixture = new WildAnimalSpeciesFixture();
-    fixture.MakeFinalLoaderInRegion();
+  [TestCase(WildAnimalSpeciesFixtureLayout.Expanded)]
+  [TestCase(WildAnimalSpeciesFixtureLayout.Intermediate)]
+  [TestCase(WildAnimalSpeciesFixtureLayout.Compact)]
+  public void Decode_FinalLoaderAcceptsOnlyExactArchiveBlockEnd(
+    WildAnimalSpeciesFixtureLayout layout
+  ) {
+    var fixture = new WildAnimalSpeciesFixture(layout);
+    fixture.MakeFinalLoaderAtExactBlockEnd();
+
+    var species = fixture.Decode();
+
+    Assert.That(species.Variants, Has.Count.EqualTo(4));
+  }
+
+  [TestCase(WildAnimalSpeciesFixtureLayout.Expanded)]
+  [TestCase(WildAnimalSpeciesFixtureLayout.Intermediate)]
+  [TestCase(WildAnimalSpeciesFixtureLayout.Compact)]
+  public void Decode_FinalLoaderRejectsTrailingByte(
+    WildAnimalSpeciesFixtureLayout layout
+  ) {
+    var fixture = new WildAnimalSpeciesFixture(layout);
+    fixture.MakeFinalLoaderWithTrailingByte();
 
     var exception = Assert.Throws<InvalidDataException>(new Action(() => fixture.Decode()));
 
-    Assert.That(exception!.Message, Does.Contain(
-      "final loader in its proven data region and its block end is unavailable"));
+    Assert.That(exception!.Message, Does.Contain("final loader has unowned trailing bytes"));
   }
 
   [TestCase(MalformedWildAnimalSpecies.WrongLoaderType)]
   [TestCase(MalformedWildAnimalSpecies.MissingRecordBoundary)]
-  [TestCase(MalformedWildAnimalSpecies.NonMonotonicRecordBoundary)]
+  [TestCase(MalformedWildAnimalSpecies.AliasedDataAddress)]
   [TestCase(MalformedWildAnimalSpecies.WrongRecordExtent)]
   [TestCase(MalformedWildAnimalSpecies.TruncatedRecord)]
   [TestCase(MalformedWildAnimalSpecies.MissingPackageRelocation)]
@@ -183,6 +200,48 @@ public class WildAnimalSpeciesTests {
     }
   }
 
+  [Test]
+  [Explicit("Requires installed RCT3 assets via RCT3_PATH.")]
+  public void Extract_FromInstalledPantherReadsExactFinalLoaderLayout() {
+    var rct3Path = Environment.GetEnvironmentVariable("RCT3_PATH")!;
+    Assert.That(rct3Path, Is.Not.Null.And.Not.Empty, "RCT3_PATH is not configured.");
+    var path = Path.Combine(rct3Path, "WildAnimals", "WildAnimals.common.ovl");
+    Assert.That(path, Does.Exist, $"Installed WildAnimals OVL not found: {path}");
+
+    using var ovl = Ovl.Load(path);
+    var file = ovl.Keys.Single(candidate =>
+      candidate.Type == FileType.WildAnimalSpecies &&
+      string.Equals(candidate.Name, "Panther", StringComparison.OrdinalIgnoreCase));
+    Assert.That(ovl.TryGetDataPointer(file, out var address), Is.True);
+    var owner = ovl.LoaderEntriesInOrder.Single(entry =>
+      entry.DataAddress == address &&
+      entry.Tag.ToFileType() == FileType.WildAnimalSpecies &&
+      string.Equals(entry.SourcePath, file.Path, StringComparison.OrdinalIgnoreCase));
+    Assert.That(ovl.TryResolveRelocation(owner.DataAddress, out var ownerBlock, out _), Is.True);
+    var followingInBlock = ovl.LoaderEntriesInOrder.Where(entry =>
+      entry.DataAddress > owner.DataAddress &&
+      string.Equals(entry.SourcePath, owner.SourcePath, StringComparison.OrdinalIgnoreCase) &&
+      ovl.TryResolveRelocation(entry.DataAddress, out var candidateBlock, out _) &&
+      ReferenceEquals(ownerBlock, candidateBlock));
+    Assert.That(
+      followingInBlock,
+      Is.Empty,
+      "Panther is expected to be the final loader in its block.");
+
+    var species = WildAnimalSpecies.Extract(ovl, "Panther:WAS");
+
+    using (Assert.EnterMultipleScope()) {
+      Assert.That(species.Name, Is.EqualTo("Panther"));
+      Assert.That(species.PackagePath, Is.EqualTo(@"WildAnimals\Panther\Panther_data"));
+      Assert.That(species.Variants, Is.EqualTo(new[] {
+        new WildAnimalSpeciesVariant("AdultPanther:mdl", "Panther:wad"),
+        new WildAnimalSpeciesVariant("AdultPanther:mdl", "Panther:wad"),
+        new WildAnimalSpeciesVariant("PantherCub:mdl", "cubPanther:wad"),
+        new WildAnimalSpeciesVariant("PantherCub:mdl", "cubPanther:wad"),
+      }));
+    }
+  }
+
   private sealed class WildAnimalSpeciesFixture {
     private const uint HeaderAddress = 1_000;
     private const int HeaderSize = 0x40;
@@ -203,9 +262,18 @@ public class WildAnimalSpeciesTests {
     public WildAnimalSpeciesFixture(
       WildAnimalSpeciesFixtureLayout layout = WildAnimalSpeciesFixtureLayout.Expanded
     ) {
-      var compact = layout == WildAnimalSpeciesFixtureLayout.Compact;
-      name = compact ? "ostrich" : "elephant";
-      soundSlotCount = compact ? 10 : 24;
+      name = layout switch {
+        WildAnimalSpeciesFixtureLayout.Compact => "ostrich",
+        WildAnimalSpeciesFixtureLayout.Intermediate => "panther",
+        WildAnimalSpeciesFixtureLayout.Expanded => "elephant",
+        _ => throw new ArgumentOutOfRangeException(nameof(layout)),
+      };
+      soundSlotCount = layout switch {
+        WildAnimalSpeciesFixtureLayout.Compact => 10,
+        WildAnimalSpeciesFixtureLayout.Intermediate => 18,
+        WildAnimalSpeciesFixtureLayout.Expanded => 24,
+        _ => throw new ArgumentOutOfRangeException(nameof(layout)),
+      };
       variantSize = checked(VariantPrefixSize + soundSlotCount * SoundSlotSize);
       recordSize = checked(HeaderSize + VariantCount * variantSize);
       record = new byte[recordSize];
@@ -219,24 +287,38 @@ public class WildAnimalSpeciesTests {
 
       AddString(
         0x14,
-        compact
-          ? @"WildAnimals\Ostrich\Ostrich_data"
-          : @"WildAnimals\elephant\Elephant_data");
+        layout switch {
+          WildAnimalSpeciesFixtureLayout.Compact => @"WildAnimals\Ostrich\Ostrich_data",
+          WildAnimalSpeciesFixtureLayout.Intermediate => @"WildAnimals\Panther\Panther_data",
+          WildAnimalSpeciesFixtureLayout.Expanded => @"WildAnimals\elephant\Elephant_data",
+          _ => throw new ArgumentOutOfRangeException(nameof(layout)),
+        });
       foreach (var index in Enumerable.Range(0, VariantCount)) {
         var variantOffset = HeaderSize + index * variantSize;
         AddPointer(
           0x18 + index * sizeof(uint),
           HeaderAddress + Convert.ToUInt32(variantOffset));
-        var modelReference = compact
-          ? index switch {
+        var modelReference = layout switch {
+          WildAnimalSpeciesFixtureLayout.Compact => index switch {
             0 => "MaleOstrich:mdl",
             1 => "FemaleOstrich:mdl",
             _ => "BabyOstrich:mdl",
-          }
-          : index < 2 ? "AdultElephant:mdl" : "BabyElephant:mdl";
-        var animationReference = compact
-          ? index < 2 ? "MaleOstrich:wad" : "BabyOstrich:wad"
-          : index < 2 ? "Elephant:wad" : "babyElephant:wad";
+          },
+          WildAnimalSpeciesFixtureLayout.Intermediate =>
+            index < 2 ? "AdultPanther:mdl" : "PantherCub:mdl",
+          WildAnimalSpeciesFixtureLayout.Expanded =>
+            index < 2 ? "AdultElephant:mdl" : "BabyElephant:mdl",
+          _ => throw new ArgumentOutOfRangeException(nameof(layout)),
+        };
+        var animationReference = layout switch {
+          WildAnimalSpeciesFixtureLayout.Compact =>
+            index < 2 ? "MaleOstrich:wad" : "BabyOstrich:wad",
+          WildAnimalSpeciesFixtureLayout.Intermediate =>
+            index < 2 ? "Panther:wad" : "cubPanther:wad",
+          WildAnimalSpeciesFixtureLayout.Expanded =>
+            index < 2 ? "Elephant:wad" : "babyElephant:wad",
+          _ => throw new ArgumentOutOfRangeException(nameof(layout)),
+        };
         AddReference(
           variantOffset,
           modelReference);
@@ -274,9 +356,16 @@ public class WildAnimalSpeciesTests {
         940));
     }
 
-    public void MakeFinalLoaderInRegion() {
+    public void MakeFinalLoaderAtExactBlockEnd() {
       source.RegionLoaders.Clear();
       source.RegionLoaders.Add(owner);
+    }
+
+    public void MakeFinalLoaderWithTrailingByte() {
+      MakeFinalLoaderAtExactBlockEnd();
+      var withTrailingByte = new byte[record.Length + 1];
+      record.CopyTo(withTrailingByte, 0);
+      source.ReplaceBytes(HeaderAddress, withTrailingByte);
     }
 
     public void MakeMalformed(MalformedWildAnimalSpecies malformed) {
@@ -287,9 +376,9 @@ public class WildAnimalSpeciesTests {
         case MalformedWildAnimalSpecies.MissingRecordBoundary:
           source.RegionLoaders.Clear();
           break;
-        case MalformedWildAnimalSpecies.NonMonotonicRecordBoundary:
+        case MalformedWildAnimalSpecies.AliasedDataAddress:
           source.RegionLoaders[1] = source.RegionLoaders[1] with {
-            DataAddress = HeaderAddress - 1,
+            DataAddress = HeaderAddress,
           };
           break;
         case MalformedWildAnimalSpecies.WrongRecordExtent:
@@ -477,8 +566,9 @@ public class WildAnimalSpeciesTests {
     }
   }
 
-  private enum WildAnimalSpeciesFixtureLayout {
+  public enum WildAnimalSpeciesFixtureLayout {
     Expanded,
+    Intermediate,
     Compact,
   }
 }
@@ -486,7 +576,7 @@ public class WildAnimalSpeciesTests {
 public enum MalformedWildAnimalSpecies {
   WrongLoaderType,
   MissingRecordBoundary,
-  NonMonotonicRecordBoundary,
+  AliasedDataAddress,
   WrongRecordExtent,
   TruncatedRecord,
   MissingPackageRelocation,
